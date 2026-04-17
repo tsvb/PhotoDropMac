@@ -1,0 +1,34 @@
+name: PhotoDropMac
+
+options:
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    ENABLE_HARDENED_RUNTIME: NO
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  PhotoDropMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/PhotoDropMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tsvb.PhotoDropMac
+        PRODUCT_NAME: PhotoDropMac
+        MARKETING_VERSION: "0.0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        CODE_SIGN_ENTITLEMENTS: PhotoDropMac.entitlements
