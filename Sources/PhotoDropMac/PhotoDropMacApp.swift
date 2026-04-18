@@ -17,12 +17,32 @@ struct PhotoDropMacApp: App {
             MenuBarMenu()
                 .environment(watcher)
         } label: {
-            Image(systemName: watcher.drives.isEmpty ? "sdcard" : "sdcard.fill")
+            MenuBarIcon(watcher: watcher)
         }
 
         Settings {
             SettingsView()
         }
+    }
+}
+
+// Hosted by MenuBarExtra's label — always alive in the scene hierarchy
+// regardless of window visibility. That's what lets us react to a drive
+// arriving while the main window is closed or the app is in the
+// background: the .onChange below still fires.
+struct MenuBarIcon: View {
+    let watcher: DriveWatcher
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: watcher.drives.isEmpty ? "sdcard" : "sdcard.fill")
+            .onChange(of: watcher.drives) { oldValue, newValue in
+                let added = Set(newValue.map(\.id))
+                    .subtracting(Set(oldValue.map(\.id)))
+                guard !added.isEmpty else { return }
+                openWindow(id: "main")
+                NSApp.activate()
+            }
     }
 }
 
