@@ -3,7 +3,8 @@ import Foundation
 // A cheap, size-indexed snapshot of a destination root used for duplicate
 // detection. Built by walking the directory tree for regular files and
 // bucketing by file size. No hashing is done up front — hashes are
-// computed lazily only when a size collision actually occurs.
+// computed (or fetched from the cache) only when a size collision
+// actually occurs.
 //
 // Matches the Windows PhotoDrop DuplicateDetectionService semantics:
 //   - "Dedup halts on size+hash match anywhere under the destination root,
@@ -36,18 +37,22 @@ struct DestinationIndex: Sendable {
         return DestinationIndex(bySize: bySize)
     }
 
-    // If a destination file of the same size has a matching xxhash64,
-    // return its URL. The source hash is computed (via `sourceHashProvider`)
-    // only when at least one size collision exists — most first-time
-    // ingests hit zero collisions and pay nothing.
+    // Both source and destination hashes route through the cache. Cold
+    // cache: reads the file, hashes it, stores. Warm cache (same file,
+    // same mtime/size): stat-only — no file read. That's the big win for
+    // re-ingests of the same card against the same destination.
     func findDuplicate(
         sourceSize: Int64,
-        sourceHashProvider: () throws -> UInt64
-    ) throws -> URL? {
+        sourceVolumeID: String,
+        sourceURL: URL,
+        using cache: HashCache
+    ) async -> URL? {
         guard let candidates = bySize[sourceSize], !candidates.isEmpty else { return nil }
-        let sourceHash = try sourceHashProvider()
+        guard let sourceHash = await cache.sourceHash(volumeUUID: sourceVolumeID, url: sourceURL) else {
+            return nil
+        }
         for candidate in candidates {
-            if let candidateHash = try? XxHash64.hash(fileAt: candidate),
+            if let candidateHash = await cache.destinationHash(url: candidate),
                candidateHash == sourceHash {
                 return candidate
             }

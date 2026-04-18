@@ -116,7 +116,8 @@ struct MainView: View {
             description: descriptionText,
             verify: verifyCopies,
             ejectAfter: ejectAfterIngest,
-            sourceMountPoint: source.mountPoint
+            sourceMountPoint: source.mountPoint,
+            sourceVolumeID: source.id
         )
     }
 

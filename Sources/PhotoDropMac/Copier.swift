@@ -69,6 +69,7 @@ final class Copier {
         return false
     }
 
+    @ObservationIgnored private let cache = HashCache(storeURL: HashCache.defaultURL)
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var startedAt: Date = Date()
     @ObservationIgnored private var totalBytes: Int64 = 0
@@ -97,7 +98,8 @@ final class Copier {
         description: String,
         verify: Bool,
         ejectAfter: Bool,
-        sourceMountPoint: String?
+        sourceMountPoint: String?,
+        sourceVolumeID: String
     ) {
         task?.cancel()
         log.removeAll()
@@ -136,7 +138,8 @@ final class Copier {
                 archiveRoot: archiveDestination,
                 verify: verify,
                 ejectAfter: ejectAfter,
-                sourceMountPoint: sourceMountPoint
+                sourceMountPoint: sourceMountPoint,
+                sourceVolumeID: sourceVolumeID
             )
         }
     }
@@ -148,7 +151,8 @@ final class Copier {
         archiveRoot: URL?,
         verify: Bool,
         ejectAfter: Bool,
-        sourceMountPoint: String?
+        sourceMountPoint: String?,
+        sourceVolumeID: String
     ) async {
         appendLog(.info, "Indexing destinations for duplicate detection…")
         let primaryIndex = await Task.detached(priority: .userInitiated) {
@@ -170,10 +174,10 @@ final class Copier {
 
             let primaryPlan = primaryPlans[i]
             do {
-                try await copyBundle(primaryPlan, index: primaryIndex, verify: verify)
+                try await copyBundle(primaryPlan, index: primaryIndex, verify: verify, sourceVolumeID: sourceVolumeID)
 
                 if i < archivePlans.count, let archiveIndex {
-                    try await copyBundle(archivePlans[i], index: archiveIndex, verify: verify)
+                    try await copyBundle(archivePlans[i], index: archiveIndex, verify: verify, sourceVolumeID: sourceVolumeID)
                 }
 
                 completedBundles += 1
@@ -239,6 +243,10 @@ final class Copier {
             )
         }.value
 
+        // Persist the hash cache — misses populated during this run stay
+        // hot for next time. Fire-and-forget: a save failure isn't fatal.
+        try? await cache.save()
+
         let result = CopyResult(
             bundleCount: totalBundles,
             filesCopied: filesCopied,
@@ -264,7 +272,7 @@ final class Copier {
 
     // MARK: - Per-bundle copy (with rollback on failure)
 
-    private func copyBundle(_ plan: BundlePlan, index: DestinationIndex, verify: Bool) async throws {
+    private func copyBundle(_ plan: BundlePlan, index: DestinationIndex, verify: Bool, sourceVolumeID: String) async throws {
         var writtenFiles: [URL] = []
 
         do {
@@ -274,12 +282,15 @@ final class Copier {
                 currentFile = file.source.lastPathComponent
                 state = .running(currentProgress())
 
-                // Dedup check — hashes source lazily only on size collision.
-                let existingDuplicate: URL? = try await Task.detached(priority: .userInitiated) {
-                    try index.findDuplicate(sourceSize: file.size) {
-                        try XxHash64.hash(fileAt: file.source)
-                    }
-                }.value
+                // Dedup check — routes through HashCache so a re-run of
+                // the same card + destination skips file reads entirely
+                // when (size, mtime) is unchanged on both sides.
+                let existingDuplicate: URL? = await index.findDuplicate(
+                    sourceSize: file.size,
+                    sourceVolumeID: sourceVolumeID,
+                    sourceURL: file.source,
+                    using: cache
+                )
 
                 if let existingDuplicate {
                     appendLog(.skipped, "\(file.source.lastPathComponent) — already present as \(existingDuplicate.lastPathComponent)")
@@ -328,6 +339,10 @@ final class Copier {
                 } else {
                     appendLog(.copied, "\(file.source.lastPathComponent) → \(file.destination.lastPathComponent)")
                 }
+
+                // Populate the destination cache entry so the next dedup
+                // run doesn't re-hash this file.
+                await cache.recordDestination(url: file.destination, hash: copyHash)
 
                 filesCopied += 1
             }
