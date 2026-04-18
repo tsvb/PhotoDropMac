@@ -5,20 +5,37 @@ struct PreviewTree: View {
 
     var body: some View {
         List {
-            Section {
-                OutlineGroup(nodes, children: \.children) { node in
-                    PreviewRow(node: node)
+            Section("Preview") {
+                ForEach(nodes) { root in
+                    TreeRow(node: root, defaultExpanded: true)
                 }
-            } header: {
-                HStack {
-                    Text("Preview")
-                        .font(.headline)
-                    Spacer()
-                }
-                .padding(.vertical, 2)
             }
         }
         .listStyle(.inset)
+    }
+}
+
+struct TreeRow: View {
+    let node: PreviewNode
+    @State private var isExpanded: Bool
+
+    init(node: PreviewNode, defaultExpanded: Bool = true) {
+        self.node = node
+        self._isExpanded = State(initialValue: defaultExpanded)
+    }
+
+    var body: some View {
+        if let children = node.children, !children.isEmpty {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                ForEach(children) { child in
+                    TreeRow(node: child, defaultExpanded: false)
+                }
+            } label: {
+                PreviewRow(node: node)
+            }
+        } else {
+            PreviewRow(node: node)
+        }
     }
 }
 
