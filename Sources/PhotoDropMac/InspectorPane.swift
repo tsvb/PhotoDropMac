@@ -8,6 +8,7 @@ struct InspectorPane: View {
     @AppStorage("photodrop.ejectAfterIngest") private var ejectWhenDone: Bool = false
     @Binding var description: String
     let canStart: Bool
+    let onIngest: () -> Void
 
     var body: some View {
         ScrollView {
@@ -57,7 +58,7 @@ struct InspectorPane: View {
     @ViewBuilder
     private var startButton: some View {
         Button {
-            // TODO: start ingest
+            onIngest()
         } label: {
             Text("Ingest")
                 .frame(maxWidth: .infinity)
