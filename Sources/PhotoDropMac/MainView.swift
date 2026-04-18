@@ -123,6 +123,16 @@ struct SidebarRow: View {
                     .monospacedDigit()
                     .lineLimit(1)
             }
+            Spacer(minLength: 0)
+            Button {
+                let mountPoint = card.mountPoint
+                Task { try? await DriveEjector.eject(mountPoint: mountPoint) }
+            } label: {
+                Image(systemName: "eject.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Eject \(card.label)")
         }
         .padding(.vertical, 2)
     }
