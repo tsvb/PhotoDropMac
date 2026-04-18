@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainView: View {
     @Environment(DriveWatcher.self) private var watcher
+    @State private var planner = IngestPlanner()
 
     @State private var selectedSourceID: DetectedDrive.ID?
     @State private var primaryDestination: String = "/Users/tim/Photos/RAW"
@@ -20,17 +21,18 @@ struct MainView: View {
         NavigationSplitView {
             Sidebar(selection: $selectedSourceID)
         } detail: {
-            DetailPane(source: source)
+            DetailPane(source: source, planner: planner)
                 .navigationTitle(source?.label ?? "PhotoDrop")
-                .navigationSubtitle(source.map { $0.totalBytes.formatted(.byteCount(style: .file)) } ?? "")
+                .navigationSubtitle(detailSubtitle)
                 .toolbar {
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button {
                             watcher.rescan()
+                            planner.setSource(source, description: descriptionText)
                         } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
-                        .help("Rescan cards")
+                        .help("Rescan cards and preview")
 
                         Button {
                             showInspector.toggle()
@@ -47,7 +49,7 @@ struct MainView: View {
                         description: $descriptionText,
                         verify: $verify,
                         ejectWhenDone: $ejectWhenDone,
-                        canStart: source != nil
+                        canStart: source != nil && !planner.isScanning && planner.totalFiles > 0
                     )
                     .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
                 }
@@ -56,6 +58,7 @@ struct MainView: View {
             if selectedSourceID == nil {
                 selectedSourceID = watcher.drives.first?.id
             }
+            planner.setSource(source, description: descriptionText)
         }
         .onChange(of: watcher.drives) { _, drives in
             if let id = selectedSourceID, !drives.contains(where: { $0.id == id }) {
@@ -63,6 +66,24 @@ struct MainView: View {
             } else if selectedSourceID == nil {
                 selectedSourceID = drives.first?.id
             }
+        }
+        .onChange(of: selectedSourceID) { _, _ in
+            planner.setSource(source, description: descriptionText)
+        }
+        .onChange(of: descriptionText) { _, new in
+            planner.updateDescription(new)
+        }
+    }
+
+    private var detailSubtitle: String {
+        guard let source else { return "" }
+        let size = source.totalBytes.formatted(.byteCount(style: .file))
+        if planner.isScanning {
+            return "\(size) · Scanning…"
+        } else if planner.totalFiles > 0 {
+            return "\(size) · \(planner.totalFiles.formatted()) photos"
+        } else {
+            return size
         }
     }
 }
@@ -117,16 +138,31 @@ struct SidebarRow: View {
 
 struct DetailPane: View {
     let source: DetectedDrive?
+    let planner: IngestPlanner
 
     var body: some View {
-        if source != nil {
-            PreviewTree(nodes: Sample.previewTree)
-        } else {
+        if source == nil {
             ContentUnavailableView(
                 "No card selected",
                 systemImage: "sdcard",
                 description: Text("Insert a memory card to begin.")
             )
+        } else if planner.isScanning {
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("Scanning card…")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if planner.yearGroups.isEmpty {
+            ContentUnavailableView(
+                "No photos found",
+                systemImage: "photo",
+                description: Text("This card has no recognized photo files.")
+            )
+        } else {
+            PreviewTree(yearGroups: planner.yearGroups)
         }
     }
 }

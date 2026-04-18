@@ -1,62 +1,85 @@
 import SwiftUI
 
 struct PreviewTree: View {
-    let nodes: [PreviewNode]
+    let yearGroups: [YearGroup]
 
     var body: some View {
         List {
-            Section("Preview") {
-                ForEach(nodes) { root in
-                    TreeRow(node: root, defaultExpanded: true)
+            Section {
+                ForEach(yearGroups) { year in
+                    YearRow(group: year, defaultExpanded: true)
                 }
+            } header: {
+                HStack {
+                    Text("Preview").font(.headline)
+                    Spacer()
+                    Text(summary)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .padding(.vertical, 2)
             }
         }
         .listStyle(.inset)
     }
+
+    private var summary: String {
+        let files = yearGroups.reduce(0) { $0 + $1.totalFiles }
+        let bytes = yearGroups.reduce(0) { $0 + $1.totalBytes }
+        return "\(files.formatted()) files · \(bytes.formatted(.byteCount(style: .file)))"
+    }
 }
 
-struct TreeRow: View {
-    let node: PreviewNode
+struct YearRow: View {
+    let group: YearGroup
     @State private var isExpanded: Bool
 
-    init(node: PreviewNode, defaultExpanded: Bool = true) {
-        self.node = node
+    init(group: YearGroup, defaultExpanded: Bool = true) {
+        self.group = group
         self._isExpanded = State(initialValue: defaultExpanded)
     }
 
     var body: some View {
-        if let children = node.children, !children.isEmpty {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                ForEach(children) { child in
-                    TreeRow(node: child, defaultExpanded: false)
-                }
-            } label: {
-                PreviewRow(node: node)
+        DisclosureGroup(isExpanded: $isExpanded) {
+            ForEach(group.folders) { folder in
+                FolderRow(folder: folder)
             }
-        } else {
-            PreviewRow(node: node)
-        }
-    }
-}
-
-struct PreviewRow: View {
-    let node: PreviewNode
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: node.icon)
-                .foregroundStyle(node.isHighlighted ? Color.accentColor : Color.secondary)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(node.name)
-                    .fontWeight(node.isHighlighted ? .semibold : .regular)
-                    .foregroundStyle(node.isHighlighted ? Color.accentColor : Color.primary)
-                if let subtitle = node.subtitle {
-                    Text(subtitle)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                    .foregroundStyle(Color.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(String(group.year))
+                        .fontWeight(.medium)
+                    Text("\(group.totalFiles.formatted()) files · \(group.totalBytes.formatted(.byteCount(style: .file)))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
                 }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+}
+
+struct FolderRow: View {
+    let folder: DestinationFolder
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder.fill")
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(folder.dayName)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.accentColor)
+                Text("\(folder.fileCount.formatted()) files · \(folder.totalBytes.formatted(.byteCount(style: .file)))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
         }
         .padding(.vertical, 2)
