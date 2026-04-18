@@ -3,17 +3,21 @@ import AppKit
 
 @main
 struct PhotoDropMacApp: App {
+    @State private var watcher = DriveWatcher()
+
     var body: some Scene {
         Window("PhotoDrop", id: "main") {
             MainView()
+                .environment(watcher)
         }
         .defaultSize(width: 1020, height: 700)
         .windowToolbarStyle(.unified)
 
         MenuBarExtra {
             MenuBarMenu()
+                .environment(watcher)
         } label: {
-            Image(systemName: Sample.cards.isEmpty ? "sdcard" : "sdcard.fill")
+            Image(systemName: watcher.drives.isEmpty ? "sdcard" : "sdcard.fill")
         }
 
         Settings {
@@ -23,18 +27,26 @@ struct PhotoDropMacApp: App {
 }
 
 struct MenuBarMenu: View {
+    @Environment(DriveWatcher.self) private var watcher
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        let firstCardLabel = Sample.cards.first?.label
+        if let first = watcher.drives.first {
+            Button("Ingest from \(first.label)…") {
+                openWindow(id: "main")
+                NSApp.activate()
+            }
+            .keyboardShortcut("i")
 
-        Button(firstCardLabel.map { "Ingest from \($0)…" } ?? "Open PhotoDrop") {
-            openWindow(id: "main")
-            NSApp.activate()
-        }
-        .keyboardShortcut("i")
-
-        if firstCardLabel == nil {
+            if watcher.drives.count > 1 {
+                Text("\(watcher.drives.count) cards available")
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Button("Open PhotoDrop") {
+                openWindow(id: "main")
+                NSApp.activate()
+            }
             Text("No card inserted")
                 .foregroundStyle(.secondary)
         }

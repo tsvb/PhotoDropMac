@@ -1,13 +1,5 @@
 import Foundation
 
-struct DetectedDrive: Identifiable, Hashable {
-    let id = UUID()
-    let label: String
-    let mountPoint: String
-    let photoCount: Int
-    let totalBytes: Int64
-}
-
 struct PreviewNode: Identifiable, Hashable {
     let id = UUID()
     let name: String
@@ -18,15 +10,9 @@ struct PreviewNode: Identifiable, Hashable {
 }
 
 enum Sample {
-    static let cards: [DetectedDrive] = [
-        DetectedDrive(
-            label: "SanDisk Extreme 64 GB",
-            mountPoint: "/Volumes/SanDisk Extreme",
-            photoCount: 1247,
-            totalBytes: 48_300_000_000
-        )
-    ]
-
+    // Preview tree stays mocked until AssetDiscoveryService is ported — the
+    // live DriveWatcher populates real drives, but discovering photos on them
+    // (grouping into bundles, planning destination paths) is a later step.
     static let previewTree: [PreviewNode] = [
         PreviewNode(
             name: "2026",

@@ -1,7 +1,9 @@
 import SwiftUI
 
 struct MainView: View {
-    @State private var selectedSourceID: DetectedDrive.ID? = Sample.cards.first?.id
+    @Environment(DriveWatcher.self) private var watcher
+
+    @State private var selectedSourceID: DetectedDrive.ID?
     @State private var primaryDestination: String = "/Users/tim/Photos/RAW"
     @State private var archiveDestination: String = ""
     @State private var descriptionText: String = ""
@@ -11,7 +13,7 @@ struct MainView: View {
 
     private var source: DetectedDrive? {
         guard let id = selectedSourceID else { return nil }
-        return Sample.cards.first { $0.id == id }
+        return watcher.drives.first { $0.id == id }
     }
 
     var body: some View {
@@ -20,15 +22,15 @@ struct MainView: View {
         } detail: {
             DetailPane(source: source)
                 .navigationTitle(source?.label ?? "PhotoDrop")
-                .navigationSubtitle(source.map(subtitle(for:)) ?? "")
+                .navigationSubtitle(source.map { $0.totalBytes.formatted(.byteCount(style: .file)) } ?? "")
                 .toolbar {
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button {
-                            // TODO: refresh detected drives
+                            watcher.rescan()
                         } label: {
                             Label("Refresh", systemImage: "arrow.clockwise")
                         }
-                        .help("Refresh cards")
+                        .help("Rescan cards")
 
                         Button {
                             showInspector.toggle()
@@ -50,32 +52,42 @@ struct MainView: View {
                     .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
                 }
         }
-    }
-
-    private func subtitle(for drive: DetectedDrive) -> String {
-        "\(drive.photoCount.formatted()) photos · \(drive.totalBytes.formatted(.byteCount(style: .file)))"
+        .onAppear {
+            if selectedSourceID == nil {
+                selectedSourceID = watcher.drives.first?.id
+            }
+        }
+        .onChange(of: watcher.drives) { _, drives in
+            if let id = selectedSourceID, !drives.contains(where: { $0.id == id }) {
+                selectedSourceID = drives.first?.id
+            } else if selectedSourceID == nil {
+                selectedSourceID = drives.first?.id
+            }
+        }
     }
 }
 
 struct Sidebar: View {
+    @Environment(DriveWatcher.self) private var watcher
     @Binding var selection: DetectedDrive.ID?
 
     var body: some View {
-        List(Sample.cards, selection: $selection) { card in
-            SidebarRow(card: card)
-                .tag(card.id)
-        }
-        .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 320)
-        .overlay {
-            if Sample.cards.isEmpty {
+        Group {
+            if watcher.drives.isEmpty {
                 ContentUnavailableView(
                     "No Cards",
                     systemImage: "sdcard",
                     description: Text("Insert a memory card to begin.")
                 )
+            } else {
+                List(watcher.drives, selection: $selection) { card in
+                    SidebarRow(card: card)
+                        .tag(card.id)
+                }
+                .listStyle(.sidebar)
             }
         }
+        .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 320)
     }
 }
 
@@ -92,7 +104,7 @@ struct SidebarRow: View {
                 Text(card.label)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text("\(card.photoCount.formatted()) photos · \(card.totalBytes.formatted(.byteCount(style: .file)))")
+                Text(card.totalBytes.formatted(.byteCount(style: .file)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -113,7 +125,7 @@ struct DetailPane: View {
             ContentUnavailableView(
                 "No card selected",
                 systemImage: "sdcard",
-                description: Text("Select a card from the sidebar to begin.")
+                description: Text("Insert a memory card to begin.")
             )
         }
     }
