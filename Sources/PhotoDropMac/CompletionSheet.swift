@@ -52,10 +52,25 @@ struct CompletionSheet: View {
     }
 
     private var subtitle: String {
+        let base = baseSummary
         if result.wasEjected {
-            return "Card ejected. Safe to remove."
+            return "\(base) Card ejected — safe to remove."
         }
-        return "All files copied and verified."
+        return base
+    }
+
+    private var baseSummary: String {
+        if result.filesFailed > 0 {
+            return "Some files failed — see log for details."
+        } else if result.filesCopied == 0, result.filesSkipped > 0 {
+            return "Everything was already there — nothing new to copy."
+        } else if result.filesCopied > 0, result.filesSkipped > 0 {
+            return "\(result.filesCopied) copied, \(result.filesSkipped) already present."
+        } else if result.filesCopied > 0 {
+            return "All files copied and verified."
+        } else {
+            return "Ingest complete."
+        }
     }
 
     @ViewBuilder
