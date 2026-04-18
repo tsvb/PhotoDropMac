@@ -5,11 +5,7 @@ struct MainView: View {
     @State private var planner = IngestPlanner()
 
     @State private var selectedSourceID: DetectedDrive.ID?
-    @State private var primaryDestination: String = "/Users/tim/Photos/RAW"
-    @State private var archiveDestination: String = ""
     @State private var descriptionText: String = ""
-    @State private var verify: Bool = true
-    @State private var ejectWhenDone: Bool = false
     @State private var showInspector: Bool = true
 
     private var source: DetectedDrive? {
@@ -44,11 +40,7 @@ struct MainView: View {
                 }
                 .inspector(isPresented: $showInspector) {
                     InspectorPane(
-                        primary: $primaryDestination,
-                        archive: $archiveDestination,
                         description: $descriptionText,
-                        verify: $verify,
-                        ejectWhenDone: $ejectWhenDone,
                         canStart: source != nil && !planner.isScanning && planner.totalFiles > 0
                     )
                     .inspectorColumnWidth(min: 280, ideal: 320, max: 420)

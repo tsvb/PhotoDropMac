@@ -2,11 +2,11 @@ import SwiftUI
 import AppKit
 
 struct InspectorPane: View {
-    @Binding var primary: String
-    @Binding var archive: String
+    @AppStorage("photodrop.primaryDestination") private var primary: String = ""
+    @AppStorage("photodrop.archiveDestination") private var archive: String = ""
+    @AppStorage("photodrop.verifyCopies") private var verify: Bool = true
+    @AppStorage("photodrop.ejectAfterIngest") private var ejectWhenDone: Bool = false
     @Binding var description: String
-    @Binding var verify: Bool
-    @Binding var ejectWhenDone: Bool
     let canStart: Bool
 
     var body: some View {
