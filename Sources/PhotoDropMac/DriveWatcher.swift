@@ -72,10 +72,13 @@ final class DriveWatcher {
         return volumes.compactMap { url -> DetectedDrive? in
             guard let values = try? url.resourceValues(forKeys: Set(keys)) else { return nil }
             let isLocal = values.volumeIsLocal ?? true
-            let isInternal = values.volumeIsInternal ?? false
             let isEjectable = values.volumeIsEjectable ?? false
             let isRemovable = values.volumeIsRemovable ?? false
-            guard isLocal, !isInternal, (isEjectable || isRemovable) else {
+            // Don't filter on `isInternal` — a MacBook Pro's built-in SD reader
+            // reports its card as internal even though the media is clearly
+            // removable. The ejectable/removable check is sufficient to
+            // separate cards from the boot disk.
+            guard isLocal, (isEjectable || isRemovable) else {
                 return nil
             }
             let label = values.volumeName ?? url.lastPathComponent
