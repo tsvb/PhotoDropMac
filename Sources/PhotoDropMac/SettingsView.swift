@@ -8,6 +8,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             IngestPreferences()
                 .tabItem { Label("Ingest", systemImage: "square.and.arrow.down") }
+            MenuBarPreferences()
+                .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
         }
         .frame(width: 520, height: 360)
     }
@@ -47,6 +49,42 @@ struct IngestPreferences: View {
                 Toggle("Verify copies with xxHash", isOn: $verify)
                 Toggle("Eject card when finished", isOn: $ejectAfterIngest)
                 Toggle("Show completion summary", isOn: $showCompletionSheet)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+struct MenuBarPreferences: View {
+    @AppStorage("photodrop.menuBar.visibility") private var visibility = MenuBarVisibility.always
+    @AppStorage("photodrop.menuBar.autoOpenWindow") private var autoOpenWindow: Bool = true
+    @AppStorage("photodrop.menuBar.oneClickIngest") private var oneClickIngest: Bool = false
+    @AppStorage("photodrop.primaryDestination") private var primaryDestination: String = ""
+
+    var body: some View {
+        Form {
+            Section("Menu bar status") {
+                Picker("Show in menu bar", selection: $visibility) {
+                    ForEach(MenuBarVisibility.allCases) { v in
+                        Text(v.label).tag(v)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Toggle("Auto-open window when a card arrives", isOn: $autoOpenWindow)
+            }
+
+            Section {
+                Toggle("One-click ingest from menu bar", isOn: $oneClickIngest)
+            } footer: {
+                if oneClickIngest && primaryDestination.isEmpty {
+                    Text("Set a primary destination in General to enable one-click ingest.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Uses your default destination and verify settings. Still hash-checks every file.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)

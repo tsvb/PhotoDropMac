@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainView: View {
     @Environment(DriveWatcher.self) private var watcher
+    @Environment(AppCoordinator.self) private var coordinator
     @State private var planner = IngestPlanner()
     @State private var copier = Copier()
 
@@ -13,6 +14,7 @@ struct MainView: View {
     @State private var selectedSourceID: DetectedDrive.ID?
     @State private var descriptionText: String = ""
     @State private var showInspector: Bool = true
+    @State private var autoIngestPending = false
 
     private var source: DetectedDrive? {
         guard let id = selectedSourceID else { return nil }
@@ -92,6 +94,15 @@ struct MainView: View {
         .onChange(of: descriptionText) { _, new in
             planner.updateDescription(new)
         }
+        .onChange(of: coordinator.pendingOneClickCardID) { _, id in
+            guard let id else { return }
+            selectedSourceID = id
+            autoIngestPending = true
+            tryAutoIngest()
+        }
+        .onChange(of: planner.isScanning) { _, _ in
+            tryAutoIngest()
+        }
     }
 
     private var canStartIngest: Bool {
@@ -119,6 +130,21 @@ struct MainView: View {
             sourceMountPoint: source.mountPoint,
             sourceVolumeID: source.id
         )
+    }
+
+    // Fulfils a one-click request from the menu bar: once the requested card
+    // has been scanned and a destination is set, start the ingest through the
+    // normal path so progress shows in this window.
+    private func tryAutoIngest() {
+        guard autoIngestPending,
+              !planner.isScanning,
+              planner.totalFiles > 0,
+              !primaryDest.isEmpty,
+              !copier.isRunning
+        else { return }
+        autoIngestPending = false
+        coordinator.pendingOneClickCardID = nil
+        startIngest()
     }
 
     private var detailSubtitle: String {
