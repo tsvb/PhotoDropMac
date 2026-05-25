@@ -22,7 +22,8 @@ struct InspectorPane: View {
             }
 
             Section("Description") {
-                TextField("e.g. Iceland", text: $description)
+                TextField("Description", text: $description, prompt: Text("e.g. Iceland"))
+                    .labelsHidden()
             }
 
             Section {
@@ -79,7 +80,8 @@ struct PathField: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            TextField(prompt, text: $path)
+            TextField("Path", text: $path, prompt: Text(prompt))
+                .labelsHidden()
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1)
                 .truncationMode(.middle)
