@@ -48,7 +48,13 @@ enum JobLogger {
         for entry in entries {
             let ts = lineStampFormatter.string(from: entry.timestamp)
             let kind = entry.kind.label.padding(toLength: 8, withPad: " ", startingAt: 0)
-            content += "\(ts)  \(kind)  \(entry.line)\n"
+            // Keep the full 16-char hash in the on-disk log even though the UI
+            // now renders a compact signature from `entry.signature`.
+            var lineText = entry.line
+            if let signature = entry.signature {
+                lineText += "  [\(String(format: "%016llx", signature))]"
+            }
+            content += "\(ts)  \(kind)  \(lineText)\n"
         }
 
         do {

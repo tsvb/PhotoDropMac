@@ -11,86 +11,67 @@ struct InspectorPane: View {
     let onIngest: () -> Void
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                destinationSection
-                Divider()
-                descriptionSection
-                Divider()
-                optionsSection
-                Spacer(minLength: 12)
-                startButton
+        Form {
+            Section("Destinations") {
+                LabeledField(label: "Primary") {
+                    PathField(path: $primary, prompt: "Choose folder…")
+                }
+                LabeledField(label: "Archive") {
+                    PathField(path: $archive, prompt: "Second copy (optional)")
+                }
             }
-            .padding(20)
-        }
-    }
 
-    @ViewBuilder
-    private var destinationSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            InspectorLabel("Destination")
-            PathField(path: $primary, prompt: "Choose folder...")
+            Section("Description") {
+                TextField("Description", text: $description, prompt: Text("e.g. Iceland"))
+                    .labelsHidden()
+            }
 
-            InspectorLabel("Archive", trailing: "optional")
-                .padding(.top, 2)
-            PathField(path: $archive, prompt: "Second copy location")
-        }
-    }
+            Section {
+                Toggle("Verify copies with xxHash", isOn: $verify)
+                    .toggleStyle(.checkbox)
+                Toggle("Eject card when finished", isOn: $ejectWhenDone)
+                    .toggleStyle(.checkbox)
+            } header: {
+                Text("Options")
+            } footer: {
+                if verify {
+                    Text("Every file is hash-checked after copy. Recommended.")
+                }
+            }
 
-    @ViewBuilder
-    private var descriptionSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            InspectorLabel("Description")
-            TextField("e.g. Wedding, Iceland trip", text: $description)
-                .textFieldStyle(.roundedBorder)
+            Section {
+                Button {
+                    onIngest()
+                } label: {
+                    Text("Ingest")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!canStart || primary.isEmpty)
+                .keyboardShortcut(.defaultAction)
+            } footer: {
+                if primary.isEmpty {
+                    Text("Pick a destination to enable Ingest. PhotoDrop will remember it for every card.")
+                }
+            }
         }
-    }
-
-    @ViewBuilder
-    private var optionsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle("Verify copies with xxHash", isOn: $verify)
-            Toggle("Eject card when finished", isOn: $ejectWhenDone)
-        }
-        .toggleStyle(.checkbox)
-    }
-
-    @ViewBuilder
-    private var startButton: some View {
-        Button {
-            onIngest()
-        } label: {
-            Text("Ingest")
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .disabled(!canStart || primary.isEmpty)
-        .keyboardShortcut(.defaultAction)
+        .formStyle(.grouped)
     }
 }
 
-struct InspectorLabel: View {
-    let title: String
-    let trailing: String?
-
-    init(_ title: String, trailing: String? = nil) {
-        self.title = title
-        self.trailing = trailing
-    }
+// A stacked caption label above its field — used for the destination paths,
+// which are too wide for a leading-label LabeledContent row.
+private struct LabeledField<Content: View>: View {
+    let label: String
+    @ViewBuilder var content: Content
 
     var body: some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-            if let trailing {
-                Text(trailing)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            Spacer()
+            content
         }
     }
 }
@@ -101,7 +82,8 @@ struct PathField: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            TextField(prompt, text: $path)
+            TextField("Path", text: $path, prompt: Text(prompt))
+                .labelsHidden()
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -125,4 +107,9 @@ struct PathField: View {
             path = url.path(percentEncoded: false)
         }
     }
+}
+
+#Preview {
+    InspectorPane(description: .constant("Iceland trip"), canStart: true, onIngest: {})
+        .frame(width: 320, height: 560)
 }

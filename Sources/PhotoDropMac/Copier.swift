@@ -44,6 +44,7 @@ struct LogEntry: Sendable, Hashable, Identifiable {
     let timestamp: Date
     let kind: Kind
     let line: String
+    let signature: UInt64?   // xxHash of the verified file; nil for other kinds
 
     enum Kind: Sendable, Hashable {
         case info, copied, skipped, verified, error
@@ -63,6 +64,9 @@ enum CopierState: Equatable {
 final class Copier {
     private(set) var state: CopierState = .idle
     private(set) var log: [LogEntry] = []
+    // Bundles fully copied + verified so far — surfaced in the cancelled/failed
+    // states to reassure the user what is safely on disk.
+    private(set) var verifiedBundles: Int = 0
 
     var isRunning: Bool {
         if case .running = state { return true }
@@ -106,6 +110,7 @@ final class Copier {
         startedAt = Date()
         bytesCopied = 0
         completedBundles = 0
+        verifiedBundles = 0
         filesCopied = 0
         filesSkipped = 0
         filesFailed = 0
@@ -207,6 +212,7 @@ final class Copier {
                 }
 
                 completedBundles += 1
+                verifiedBundles += 1
                 state = .running(currentProgress())
             } catch is CancellationError {
                 haltReason = "cancelled"
@@ -380,7 +386,7 @@ final class Copier {
                     try await Task.detached(priority: .userInitiated) {
                         try FileCopier.verify(file: dest, expectedHash: copyHash)
                     }.value
-                    appendLog(.verified, "\(file.source.lastPathComponent) → \(file.destination.lastPathComponent)  [\(String(format: "%016llx", copyHash))]")
+                    appendLog(.verified, "\(file.source.lastPathComponent) → \(file.destination.lastPathComponent)", signature: copyHash)
                 } else {
                     appendLog(.copied, "\(file.source.lastPathComponent) → \(file.destination.lastPathComponent)")
                 }
@@ -424,8 +430,8 @@ final class Copier {
         )
     }
 
-    private func appendLog(_ kind: LogEntry.Kind, _ message: String) {
-        log.append(LogEntry(timestamp: Date(), kind: kind, line: message))
+    private func appendLog(_ kind: LogEntry.Kind, _ message: String, signature: UInt64? = nil) {
+        log.append(LogEntry(timestamp: Date(), kind: kind, line: message, signature: signature))
         // Cap in-memory log to keep the UI snappy. The on-disk log file
         // written at end-of-job contains the same entries.
         if log.count > 500 {

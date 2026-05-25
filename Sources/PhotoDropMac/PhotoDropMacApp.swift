@@ -4,18 +4,26 @@ import AppKit
 @main
 struct PhotoDropMacApp: App {
     @State private var watcher = DriveWatcher()
+    @State private var coordinator = AppCoordinator()
+    @AppStorage("photodrop.menuBar.visibility") private var menuBarVisibility = MenuBarVisibility.always
 
     var body: some Scene {
         Window("PhotoDrop", id: "main") {
             MainView()
                 .environment(watcher)
+                .environment(coordinator)
         }
         .defaultSize(width: 1020, height: 700)
         .windowToolbarStyle(.unified)
 
-        MenuBarExtra {
+        // Default (.always) keeps the menu bar — and its card-arrival auto-open —
+        // alive exactly as before. .withCard shows it only while a card is
+        // mounted; .hidden removes it (which also disables menu-bar auto-open,
+        // since the icon is the host that detects arrivals).
+        MenuBarExtra(isInserted: .constant(menuBarVisible)) {
             MenuBarMenu()
                 .environment(watcher)
+                .environment(coordinator)
         } label: {
             MenuBarIcon(watcher: watcher)
         }
@@ -24,19 +32,28 @@ struct PhotoDropMacApp: App {
             SettingsView()
         }
     }
+
+    private var menuBarVisible: Bool {
+        switch menuBarVisibility {
+        case .always:   return true
+        case .withCard: return !watcher.drives.isEmpty
+        case .hidden:   return false
+        }
+    }
 }
 
-// Hosted by MenuBarExtra's label — always alive in the scene hierarchy
-// regardless of window visibility. That's what lets us react to a drive
-// arriving while the main window is closed or the app is in the
-// background: the .onChange below still fires.
+// Hosted by MenuBarExtra's label — alive in the scene hierarchy (whenever the
+// menu bar is shown) regardless of window visibility. That's what lets us react
+// to a drive arriving while the main window is closed.
 struct MenuBarIcon: View {
     let watcher: DriveWatcher
     @Environment(\.openWindow) private var openWindow
+    @AppStorage("photodrop.menuBar.autoOpenWindow") private var autoOpenWindow: Bool = true
 
     var body: some View {
         Image(systemName: watcher.drives.isEmpty ? "sdcard" : "sdcard.fill")
             .onChange(of: watcher.drives) { oldValue, newValue in
+                guard autoOpenWindow else { return }
                 let added = Set(newValue.map(\.id))
                     .subtracting(Set(oldValue.map(\.id)))
                 guard !added.isEmpty else { return }
@@ -48,15 +65,25 @@ struct MenuBarIcon: View {
 
 struct MenuBarMenu: View {
     @Environment(DriveWatcher.self) private var watcher
+    @Environment(AppCoordinator.self) private var coordinator
     @Environment(\.openWindow) private var openWindow
+
+    @AppStorage("photodrop.primaryDestination") private var primaryDestination: String = ""
+    @AppStorage("photodrop.menuBar.oneClickIngest") private var oneClickIngest: Bool = false
 
     var body: some View {
         if let first = watcher.drives.first {
             Button("Ingest from \(first.label)…") {
                 openWindow(id: "main")
                 NSApp.activate()
+                if oneClickIngest {
+                    // The window's MainView watches this and starts the ingest
+                    // once the card is scanned and a destination is set.
+                    coordinator.pendingOneClickCardID = first.id
+                }
             }
             .keyboardShortcut("i")
+            .disabled(oneClickIngest && primaryDestination.isEmpty)
 
             if watcher.drives.count > 1 {
                 Text("\(watcher.drives.count) cards available")
