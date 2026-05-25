@@ -166,20 +166,28 @@ final class Copier {
             archiveIndex = nil
         }
 
-        // Build collision-safe plans now that we know what's already at each
-        // destination. Seeding planBatch with the existing paths means a new,
-        // different-content file that would map onto an existing name gets a
-        // "_1" variant instead of overwriting it; the same set also keeps two
-        // same-named source files in this run from colliding with each other.
-        let primaryExisting = primaryIndex.existingPaths
+        // Build collision-safe plans. Collision avoidance only needs to know
+        // which files already sit in the *specific* day-folders this job writes
+        // into — never the whole library — so we scan just those target dirs
+        // fresh, independent of the (cached) dedup index above. Seeding
+        // planBatch with them means a new, different-content file that would map
+        // onto an existing name gets a "_1" variant instead of overwriting it;
+        // planBatch's own in-batch set handles same-run collisions.
         let primaryPlans = await Task.detached(priority: .userInitiated) {
-            CopyPlan.planBatch(bundles: bundles, destinationRoot: primaryRoot, description: description, existingPaths: primaryExisting)
+            let targetDirs = Set(bundles.map {
+                CopyPlan.destinationDirectory(for: $0, destinationRoot: primaryRoot, description: description)
+            })
+            let existing = DestinationIndex.existingFilePaths(in: targetDirs)
+            return CopyPlan.planBatch(bundles: bundles, destinationRoot: primaryRoot, description: description, existingPaths: existing)
         }.value
         let archivePlans: [BundlePlan]
-        if let archiveRoot, let archiveIndex {
-            let archiveExisting = archiveIndex.existingPaths
+        if let archiveRoot {
             archivePlans = await Task.detached(priority: .userInitiated) {
-                CopyPlan.planBatch(bundles: bundles, destinationRoot: archiveRoot, description: description, existingPaths: archiveExisting)
+                let targetDirs = Set(bundles.map {
+                    CopyPlan.destinationDirectory(for: $0, destinationRoot: archiveRoot, description: description)
+                })
+                let existing = DestinationIndex.existingFilePaths(in: targetDirs)
+                return CopyPlan.planBatch(bundles: bundles, destinationRoot: archiveRoot, description: description, existingPaths: existing)
             }.value
         } else {
             archivePlans = []

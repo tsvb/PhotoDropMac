@@ -59,6 +59,22 @@ enum CopyPlan {
         return plans
     }
 
+    /// The day-folder a bundle's files land in: `{root}/{yyyy}/{yyyy-MM-dd}[_{desc}]`.
+    /// Shared by `plan` and by the collision scan so both agree on exactly
+    /// which directory a job writes into.
+    static func destinationDirectory(for bundle: AssetBundle, destinationRoot: URL, description: String) -> URL {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = .current
+        let c = cal.dateComponents([.year, .month, .day], from: bundle.primary.dateTaken)
+        let year = c.year ?? 0
+        let yyyymmdd = String(format: "%04d-%02d-%02d", year, c.month ?? 1, c.day ?? 1)
+        let safeDescription = PathPlanner.sanitize(description)
+        let dayFolder = safeDescription.isEmpty ? yyyymmdd : "\(yyyymmdd)_\(safeDescription)"
+        return destinationRoot
+            .appendingPathComponent(String(year), isDirectory: true)
+            .appendingPathComponent(dayFolder, isDirectory: true)
+    }
+
     /// Plan a single bundle. `isTaken` reports whether a candidate destination
     /// path is already spoken for; when any file in the bundle would land on a
     /// taken path, the primary's stem gets a numeric suffix and the whole
@@ -85,13 +101,7 @@ enum CopyPlan {
         let minute = c.minute ?? 0
         let second = c.second ?? 0
 
-        let yyyymmdd = String(format: "%04d-%02d-%02d", year, month, day)
-        let safeDescription = PathPlanner.sanitize(description)
-        let dayFolder = safeDescription.isEmpty ? yyyymmdd : "\(yyyymmdd)_\(safeDescription)"
-        let destDir = destinationRoot
-            .appendingPathComponent(String(year), isDirectory: true)
-            .appendingPathComponent(dayFolder, isDirectory: true)
-
+        let destDir = destinationDirectory(for: bundle, destinationRoot: destinationRoot, description: description)
         let timestamp = String(format: "%04d%02d%02d_%02d%02d%02d", year, month, day, hour, minute, second)
         let baseStem = "\(timestamp)_\(primaryOldStem)"
 
