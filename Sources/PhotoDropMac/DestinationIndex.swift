@@ -13,6 +13,17 @@ import Foundation
 struct DestinationIndex: Sendable {
     let bySize: [Int64: [URL]]
 
+    // Every regular-file path under the destination root, as plain strings.
+    // CopyPlan seeds its collision-avoidance set with this so a new,
+    // different-content file is never planned onto an existing file's name.
+    var existingPaths: Set<String> {
+        var set = Set<String>()
+        for urls in bySize.values {
+            for url in urls { set.insert(url.path) }
+        }
+        return set
+    }
+
     static func build(at root: URL) -> DestinationIndex {
         let fm = FileManager.default
         guard fm.fileExists(atPath: root.path) else {

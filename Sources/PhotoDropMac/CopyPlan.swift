@@ -28,10 +28,52 @@ enum CopyPlan {
     //   - Long-form sidecar (IMG_1234.DNG.xmp) → {newPrimaryName}.xmp
     //   - Short-form sidecar (IMG_1234.xmp)    → {newPrimaryStem}.xmp
     //   - JPEG pair            (IMG_1234.JPG)  → {newPrimaryStem}.JPG
-    static func plan(bundle: AssetBundle, destinationRoot: URL, description: String) -> BundlePlan {
+    //
+    // Two source files whose capture-second *and* original filename collide
+    // (e.g. IMG_0001.JPG from two DCIM folders shot in the same second) would
+    // otherwise plan onto the same destination path and silently overwrite
+    // each other. To prevent that, `planBatch` threads a set of already-claimed
+    // paths through every bundle, and `plan` appends a `_1`, `_2`, …
+    // disambiguator to the primary's stem (with companions following) until the
+    // whole bundle lands on free paths.
+
+    /// Plan a batch of bundles against one destination root, guaranteeing that
+    /// no two planned files — and no planned file vs. a path already present at
+    /// the destination (`existingPaths`) — share a destination path.
+    static func planBatch(
+        bundles: [AssetBundle],
+        destinationRoot: URL,
+        description: String,
+        existingPaths: Set<String> = []
+    ) -> [BundlePlan] {
+        var taken = existingPaths
+        var plans: [BundlePlan] = []
+        plans.reserveCapacity(bundles.count)
+        for bundle in bundles {
+            let bundlePlan = plan(bundle: bundle, destinationRoot: destinationRoot, description: description) { url in
+                taken.contains(url.path)
+            }
+            for file in bundlePlan.files { taken.insert(file.destination.path) }
+            plans.append(bundlePlan)
+        }
+        return plans
+    }
+
+    /// Plan a single bundle. `isTaken` reports whether a candidate destination
+    /// path is already spoken for; when any file in the bundle would land on a
+    /// taken path, the primary's stem gets a numeric suffix and the whole
+    /// bundle is re-derived until every file is free. The default predicate
+    /// (nothing taken) yields the bare, suffix-free names.
+    static func plan(
+        bundle: AssetBundle,
+        destinationRoot: URL,
+        description: String,
+        isTaken: (URL) -> Bool = { _ in false }
+    ) -> BundlePlan {
         let primary = bundle.primary
         let primaryOldName = primary.url.lastPathComponent
         let primaryOldStem = primary.url.deletingPathExtension().lastPathComponent
+        let primaryExt = primary.url.pathExtension
 
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = .current
@@ -51,12 +93,47 @@ enum CopyPlan {
             .appendingPathComponent(dayFolder, isDirectory: true)
 
         let timestamp = String(format: "%04d%02d%02d_%02d%02d%02d", year, month, day, hour, minute, second)
-        let primaryNewName = "\(timestamp)_\(primaryOldName)"
-        let primaryNewStem = "\(timestamp)_\(primaryOldStem)"
-        let primaryDest = destDir.appendingPathComponent(primaryNewName)
+        let baseStem = "\(timestamp)_\(primaryOldStem)"
 
+        // Smallest disambiguator (0 = none) that frees every file in the bundle.
+        // `taken` is a finite set (on-disk + already-claimed), so some `n` is
+        // always free; this terminates.
+        var n = 0
+        while true {
+            let disambiguator = n == 0 ? "" : "_\(n)"
+            let primaryNewStem = baseStem + disambiguator
+            let primaryNewName = primaryExt.isEmpty ? primaryNewStem : "\(primaryNewStem).\(primaryExt)"
+            let files = buildFiles(
+                bundle: bundle,
+                primaryOldName: primaryOldName,
+                primaryNewName: primaryNewName,
+                primaryNewStem: primaryNewStem,
+                destDir: destDir
+            )
+            if !files.contains(where: { isTaken($0.destination) }) {
+                return BundlePlan(bundle: bundle, files: files)
+            }
+            n += 1
+        }
+    }
+
+    // Build the bundle's planned files for a given resolved primary name/stem.
+    // Companion names are always derived from the primary's resolved name, so a
+    // disambiguated primary carries its companions with it.
+    private static func buildFiles(
+        bundle: AssetBundle,
+        primaryOldName: String,
+        primaryNewName: String,
+        primaryNewStem: String,
+        destDir: URL
+    ) -> [PlannedFile] {
         var files: [PlannedFile] = [
-            PlannedFile(source: primary.url, destination: primaryDest, size: primary.size, role: .primary)
+            PlannedFile(
+                source: bundle.primary.url,
+                destination: destDir.appendingPathComponent(primaryNewName),
+                size: bundle.primary.size,
+                role: .primary
+            )
         ]
 
         for companion in bundle.companions {
@@ -82,6 +159,6 @@ enum CopyPlan {
             ))
         }
 
-        return BundlePlan(bundle: bundle, files: files)
+        return files
     }
 }

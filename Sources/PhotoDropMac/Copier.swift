@@ -117,14 +117,13 @@ final class Copier {
             return
         }
 
-        let primaryPlans = allBundles.map { CopyPlan.plan(bundle: $0, destinationRoot: primaryDestination, description: description) }
-        let archivePlans: [BundlePlan] = archiveDestination.map { root in
-            allBundles.map { CopyPlan.plan(bundle: $0, destinationRoot: root, description: description) }
-        } ?? []
-
         totalBundles = allBundles.count
-        totalBytes = primaryPlans.reduce(0) { $0 + $1.totalBytes }
-            + archivePlans.reduce(0) { $0 + $1.totalBytes }
+        // The plans (and thus exact destination filenames) are built later in
+        // run(), once the destination index is known — collision-safe naming
+        // needs to see what's already on disk. Byte totals don't depend on
+        // naming, so we size the progress bar up front straight from the bundles.
+        let perDestinationBytes = allBundles.reduce(Int64(0)) { $0 + $1.totalSize }
+        totalBytes = perDestinationBytes * (archiveDestination == nil ? 1 : 2)
 
         appendLog(.info, "Starting ingest: \(allBundles.count) bundles, \(totalBytes.formatted(.byteCount(style: .file)))\(archiveDestination == nil ? "" : " × 2 destinations")")
         state = .running(currentProgress())
@@ -132,8 +131,8 @@ final class Copier {
         task = Task { [weak self] in
             guard let self else { return }
             await self.run(
-                primaryPlans: primaryPlans,
-                archivePlans: archivePlans,
+                bundles: allBundles,
+                description: description,
                 primaryRoot: primaryDestination,
                 archiveRoot: archiveDestination,
                 verify: verify,
@@ -145,8 +144,8 @@ final class Copier {
     }
 
     private func run(
-        primaryPlans: [BundlePlan],
-        archivePlans: [BundlePlan],
+        bundles: [AssetBundle],
+        description: String,
         primaryRoot: URL,
         archiveRoot: URL?,
         verify: Bool,
@@ -165,6 +164,25 @@ final class Copier {
             }.value
         } else {
             archiveIndex = nil
+        }
+
+        // Build collision-safe plans now that we know what's already at each
+        // destination. Seeding planBatch with the existing paths means a new,
+        // different-content file that would map onto an existing name gets a
+        // "_1" variant instead of overwriting it; the same set also keeps two
+        // same-named source files in this run from colliding with each other.
+        let primaryExisting = primaryIndex.existingPaths
+        let primaryPlans = await Task.detached(priority: .userInitiated) {
+            CopyPlan.planBatch(bundles: bundles, destinationRoot: primaryRoot, description: description, existingPaths: primaryExisting)
+        }.value
+        let archivePlans: [BundlePlan]
+        if let archiveRoot, let archiveIndex {
+            let archiveExisting = archiveIndex.existingPaths
+            archivePlans = await Task.detached(priority: .userInitiated) {
+                CopyPlan.planBatch(bundles: bundles, destinationRoot: archiveRoot, description: description, existingPaths: archiveExisting)
+            }.value
+        } else {
+            archivePlans = []
         }
 
         var haltReason: String?
@@ -301,9 +319,13 @@ final class Copier {
                     continue
                 }
 
-                // Copy + tee-hash
+                // Copy + tee-hash. Register the destination for rollback
+                // *before* the first byte is written: if the copy throws or is
+                // cancelled mid-file, the partial file must be cleaned up too,
+                // not just this bundle's already-completed siblings.
                 let source = file.source
                 let dest = file.destination
+                writtenFiles.append(file.destination)
                 let copyHash = try await Task.detached(priority: .userInitiated) { [weak self] in
                     var buffered: Int64 = 0
                     var lastFlush = Date()
@@ -327,8 +349,6 @@ final class Copier {
                     }
                     return hash
                 }.value
-
-                writtenFiles.append(file.destination)
 
                 // Verification
                 if verify {

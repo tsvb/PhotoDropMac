@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // Pure-Swift xxHash64 (XXH64), per Yann Collet's specification at
 // https://github.com/Cyan4973/xxHash/blob/dev/doc/xxhash_spec.md
@@ -209,10 +210,19 @@ private func rotl(_ x: UInt64, _ r: Int) -> UInt64 {
 extension XxHash64 {
     /// Stream-hash the contents of `url` in fixed-size chunks without loading
     /// the whole file into memory. Intended for multi-GB source files.
-    static func hash(fileAt url: URL, bufferSize: Int = 1 << 20) throws -> UInt64 {
+    static func hash(fileAt url: URL, bufferSize: Int = 1 << 20, bypassCache: Bool = false) throws -> UInt64 {
         precondition(bufferSize > 0, "bufferSize must be positive")
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
+
+        // F_NOCACHE makes reads on this descriptor bypass the unified buffer
+        // cache and come from the device. Copy verification uses it so a
+        // just-written file is re-read from storage rather than from the very
+        // pages we wrote — otherwise a verify pass proves nothing about what
+        // actually landed on disk. Best-effort: a failure here is non-fatal.
+        if bypassCache {
+            _ = fcntl(handle.fileDescriptor, F_NOCACHE, 1)
+        }
 
         var hasher = XxHash64()
         while true {

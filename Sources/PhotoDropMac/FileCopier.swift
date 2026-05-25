@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum FileCopierError: Error, CustomStringConvertible {
     case verificationMismatch(file: URL, expected: UInt64, actual: UInt64)
@@ -78,13 +79,33 @@ enum FileCopier {
             onProgress(Int64(data.count))
         }
 
+        // Flush the written bytes all the way to stable storage before we
+        // return. Closing the handle alone only reaches the OS page cache, so a
+        // verify (or the user ejecting the card) could otherwise act on data
+        // that isn't actually durable on the destination yet.
+        try flushToDisk(outHandle, destination: destination)
+
         return hasher.finalize()
     }
 
+    // Force a file's data to the storage device. F_FULLFSYNC is the only macOS
+    // call that asks the drive to flush its own write cache — plain fsync can
+    // return before the platter/flash is truly written. We fall back to fsync
+    // on volumes that don't support F_FULLFSYNC (some network/external mounts
+    // return ENOTSUP), and surface a write error only if both fail.
+    private static func flushToDisk(_ handle: FileHandle, destination: URL) throws {
+        let fd = handle.fileDescriptor
+        if fcntl(fd, F_FULLFSYNC) == 0 { return }
+        if fsync(fd) == 0 { return }
+        throw FileCopierError.write(destination, NSError(domain: NSPOSIXErrorDomain, code: Int(errno)))
+    }
+
     // Re-hashes `file` and compares against `expected`. Throws
-    // `FileCopierError.verificationMismatch` on disagreement.
+    // `FileCopierError.verificationMismatch` on disagreement. The read bypasses
+    // the page cache so verification reflects what landed on the device, not
+    // the bytes still buffered from the copy.
     static func verify(file: URL, expectedHash: UInt64) throws {
-        let actual = try XxHash64.hash(fileAt: file)
+        let actual = try XxHash64.hash(fileAt: file, bypassCache: true)
         if actual != expectedHash {
             throw FileCopierError.verificationMismatch(file: file, expected: expectedHash, actual: actual)
         }
