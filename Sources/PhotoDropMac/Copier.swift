@@ -44,6 +44,7 @@ struct LogEntry: Sendable, Hashable, Identifiable {
     let timestamp: Date
     let kind: Kind
     let line: String
+    let signature: UInt64?   // xxHash of the verified file; nil for other kinds
 
     enum Kind: Sendable, Hashable {
         case info, copied, skipped, verified, error
@@ -380,7 +381,7 @@ final class Copier {
                     try await Task.detached(priority: .userInitiated) {
                         try FileCopier.verify(file: dest, expectedHash: copyHash)
                     }.value
-                    appendLog(.verified, "\(file.source.lastPathComponent) → \(file.destination.lastPathComponent)  [\(String(format: "%016llx", copyHash))]")
+                    appendLog(.verified, "\(file.source.lastPathComponent) → \(file.destination.lastPathComponent)", signature: copyHash)
                 } else {
                     appendLog(.copied, "\(file.source.lastPathComponent) → \(file.destination.lastPathComponent)")
                 }
@@ -424,8 +425,8 @@ final class Copier {
         )
     }
 
-    private func appendLog(_ kind: LogEntry.Kind, _ message: String) {
-        log.append(LogEntry(timestamp: Date(), kind: kind, line: message))
+    private func appendLog(_ kind: LogEntry.Kind, _ message: String, signature: UInt64? = nil) {
+        log.append(LogEntry(timestamp: Date(), kind: kind, line: message, signature: signature))
         // Cap in-memory log to keep the UI snappy. The on-disk log file
         // written at end-of-job contains the same entries.
         if log.count > 500 {

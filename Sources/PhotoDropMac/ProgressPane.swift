@@ -82,6 +82,9 @@ struct LogView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                            if let signature = entry.signature {
+                                VerifiedSignature(hash: signature)
+                            }
                         }
                         .id(entry.id)
                     }
@@ -104,7 +107,7 @@ struct LogView: View {
         case .info:     return "info.circle"
         case .copied:   return "arrow.down.doc"
         case .skipped:  return "arrow.right.doc"
-        case .verified: return "checkmark.seal"
+        case .verified: return "checkmark.seal.fill"
         case .error:    return "exclamationmark.triangle.fill"
         }
     }
@@ -113,9 +116,27 @@ struct LogView: View {
         switch kind {
         case .error:    return .red
         case .verified: return .green
-        case .skipped:  return .orange
+        case .skipped:  return .secondary
         case .copied:   return .primary
         case .info:     return .secondary
         }
     }
+}
+
+#Preview("Activity log") {
+    LogView(entries: [
+        LogEntry(timestamp: .now, kind: .info,
+                 line: "Starting ingest: 482 bundles, 24.6 GB", signature: nil),
+        LogEntry(timestamp: .now, kind: .copied,
+                 line: "DSCF1839.RAF → 20260417_120002_DSCF1839.RAF", signature: nil),
+        LogEntry(timestamp: .now, kind: .verified,
+                 line: "DSCF1840.RAF → 20260417_120004_DSCF1840.RAF", signature: 0xA3F7_8C12_45D9_7FA3),
+        LogEntry(timestamp: .now, kind: .verified,
+                 line: "DSCF1841.RAF → 20260417_120006_DSCF1841.RAF", signature: 0x2C91_3344_5566_77F9),
+        LogEntry(timestamp: .now, kind: .skipped,
+                 line: "DSCF1842.RAF — already present as 20260417_120008_DSCF1842.RAF", signature: nil),
+        LogEntry(timestamp: .now, kind: .error,
+                 line: "Verify mismatch on DSCF1843.RAF — destination copy deleted", signature: nil),
+    ])
+    .frame(width: 580, height: 220)
 }
