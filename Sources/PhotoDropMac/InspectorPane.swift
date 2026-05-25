@@ -28,7 +28,9 @@ struct InspectorPane: View {
 
             Section {
                 Toggle("Verify copies with xxHash", isOn: $verify)
+                    .toggleStyle(.checkbox)
                 Toggle("Eject card when finished", isOn: $ejectWhenDone)
+                    .toggleStyle(.checkbox)
             } header: {
                 Text("Options")
             } footer: {
