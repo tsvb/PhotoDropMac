@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum FileCopierError: Error, CustomStringConvertible {
     case verificationMismatch(file: URL, expected: UInt64, actual: UInt64)
@@ -78,13 +79,46 @@ enum FileCopier {
             onProgress(Int64(data.count))
         }
 
+        // Flush this file's data out of the page cache before we return.
+        // Required on two counts: the cache-bypassing verify (F_NOCACHE) has to
+        // be able to read the bytes back from the device, and a crash mustn't
+        // lose a file we reported as copied. The stronger drive-cache barrier
+        // (F_FULLFSYNC) is issued once per volume at end of job — see
+        // fullSyncVolume — instead of per file, which would force a full device
+        // flush for every tiny sidecar.
+        try flushToDisk(outHandle, destination: destination)
+
         return hasher.finalize()
     }
 
+    // fsync the file's data through to the filesystem. Throws a write error on
+    // failure — a copy we can't flush is not a copy we can trust.
+    private static func flushToDisk(_ handle: FileHandle, destination: URL) throws {
+        if fsync(handle.fileDescriptor) == 0 { return }
+        throw FileCopierError.write(destination, NSError(domain: NSPOSIXErrorDomain, code: Int(errno)))
+    }
+
+    /// Issue a single drive-cache barrier against the volume `directory` lives
+    /// on. F_FULLFSYNC asks the drive to flush *all* its buffered data to
+    /// permanent storage, so one call — after every file has already been
+    /// fsync'd — makes the whole job durable against power loss, far cheaper
+    /// than a per-file barrier. Best-effort: returns false if the volume
+    /// doesn't support it (some network/external mounts), in which case the
+    /// data is still fsync'd, just not guaranteed past the drive's own cache.
+    @discardableResult
+    static func fullSyncVolume(at directory: URL) -> Bool {
+        let fd = open(directory.path, O_RDONLY)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        return fcntl(fd, F_FULLFSYNC) == 0
+    }
+
     // Re-hashes `file` and compares against `expected`. Throws
-    // `FileCopierError.verificationMismatch` on disagreement.
+    // `FileCopierError.verificationMismatch` on disagreement. The read bypasses
+    // the page cache so verification reflects what landed on the device, not
+    // the bytes still buffered from the copy.
     static func verify(file: URL, expectedHash: UInt64) throws {
-        let actual = try XxHash64.hash(fileAt: file)
+        let actual = try XxHash64.hash(fileAt: file, bypassCache: true)
         if actual != expectedHash {
             throw FileCopierError.verificationMismatch(file: file, expected: expectedHash, actual: actual)
         }

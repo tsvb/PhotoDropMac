@@ -117,14 +117,13 @@ final class Copier {
             return
         }
 
-        let primaryPlans = allBundles.map { CopyPlan.plan(bundle: $0, destinationRoot: primaryDestination, description: description) }
-        let archivePlans: [BundlePlan] = archiveDestination.map { root in
-            allBundles.map { CopyPlan.plan(bundle: $0, destinationRoot: root, description: description) }
-        } ?? []
-
         totalBundles = allBundles.count
-        totalBytes = primaryPlans.reduce(0) { $0 + $1.totalBytes }
-            + archivePlans.reduce(0) { $0 + $1.totalBytes }
+        // The plans (and thus exact destination filenames) are built later in
+        // run(), once the destination index is known — collision-safe naming
+        // needs to see what's already on disk. Byte totals don't depend on
+        // naming, so we size the progress bar up front straight from the bundles.
+        let perDestinationBytes = allBundles.reduce(Int64(0)) { $0 + $1.totalSize }
+        totalBytes = perDestinationBytes * (archiveDestination == nil ? 1 : 2)
 
         appendLog(.info, "Starting ingest: \(allBundles.count) bundles, \(totalBytes.formatted(.byteCount(style: .file)))\(archiveDestination == nil ? "" : " × 2 destinations")")
         state = .running(currentProgress())
@@ -132,8 +131,8 @@ final class Copier {
         task = Task { [weak self] in
             guard let self else { return }
             await self.run(
-                primaryPlans: primaryPlans,
-                archivePlans: archivePlans,
+                bundles: allBundles,
+                description: description,
                 primaryRoot: primaryDestination,
                 archiveRoot: archiveDestination,
                 verify: verify,
@@ -145,8 +144,8 @@ final class Copier {
     }
 
     private func run(
-        primaryPlans: [BundlePlan],
-        archivePlans: [BundlePlan],
+        bundles: [AssetBundle],
+        description: String,
         primaryRoot: URL,
         archiveRoot: URL?,
         verify: Bool,
@@ -165,6 +164,33 @@ final class Copier {
             }.value
         } else {
             archiveIndex = nil
+        }
+
+        // Build collision-safe plans. Collision avoidance only needs to know
+        // which files already sit in the *specific* day-folders this job writes
+        // into — never the whole library — so we scan just those target dirs
+        // fresh, independent of the (cached) dedup index above. Seeding
+        // planBatch with them means a new, different-content file that would map
+        // onto an existing name gets a "_1" variant instead of overwriting it;
+        // planBatch's own in-batch set handles same-run collisions.
+        let primaryPlans = await Task.detached(priority: .userInitiated) {
+            let targetDirs = Set(bundles.map {
+                CopyPlan.destinationDirectory(for: $0, destinationRoot: primaryRoot, description: description)
+            })
+            let existing = DestinationIndex.existingFilePaths(in: targetDirs)
+            return CopyPlan.planBatch(bundles: bundles, destinationRoot: primaryRoot, description: description, existingPaths: existing)
+        }.value
+        let archivePlans: [BundlePlan]
+        if let archiveRoot {
+            archivePlans = await Task.detached(priority: .userInitiated) {
+                let targetDirs = Set(bundles.map {
+                    CopyPlan.destinationDirectory(for: $0, destinationRoot: archiveRoot, description: description)
+                })
+                let existing = DestinationIndex.existingFilePaths(in: targetDirs)
+                return CopyPlan.planBatch(bundles: bundles, destinationRoot: archiveRoot, description: description, existingPaths: existing)
+            }.value
+        } else {
+            archivePlans = []
         }
 
         var haltReason: String?
@@ -215,6 +241,23 @@ final class Copier {
             appendLog(.info, "Ingest cancelled after \(String(format: "%.1fs", elapsed)).")
             state = .cancelled
             return
+        }
+
+        // Device-cache barrier: one F_FULLFSYNC per destination volume now that
+        // every file has been fsync'd to the filesystem. This makes the whole
+        // job durable against power loss before we (optionally) eject — far
+        // cheaper than the per-file full barrier it replaces. Skipped when
+        // nothing new was written (an all-duplicate re-ingest).
+        if filesCopied > 0 {
+            appendLog(.info, "Flushing destinations to disk…")
+            let flushed = await Task.detached(priority: .userInitiated) { () -> Bool in
+                var ok = FileCopier.fullSyncVolume(at: primaryRoot)
+                if let archiveRoot { ok = FileCopier.fullSyncVolume(at: archiveRoot) && ok }
+                return ok
+            }.value
+            if !flushed {
+                appendLog(.error, "Warning: could not force a device-cache flush; copies are written but may not survive an immediate power loss until the OS flushes them.")
+            }
         }
 
         // Optional eject
@@ -301,9 +344,13 @@ final class Copier {
                     continue
                 }
 
-                // Copy + tee-hash
+                // Copy + tee-hash. Register the destination for rollback
+                // *before* the first byte is written: if the copy throws or is
+                // cancelled mid-file, the partial file must be cleaned up too,
+                // not just this bundle's already-completed siblings.
                 let source = file.source
                 let dest = file.destination
+                writtenFiles.append(file.destination)
                 let copyHash = try await Task.detached(priority: .userInitiated) { [weak self] in
                     var buffered: Int64 = 0
                     var lastFlush = Date()
@@ -327,8 +374,6 @@ final class Copier {
                     }
                     return hash
                 }.value
-
-                writtenFiles.append(file.destination)
 
                 // Verification
                 if verify {
