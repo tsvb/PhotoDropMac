@@ -79,25 +79,38 @@ enum FileCopier {
             onProgress(Int64(data.count))
         }
 
-        // Flush the written bytes all the way to stable storage before we
-        // return. Closing the handle alone only reaches the OS page cache, so a
-        // verify (or the user ejecting the card) could otherwise act on data
-        // that isn't actually durable on the destination yet.
+        // Flush this file's data out of the page cache before we return.
+        // Required on two counts: the cache-bypassing verify (F_NOCACHE) has to
+        // be able to read the bytes back from the device, and a crash mustn't
+        // lose a file we reported as copied. The stronger drive-cache barrier
+        // (F_FULLFSYNC) is issued once per volume at end of job — see
+        // fullSyncVolume — instead of per file, which would force a full device
+        // flush for every tiny sidecar.
         try flushToDisk(outHandle, destination: destination)
 
         return hasher.finalize()
     }
 
-    // Force a file's data to the storage device. F_FULLFSYNC is the only macOS
-    // call that asks the drive to flush its own write cache — plain fsync can
-    // return before the platter/flash is truly written. We fall back to fsync
-    // on volumes that don't support F_FULLFSYNC (some network/external mounts
-    // return ENOTSUP), and surface a write error only if both fail.
+    // fsync the file's data through to the filesystem. Throws a write error on
+    // failure — a copy we can't flush is not a copy we can trust.
     private static func flushToDisk(_ handle: FileHandle, destination: URL) throws {
-        let fd = handle.fileDescriptor
-        if fcntl(fd, F_FULLFSYNC) == 0 { return }
-        if fsync(fd) == 0 { return }
+        if fsync(handle.fileDescriptor) == 0 { return }
         throw FileCopierError.write(destination, NSError(domain: NSPOSIXErrorDomain, code: Int(errno)))
+    }
+
+    /// Issue a single drive-cache barrier against the volume `directory` lives
+    /// on. F_FULLFSYNC asks the drive to flush *all* its buffered data to
+    /// permanent storage, so one call — after every file has already been
+    /// fsync'd — makes the whole job durable against power loss, far cheaper
+    /// than a per-file barrier. Best-effort: returns false if the volume
+    /// doesn't support it (some network/external mounts), in which case the
+    /// data is still fsync'd, just not guaranteed past the drive's own cache.
+    @discardableResult
+    static func fullSyncVolume(at directory: URL) -> Bool {
+        let fd = open(directory.path, O_RDONLY)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        return fcntl(fd, F_FULLFSYNC) == 0
     }
 
     // Re-hashes `file` and compares against `expected`. Throws

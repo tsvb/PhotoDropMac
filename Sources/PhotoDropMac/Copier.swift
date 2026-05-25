@@ -235,6 +235,23 @@ final class Copier {
             return
         }
 
+        // Device-cache barrier: one F_FULLFSYNC per destination volume now that
+        // every file has been fsync'd to the filesystem. This makes the whole
+        // job durable against power loss before we (optionally) eject — far
+        // cheaper than the per-file full barrier it replaces. Skipped when
+        // nothing new was written (an all-duplicate re-ingest).
+        if filesCopied > 0 {
+            appendLog(.info, "Flushing destinations to disk…")
+            let flushed = await Task.detached(priority: .userInitiated) { () -> Bool in
+                var ok = FileCopier.fullSyncVolume(at: primaryRoot)
+                if let archiveRoot { ok = FileCopier.fullSyncVolume(at: archiveRoot) && ok }
+                return ok
+            }.value
+            if !flushed {
+                appendLog(.error, "Warning: could not force a device-cache flush; copies are written but may not survive an immediate power loss until the OS flushes them.")
+            }
+        }
+
         // Optional eject
         var didEject = false
         if haltReason == nil, ejectAfter, let mountPoint = sourceMountPoint {
