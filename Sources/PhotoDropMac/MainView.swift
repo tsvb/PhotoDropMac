@@ -220,7 +220,7 @@ struct DetailPane: View {
             ContentUnavailableView {
                 Label("Ingest cancelled", systemImage: "xmark.octagon")
             } description: {
-                Text("Partial files from the current bundle were rolled back.")
+                Text(cancelledDescription)
             } actions: {
                 Button("Reset") { copier.reset() }
                     .buttonStyle(.borderedProminent)
@@ -228,8 +228,9 @@ struct DetailPane: View {
         case .failed(let msg):
             ContentUnavailableView {
                 Label("Ingest failed", systemImage: "exclamationmark.triangle.fill")
+                    .symbolRenderingMode(.multicolor)
             } description: {
-                Text(msg)
+                Text(failedDescription(msg))
             } actions: {
                 Button("Reset") { copier.reset() }
                     .buttonStyle(.borderedProminent)
@@ -237,6 +238,27 @@ struct DetailPane: View {
         case .idle, .completed:
             idleContent
         }
+    }
+
+    private var cancelledDescription: String {
+        let n = copier.verifiedBundles
+        var s = "Partial files from the current bundle were rolled back."
+        if n > 0 {
+            s += " The \(n) already-verified bundle\(n == 1 ? " is" : "s are") safe on disk."
+        }
+        return s
+    }
+
+    private func failedDescription(_ message: String) -> String {
+        let n = copier.verifiedBundles
+        var s = message
+        if n > 0 {
+            s += " The \(n) already-verified bundle\(n == 1 ? " is" : "s are") safe on disk —"
+            s += " the failing file is still on the card."
+        } else {
+            s += " The failing file is still on the card."
+        }
+        return s
     }
 
     @ViewBuilder

@@ -64,6 +64,9 @@ enum CopierState: Equatable {
 final class Copier {
     private(set) var state: CopierState = .idle
     private(set) var log: [LogEntry] = []
+    // Bundles fully copied + verified so far — surfaced in the cancelled/failed
+    // states to reassure the user what is safely on disk.
+    private(set) var verifiedBundles: Int = 0
 
     var isRunning: Bool {
         if case .running = state { return true }
@@ -107,6 +110,7 @@ final class Copier {
         startedAt = Date()
         bytesCopied = 0
         completedBundles = 0
+        verifiedBundles = 0
         filesCopied = 0
         filesSkipped = 0
         filesFailed = 0
@@ -208,6 +212,7 @@ final class Copier {
                 }
 
                 completedBundles += 1
+                verifiedBundles += 1
                 state = .running(currentProgress())
             } catch is CancellationError {
                 haltReason = "cancelled"
