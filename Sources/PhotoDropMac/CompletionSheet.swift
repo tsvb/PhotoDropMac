@@ -57,25 +57,28 @@ struct CompletionSheet: View {
     }
 
     private var subtitle: String {
-        let base = baseSummary
+        // Failure leads with the failed count and omits the eject line — the
+        // user needs to retry from the card.
+        if result.filesFailed > 0 {
+            let n = result.filesFailed
+            return "\(n) file\(n == 1 ? "" : "s") failed — see log for details."
+        }
+
+        var base: String
+        if result.filesCopied == 0, result.filesSkipped > 0 {
+            base = "Everything was already there — nothing new to copy."
+        } else if result.filesCopied > 0, result.filesSkipped > 0 {
+            base = "\(result.filesCopied) copied, \(result.filesSkipped) already present."
+        } else if result.filesCopied > 0 {
+            base = "All files copied and verified."
+        } else {
+            base = "Ingest complete."
+        }
+
         if result.wasEjected {
-            return "\(base) Card ejected — safe to remove."
+            base += " Card ejected — safe to remove."
         }
         return base
-    }
-
-    private var baseSummary: String {
-        if result.filesFailed > 0 {
-            return "Some files failed — see log for details."
-        } else if result.filesCopied == 0, result.filesSkipped > 0 {
-            return "Everything was already there — nothing new to copy."
-        } else if result.filesCopied > 0, result.filesSkipped > 0 {
-            return "\(result.filesCopied) copied, \(result.filesSkipped) already present."
-        } else if result.filesCopied > 0 {
-            return "All files copied and verified."
-        } else {
-            return "Ingest complete."
-        }
     }
 
     @ViewBuilder
@@ -127,4 +130,31 @@ struct CompletionSheet: View {
         let mib = Double(result.totalBytes) / result.elapsedSeconds / (1024 * 1024)
         return "\(mib.formatted(.number.precision(.fractionLength(1)))) MB/s"
     }
+}
+
+private func previewResult(copied: Int, skipped: Int, failed: Int, ejected: Bool, log: Bool) -> CopyResult {
+    CopyResult(
+        bundleCount: copied + skipped + failed,
+        filesCopied: copied, filesSkipped: skipped, filesFailed: failed,
+        totalBytes: 26_400_000_000, elapsedSeconds: 642,
+        primaryDestination: URL(fileURLWithPath: "/Users/you/Pictures/Library"),
+        logURL: log ? URL(fileURLWithPath: "/tmp/ingest.log") : nil,
+        wasEjected: ejected, halted: false, haltReason: nil
+    )
+}
+
+#Preview("Complete — clean") {
+    CompletionSheet(result: previewResult(copied: 482, skipped: 0, failed: 0, ejected: true, log: true), onDismiss: {})
+}
+
+#Preview("Complete — with skips") {
+    CompletionSheet(result: previewResult(copied: 120, skipped: 362, failed: 0, ejected: true, log: true), onDismiss: {})
+}
+
+#Preview("Complete — only dupes") {
+    CompletionSheet(result: previewResult(copied: 0, skipped: 482, failed: 0, ejected: true, log: false), onDismiss: {})
+}
+
+#Preview("Complete — with errors") {
+    CompletionSheet(result: previewResult(copied: 480, skipped: 0, failed: 2, ejected: false, log: true), onDismiss: {})
 }
