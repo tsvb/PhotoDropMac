@@ -17,36 +17,48 @@ struct ProgressPane: View {
     }
 
     private var progressCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Ingesting… \(Int(progress.percent * 100))%")
-                    .font(.headline)
-                    .monospacedDigit()
-                Spacer()
-                Button("Cancel", role: .destructive, action: onCancel)
-                    .controlSize(.small)
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Ingesting… \(Int(progress.percent * 100))%")
+                        .font(.headline)
+                        .monospacedDigit()
+                    Spacer()
+                    Button("Cancel", role: .destructive, action: onCancel)
+                        .controlSize(.small)
+                }
+
+                ProgressView(value: progress.percent)
+                    .progressViewStyle(.linear)
+
+                HStack(spacing: 10) {
+                    Text("Bundle \(min(progress.completedBundles + 1, progress.totalBundles)) of \(progress.totalBundles)")
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(throughput)
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(etaText)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+
+                if !progress.currentFile.isEmpty {
+                    Text(progress.currentFile)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
 
-            ProgressView(value: progress.percent)
-                .progressViewStyle(.linear)
-
-            HStack(spacing: 10) {
-                Text("Bundle \(min(progress.completedBundles + 1, progress.totalBundles)) of \(progress.totalBundles)")
-                Text("·").foregroundStyle(.tertiary)
-                Text(throughput)
-                Text("·").foregroundStyle(.tertiary)
-                Text(etaText)
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
-
-            if !progress.currentFile.isEmpty {
-                Text(progress.currentFile)
-                    .font(.caption)
+            // Seal-grid trust badge — fills cell-by-cell as the job verifies.
+            VStack(spacing: 4) {
+                SealGrid(progress: progress.percent)
+                    .frame(width: 52, height: 52)
+                Text("VERIFIED")
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.5)
                     .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
         }
     }
@@ -139,4 +151,21 @@ struct LogView: View {
                  line: "Verify mismatch on DSCF1843.RAF — destination copy deleted", signature: nil),
     ])
     .frame(width: 580, height: 220)
+}
+
+#Preview("Progress pane") {
+    ProgressPane(
+        progress: CopyProgress(
+            totalBundles: 482, completedBundles: 311,
+            totalBytes: 26_400_000_000, bytesCopied: 17_000_000_000,
+            elapsedSeconds: 442, currentFile: "108_FUJI/DSCF1840.RAF"
+        ),
+        log: [
+            LogEntry(timestamp: .now, kind: .copied, line: "DSCF1838.RAF → 20260417_120000_DSCF1838.RAF", signature: nil),
+            LogEntry(timestamp: .now, kind: .verified, line: "DSCF1839.RAF → 20260417_120002_DSCF1839.RAF", signature: 0xA3F7_8C12_45D9_7FA3),
+            LogEntry(timestamp: .now, kind: .skipped, line: "DSCF1840.RAF — already present as 20260417_120004_DSCF1840.RAF", signature: nil),
+        ],
+        onCancel: {}
+    )
+    .frame(width: 760, height: 460)
 }

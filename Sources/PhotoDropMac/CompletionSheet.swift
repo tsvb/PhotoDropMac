@@ -7,10 +7,15 @@ struct CompletionSheet: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: hadIssues ? "exclamationmark.octagon.fill" : "checkmark.seal.fill")
-                .font(.system(size: 56))
-                .foregroundStyle(hadIssues ? Color.orange : Color.accentColor)
-                .symbolRenderingMode(.hierarchical)
+            if hadIssues {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.orange)
+                    .symbolRenderingMode(.hierarchical)
+            } else {
+                SealGrid(progress: 1, pulse: true)
+                    .frame(width: 56, height: 56)
+            }
 
             VStack(spacing: 4) {
                 Text(title)
