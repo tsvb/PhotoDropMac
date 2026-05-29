@@ -22,6 +22,9 @@ struct StampMark: View {
     var progress: Double
     /// On completion the ring fills + stamps a check in the centre.
     var stamped: Bool = false
+    /// Fill colour for verified ticks and the stamp. Defaults to the system
+    /// accent; callers pass the active theme's resolved accent.
+    var accent: Color = .accentColor
 
     private let tickCount = 24
 
@@ -61,7 +64,7 @@ struct StampMark: View {
                 let isFilled = i < filled
                 ctx.stroke(
                     path,
-                    with: .color(isFilled ? .accentColor : .primary.opacity(0.08)),
+                    with: .color(isFilled ? accent : .primary.opacity(0.08)),
                     style: .init(lineWidth: isFilled ? 1.6 : 1, lineCap: .round)
                 )
             }
@@ -71,11 +74,11 @@ struct StampMark: View {
                 // Stamped check, drawn with accent-tinted disk + heavy check.
                 ZStack {
                     Circle()
-                        .fill(Color.accentColor.opacity(0.10))
+                        .fill(accent.opacity(0.10))
                         .padding(8)
                     Image(systemName: "checkmark")
                         .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(accent)
                 }
             } else {
                 Text("\(Int(progress * 100))")

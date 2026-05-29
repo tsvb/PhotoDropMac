@@ -76,13 +76,13 @@ struct ProgressPane: View {
             VStack(spacing: 4) {
                 switch verificationStyle {
                 case .ledger:
-                    StampMark(progress: progress.percent)
+                    StampMark(progress: progress.percent, accent: verificationStyle.resolvedAccent)
                         .frame(width: 52, height: 52)
                 case .pressroom:
-                    ApertureMark(progress: progress.percent)
+                    ApertureMark(progress: progress.percent, accent: verificationStyle.resolvedAccent)
                         .frame(width: 52, height: 52)
                 case .steady:
-                    SealGrid(progress: progress.percent)
+                    SealGrid(progress: progress.percent, accent: verificationStyle.resolvedAccent)
                         .frame(width: 52, height: 52)
                 }
                 Text("VERIFIED")

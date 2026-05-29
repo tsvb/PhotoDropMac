@@ -18,13 +18,13 @@ struct CompletionSheet: View {
                 // Success hero — the mark depends on the verification style.
                 switch verificationStyle {
                 case .ledger:
-                    StampMark(progress: 1, stamped: true)
+                    StampMark(progress: 1, stamped: true, accent: verificationStyle.resolvedAccent)
                         .frame(width: 72, height: 72)
                 case .pressroom:
-                    ApertureMark(progress: 1, closed: true)
+                    ApertureMark(progress: 1, closed: true, accent: verificationStyle.resolvedAccent)
                         .frame(width: 72, height: 72)
                 case .steady:
-                    SealGrid(progress: 1, pulse: true)
+                    SealGrid(progress: 1, pulse: true, accent: verificationStyle.resolvedAccent)
                         .frame(width: 56, height: 56)
                 }
             }

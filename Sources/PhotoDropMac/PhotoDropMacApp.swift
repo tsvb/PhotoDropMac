@@ -14,6 +14,8 @@ struct PhotoDropMacApp: App {
                 .environment(watcher)
                 .environment(coordinator)
                 .tint(theme.accent)
+                .fontDesign(theme.fontDesign)
+                .preferredColorScheme(theme.colorScheme)
         }
         .defaultSize(width: 1020, height: 700)
         .windowToolbarStyle(.unified)
@@ -33,6 +35,8 @@ struct PhotoDropMacApp: App {
         Settings {
             SettingsView()
                 .tint(theme.accent)
+                .fontDesign(theme.fontDesign)
+                .preferredColorScheme(theme.colorScheme)
         }
     }
 

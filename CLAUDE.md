@@ -82,7 +82,12 @@ Preferences are plain `@AppStorage` keys with **no central store** — the same 
 - `photodrop.verifyCopies` (Bool, default `true`)
 - `photodrop.ejectAfterIngest` (Bool, default `false`)
 - `photodrop.showCompletionSheet` (Bool, default `true`)
-- `photodrop.verificationStyle` (`VerificationStyle` rawValue, default `.steady`) — the app **theme**: `.steady` (SealGrid, system accent) · `.ledger` (StampMark + serif headline, system accent) · `.pressroom` (ApertureMark + monospaced labels + a full **marigold repaint**). Per-theme colour lives in [VerificationStyle+Theme.swift](Sources/PhotoDropMac/VerificationStyle+Theme.swift): `accent` (`Color?`, non-nil only for Pressroom) is applied via `.tint()` at the app root ([PhotoDropMacApp.swift](Sources/PhotoDropMac/PhotoDropMacApp.swift)) so every standard control follows it, and `resolvedAccent` recolours the explicit-accent icons (`SidebarRow`, `FolderRow`) that `.tint` doesn't reach. The mark/headline switches are inline in `ProgressPane`/`CompletionSheet`.
+- `photodrop.verificationStyle` (`VerificationStyle` rawValue, default `.steady`) — the app **theme**, a committed identity per option (not just an accent):
+  - `.steady` — the system look: your accent, your light/dark, SF Pro. The no-transformation default.
+  - `.ledger` — editorial: forced **light**, **serif** type, **ultramarine** ink (`#120A8F`), wax-seal `StampMark`.
+  - `.pressroom` — wire desk: forced **dark**, **monospaced** type, **marigold** accent, aperture-iris mark.
+
+  Each theme's `accent` / `fontDesign` / `colorScheme` live in [VerificationStyle+Theme.swift](Sources/PhotoDropMac/VerificationStyle+Theme.swift) and are applied together via `.tint()` / `.fontDesign()` / `.preferredColorScheme()` at the app root ([PhotoDropMacApp.swift](Sources/PhotoDropMac/PhotoDropMacApp.swift)). `resolvedAccent` recolours the explicit-accent icons (`SidebarRow`, `FolderRow`) and the verification marks (`SealGrid`/`StampMark`/`ApertureMark` take an `accent:` param) that `.tint` doesn't reach. Mark/headline switches are inline in `ProgressPane`/`CompletionSheet`.
 - `photodrop.menuBar.visibility` (`MenuBarVisibility` rawValue, default `.always`)
 - `photodrop.menuBar.autoOpenWindow` (Bool, default `true`)
 - `photodrop.menuBar.oneClickIngest` (Bool, default `false`)

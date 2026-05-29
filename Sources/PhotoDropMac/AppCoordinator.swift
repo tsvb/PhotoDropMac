@@ -45,9 +45,9 @@ enum VerificationStyle: String, CaseIterable, Identifiable {
 
     var detail: String {
         switch self {
-        case .steady:    return "Seal grid and your system accent — the default."
-        case .ledger:    return "Wax-seal stamp ring and a serif headline; system accent."
-        case .pressroom: return "A full marigold repaint — aperture iris and monospaced labels."
+        case .steady:    return "The system look — your accent colour, light or dark."
+        case .ledger:    return "Editorial: light paper, serif type, ultramarine ink."
+        case .pressroom: return "Wire desk: dark, monospaced type, marigold accent."
         }
     }
 }
