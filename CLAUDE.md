@@ -82,7 +82,7 @@ Preferences are plain `@AppStorage` keys with **no central store** — the same 
 - `photodrop.verifyCopies` (Bool, default `true`)
 - `photodrop.ejectAfterIngest` (Bool, default `false`)
 - `photodrop.showCompletionSheet` (Bool, default `true`)
-- `photodrop.verificationStyle` (`VerificationStyle` rawValue, default `.steady`) — `.steady` (SealGrid) · `.ledger` (StampMark + serif headline) · `.pressroom` (ApertureMark + marigold tint + monospaced labels). Per-theme accent/colour mapping lives in [VerificationStyle+Theme.swift](Sources/PhotoDropMac/VerificationStyle+Theme.swift); the mark/headline switches are inline in `ProgressPane`/`CompletionSheet`.
+- `photodrop.verificationStyle` (`VerificationStyle` rawValue, default `.steady`) — the app **theme**: `.steady` (SealGrid, system accent) · `.ledger` (StampMark + serif headline, system accent) · `.pressroom` (ApertureMark + monospaced labels + a full **marigold repaint**). Per-theme colour lives in [VerificationStyle+Theme.swift](Sources/PhotoDropMac/VerificationStyle+Theme.swift): `accent` (`Color?`, non-nil only for Pressroom) is applied via `.tint()` at the app root ([PhotoDropMacApp.swift](Sources/PhotoDropMac/PhotoDropMacApp.swift)) so every standard control follows it, and `resolvedAccent` recolours the explicit-accent icons (`SidebarRow`, `FolderRow`) that `.tint` doesn't reach. The mark/headline switches are inline in `ProgressPane`/`CompletionSheet`.
 - `photodrop.menuBar.visibility` (`MenuBarVisibility` rawValue, default `.always`)
 - `photodrop.menuBar.autoOpenWindow` (Bool, default `true`)
 - `photodrop.menuBar.oneClickIngest` (Bool, default `false`)

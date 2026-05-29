@@ -197,12 +197,13 @@ struct Sidebar: View {
 
 struct SidebarRow: View {
     let card: DetectedDrive
+    @AppStorage("photodrop.verificationStyle") private var theme = VerificationStyle.steady
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "sdcard.fill")
                 .font(.system(size: 18))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(theme.resolvedAccent)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 1) {
                 Text(card.label)

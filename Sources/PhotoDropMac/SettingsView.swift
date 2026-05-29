@@ -2,6 +2,8 @@ import SwiftUI
 import AppKit
 
 struct SettingsView: View {
+    @AppStorage("photodrop.verificationStyle") private var theme = VerificationStyle.steady
+
     var body: some View {
         TabView {
             GeneralPreferences()
@@ -12,6 +14,7 @@ struct SettingsView: View {
                 .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
         }
         .frame(width: 520, height: 360)
+        .tint(theme.accent)
     }
 }
 
@@ -36,7 +39,7 @@ struct GeneralPreferences: View {
             }
 
             Section {
-                Picker("Verification mark", selection: $verificationStyle) {
+                Picker("Theme", selection: $verificationStyle) {
                     ForEach(VerificationStyle.allCases) { style in
                         Text(style.label).tag(style)
                     }

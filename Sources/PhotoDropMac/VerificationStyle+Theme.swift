@@ -21,6 +21,12 @@ extension VerificationStyle {
         case .steady, .ledger: return nil
         }
     }
+
+    /// Non-optional accent for views that set an explicit foreground colour —
+    /// icons drawn with `Color.accentColor`, which does not follow `.tint`.
+    /// Resolves to the theme colour, or the system accent when the theme
+    /// defers to it (Steady, Ledger).
+    var resolvedAccent: Color { accent ?? .accentColor }
 }
 
 extension Color {
