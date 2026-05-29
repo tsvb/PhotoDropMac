@@ -26,3 +26,26 @@ enum MenuBarVisibility: String, CaseIterable, Identifiable {
         }
     }
 }
+
+// The verification motif used in the progress pane and completion sheet.
+// Steady = the SealGrid (4×4 parts grid); Ledger = the StampMark (24-tick wax
+// seal) plus a serif headline. Persisted via @AppStorage as its rawValue.
+enum VerificationStyle: String, CaseIterable, Identifiable {
+    case steady, ledger
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .steady: return "Steady"
+        case .ledger: return "Ledger"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .steady: return "A 4×4 seal grid that fills as bundles verify."
+        case .ledger: return "A 24-tick stamp ring with a serif headline."
+        }
+    }
+}

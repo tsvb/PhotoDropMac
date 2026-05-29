@@ -82,3 +82,9 @@ Preferences are plain `@AppStorage` keys with **no central store** — the same 
 - `photodrop.verifyCopies` (Bool, default `true`)
 - `photodrop.ejectAfterIngest` (Bool, default `false`)
 - `photodrop.showCompletionSheet` (Bool, default `true`)
+- `photodrop.verificationStyle` (`VerificationStyle` rawValue, default `.steady`) — `.steady` (SealGrid) vs `.ledger` (StampMark + serif headline)
+- `photodrop.menuBar.visibility` (`MenuBarVisibility` rawValue, default `.always`)
+- `photodrop.menuBar.autoOpenWindow` (Bool, default `true`)
+- `photodrop.menuBar.oneClickIngest` (Bool, default `false`)
+
+The enum-typed keys (`VerificationStyle`, `MenuBarVisibility`) get their `String`-backed type from [AppCoordinator.swift](Sources/PhotoDropMac/AppCoordinator.swift), which is the one definition site shared by every `@AppStorage` declaration.

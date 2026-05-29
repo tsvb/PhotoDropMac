@@ -5,6 +5,8 @@ struct CompletionSheet: View {
     let result: CopyResult
     let onDismiss: () -> Void
 
+    @AppStorage("photodrop.verificationStyle") private var verificationStyle = VerificationStyle.steady
+
     var body: some View {
         VStack(spacing: 20) {
             if hadIssues {
@@ -12,6 +14,10 @@ struct CompletionSheet: View {
                     .font(.system(size: 48))
                     .foregroundStyle(.orange)
                     .symbolRenderingMode(.hierarchical)
+            } else if verificationStyle == .ledger {
+                // Ledger: the wax-seal stamp ring is the hero glyph.
+                StampMark(progress: 1, stamped: true)
+                    .frame(width: 72, height: 72)
             } else {
                 SealGrid(progress: 1, pulse: true)
                     .frame(width: 56, height: 56)
@@ -19,7 +25,7 @@ struct CompletionSheet: View {
 
             VStack(spacing: 4) {
                 Text(title)
-                    .font(.title2.weight(.semibold))
+                    .font(titleFont)
                 Text(subtitle)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -48,6 +54,14 @@ struct CompletionSheet: View {
     }
 
     private var hadIssues: Bool { result.filesFailed > 0 }
+
+    // Ledger swaps the SF Pro semibold headline for a regular-weight system
+    // serif (New York) — the "single moment of typographic warmth".
+    private var titleFont: Font {
+        verificationStyle == .ledger
+            ? .system(.title, design: .serif)
+            : .title2.weight(.semibold)
+    }
 
     private var title: String {
         if hadIssues {

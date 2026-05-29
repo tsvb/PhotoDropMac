@@ -5,6 +5,8 @@ struct ProgressPane: View {
     let log: [LogEntry]
     let onCancel: () -> Void
 
+    @AppStorage("photodrop.verificationStyle") private var verificationStyle = VerificationStyle.steady
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             progressCard
@@ -20,9 +22,18 @@ struct ProgressPane: View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Ingesting… \(Int(progress.percent * 100))%")
-                        .font(.headline)
-                        .monospacedDigit()
+                    Group {
+                        if verificationStyle == .ledger {
+                            // Ledger: serif italic verb + monospaced percent.
+                            Text("Ingesting ").font(.system(.title3, design: .serif).italic())
+                                + Text("\(Int(progress.percent * 100))%")
+                                    .font(.system(.title3, design: .monospaced))
+                        } else {
+                            Text("Ingesting… \(Int(progress.percent * 100))%")
+                                .font(.headline)
+                        }
+                    }
+                    .monospacedDigit()
                     Spacer()
                     Button("Cancel", role: .destructive, action: onCancel)
                         .controlSize(.small)
@@ -51,10 +62,16 @@ struct ProgressPane: View {
                 }
             }
 
-            // Seal-grid trust badge — fills cell-by-cell as the job verifies.
+            // Trust badge — fills as the job verifies. SealGrid (Steady) or the
+            // stamp ring (Ledger), per the verification-style setting.
             VStack(spacing: 4) {
-                SealGrid(progress: progress.percent)
-                    .frame(width: 52, height: 52)
+                if verificationStyle == .ledger {
+                    StampMark(progress: progress.percent)
+                        .frame(width: 52, height: 52)
+                } else {
+                    SealGrid(progress: progress.percent)
+                        .frame(width: 52, height: 52)
+                }
                 Text("VERIFIED")
                     .font(.system(size: 9, weight: .semibold))
                     .tracking(0.5)

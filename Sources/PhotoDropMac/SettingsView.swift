@@ -18,6 +18,7 @@ struct SettingsView: View {
 struct GeneralPreferences: View {
     @AppStorage("photodrop.primaryDestination") private var primary: String = ""
     @AppStorage("photodrop.archiveDestination") private var archive: String = ""
+    @AppStorage("photodrop.verificationStyle") private var verificationStyle = VerificationStyle.steady
 
     var body: some View {
         Form {
@@ -32,6 +33,21 @@ struct GeneralPreferences: View {
                     path: $archive,
                     prompt: "Second copy location"
                 )
+            }
+
+            Section {
+                Picker("Verification mark", selection: $verificationStyle) {
+                    ForEach(VerificationStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text(verificationStyle.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
