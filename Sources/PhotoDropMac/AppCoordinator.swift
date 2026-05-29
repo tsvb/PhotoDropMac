@@ -31,21 +31,23 @@ enum MenuBarVisibility: String, CaseIterable, Identifiable {
 // Steady = the SealGrid (4×4 parts grid); Ledger = the StampMark (24-tick wax
 // seal) plus a serif headline. Persisted via @AppStorage as its rawValue.
 enum VerificationStyle: String, CaseIterable, Identifiable {
-    case steady, ledger
+    case steady, ledger, pressroom
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .steady: return "Steady"
-        case .ledger: return "Ledger"
+        case .steady:    return "Steady"
+        case .ledger:    return "Ledger"
+        case .pressroom: return "Pressroom"
         }
     }
 
     var detail: String {
         switch self {
-        case .steady: return "A 4×4 seal grid that fills as bundles verify."
-        case .ledger: return "A 24-tick stamp ring with a serif headline."
+        case .steady:    return "A 4×4 seal grid that fills as bundles verify."
+        case .ledger:    return "A 24-tick stamp ring with a serif headline."
+        case .pressroom: return "An aperture iris in marigold, with monospaced labels."
         }
     }
 }

@@ -16,6 +16,7 @@ struct ProgressPane: View {
             Divider()
             LogView(entries: log)
         }
+        .tint(verificationStyle.accent)
     }
 
     private var progressCard: some View {
@@ -23,12 +24,20 @@ struct ProgressPane: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Group {
-                        if verificationStyle == .ledger {
-                            // Ledger: serif italic verb + monospaced percent.
+                        switch verificationStyle {
+                        case .ledger:
+                            // Serif italic verb + monospaced percent.
                             Text("Ingesting ").font(.system(.title3, design: .serif).italic())
                                 + Text("\(Int(progress.percent * 100))%")
                                     .font(.system(.title3, design: .monospaced))
-                        } else {
+                        case .pressroom:
+                            // Wire-dispatch: uppercase tracked mono verb + percent.
+                            Text("INGESTING ")
+                                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                                .tracking(2)
+                                + Text("\(Int(progress.percent * 100))%")
+                                    .font(.system(.subheadline, design: .monospaced).weight(.bold))
+                        case .steady:
                             Text("Ingesting… \(Int(progress.percent * 100))%")
                                 .font(.headline)
                         }
@@ -62,13 +71,17 @@ struct ProgressPane: View {
                 }
             }
 
-            // Trust badge — fills as the job verifies. SealGrid (Steady) or the
-            // stamp ring (Ledger), per the verification-style setting.
+            // Trust badge — fills as the job verifies. The mark depends on the
+            // verification-style setting: seal grid, stamp ring, or aperture.
             VStack(spacing: 4) {
-                if verificationStyle == .ledger {
+                switch verificationStyle {
+                case .ledger:
                     StampMark(progress: progress.percent)
                         .frame(width: 52, height: 52)
-                } else {
+                case .pressroom:
+                    ApertureMark(progress: progress.percent)
+                        .frame(width: 52, height: 52)
+                case .steady:
                     SealGrid(progress: progress.percent)
                         .frame(width: 52, height: 52)
                 }

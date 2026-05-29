@@ -14,18 +14,25 @@ struct CompletionSheet: View {
                     .font(.system(size: 48))
                     .foregroundStyle(.orange)
                     .symbolRenderingMode(.hierarchical)
-            } else if verificationStyle == .ledger {
-                // Ledger: the wax-seal stamp ring is the hero glyph.
-                StampMark(progress: 1, stamped: true)
-                    .frame(width: 72, height: 72)
             } else {
-                SealGrid(progress: 1, pulse: true)
-                    .frame(width: 56, height: 56)
+                // Success hero — the mark depends on the verification style.
+                switch verificationStyle {
+                case .ledger:
+                    StampMark(progress: 1, stamped: true)
+                        .frame(width: 72, height: 72)
+                case .pressroom:
+                    ApertureMark(progress: 1, closed: true)
+                        .frame(width: 72, height: 72)
+                case .steady:
+                    SealGrid(progress: 1, pulse: true)
+                        .frame(width: 56, height: 56)
+                }
             }
 
             VStack(spacing: 4) {
-                Text(title)
+                Text(verificationStyle == .pressroom ? title.uppercased() : title)
                     .font(titleFont)
+                    .tracking(verificationStyle == .pressroom ? 2 : 0)
                 Text(subtitle)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -51,6 +58,7 @@ struct CompletionSheet: View {
         }
         .padding(32)
         .frame(minWidth: 440, idealWidth: 480)
+        .tint(verificationStyle.accent)
     }
 
     private var hadIssues: Bool { result.filesFailed > 0 }
@@ -58,9 +66,11 @@ struct CompletionSheet: View {
     // Ledger swaps the SF Pro semibold headline for a regular-weight system
     // serif (New York) — the "single moment of typographic warmth".
     private var titleFont: Font {
-        verificationStyle == .ledger
-            ? .system(.title, design: .serif)
-            : .title2.weight(.semibold)
+        switch verificationStyle {
+        case .ledger:    return .system(.title, design: .serif)
+        case .pressroom: return .system(.title3, design: .monospaced).weight(.bold)
+        case .steady:    return .title2.weight(.semibold)
+        }
     }
 
     private var title: String {
