@@ -399,13 +399,14 @@ final class Copier {
                     continue
                 }
 
-                // Copy + tee-hash. Register the destination for rollback
-                // *before* the first byte is written: if the copy throws or is
-                // cancelled mid-file, the partial file must be cleaned up too,
-                // not just this bundle's already-completed siblings.
+                // Copy + tee-hash. `copyAndHash` creates the destination
+                // exclusively (O_EXCL) and removes its own partial file on any
+                // failure, so the file is registered for bundle-level rollback
+                // only once it is fully written (below). A refused overwrite or
+                // a mid-file failure never reaches that append, so rollback can
+                // only ever delete files this run actually created.
                 let source = file.source
                 let dest = file.destination
-                writtenFiles.append(file.destination)
                 let copyHash = try await Task.detached(priority: .userInitiated) { [weak self] in
                     var buffered: Int64 = 0
                     var lastFlush = Date()
@@ -429,6 +430,10 @@ final class Copier {
                     }
                     return hash
                 }.value
+                // copyAndHash succeeded: the file is fully written, flushed,
+                // and ours. Register it now so a later failure in this bundle —
+                // or the verify mismatch below — rolls it back with its siblings.
+                writtenFiles.append(dest)
 
                 // Verification
                 if verify {
@@ -459,7 +464,7 @@ final class Copier {
         } catch {
             // Rollback the partial bundle
             if !writtenFiles.isEmpty {
-                appendLog(.error, "Rolling back \(writtenFiles.count) partial file(s) from this bundle.")
+                appendLog(.error, "Rolling back \(writtenFiles.count) file(s) from the failed bundle.")
                 await Task.detached(priority: .userInitiated) {
                     let fm = FileManager.default
                     for url in writtenFiles.reversed() {

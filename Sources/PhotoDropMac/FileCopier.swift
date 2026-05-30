@@ -6,6 +6,7 @@ enum FileCopierError: Error, CustomStringConvertible {
     case read(URL, any Error)
     case write(URL, any Error)
     case open(URL, any Error)
+    case destinationExists(URL)
 
     var description: String {
         switch self {
@@ -14,6 +15,8 @@ enum FileCopierError: Error, CustomStringConvertible {
         case .read(let f, let err):  return "Read failed on \(f.lastPathComponent): \(err.localizedDescription)"
         case .write(let f, let err): return "Write failed on \(f.lastPathComponent): \(err.localizedDescription)"
         case .open(let f, let err):  return "Open failed on \(f.lastPathComponent): \(err.localizedDescription)"
+        case .destinationExists(let f):
+            return "Refused to overwrite existing file \(f.lastPathComponent) — a destination-name collision the planner did not catch (e.g. a case-insensitive or Unicode-normalization match). Source left untouched."
         }
     }
 }
@@ -44,51 +47,71 @@ enum FileCopier {
         }
         defer { try? inHandle.close() }
 
-        FileManager.default.createFile(atPath: destination.path, contents: nil)
-        let outHandle: FileHandle
+        // Exclusive create. O_EXCL makes the kernel refuse to open a file that
+        // already exists, so a destination-name collision the planner missed —
+        // a case-insensitive or Unicode-normalization variant on APFS/HFS+, or
+        // a TOCTOU race after the collision scan — can never silently truncate
+        // and overwrite an existing photo. A refused overwrite surfaces as
+        // `.destinationExists`, which the copy engine treats as a per-bundle
+        // failure (rollback + continue), never as data loss. This is the only
+        // thing standing between "nothing is ever overwritten" and a collision-
+        // detection miss, so it lives at the syscall, not in a prior string check.
+        let fd = open(destination.path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+        if fd < 0 {
+            let code = errno
+            if code == EEXIST { throw FileCopierError.destinationExists(destination) }
+            throw FileCopierError.open(destination, NSError(domain: NSPOSIXErrorDomain, code: Int(code)))
+        }
+        let outHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+
+        // From here on the file is ours — we just created it. Remove our own
+        // partial write on any failure, so a thrown/cancelled copy never leaves
+        // an orphan and the caller's bundle rollback never has to (and never
+        // could) delete a pre-existing file we didn't write.
         do {
-            outHandle = try FileHandle(forWritingTo: destination)
+            defer { try? outHandle.close() }
+
+            var hasher = XxHash64()
+
+            while true {
+                try Task.checkCancellation()
+
+                let chunk: Data?
+                do {
+                    chunk = try inHandle.read(upToCount: bufferSize)
+                } catch {
+                    throw FileCopierError.read(source, error)
+                }
+                guard let data = chunk, !data.isEmpty else { break }
+
+                do {
+                    try outHandle.write(contentsOf: data)
+                } catch {
+                    throw FileCopierError.write(destination, error)
+                }
+
+                data.withUnsafeBytes { rawBuf in
+                    hasher.update(rawBuf)
+                }
+
+                onProgress(Int64(data.count))
+            }
+
+            // Flush this file's data out of the page cache before we return.
+            // Required on two counts: the cache-bypassing verify (F_NOCACHE) has to
+            // be able to read the bytes back from the device, and a crash mustn't
+            // lose a file we reported as copied. The stronger drive-cache barrier
+            // (F_FULLFSYNC) is issued once per volume at end of job — see
+            // fullSyncVolume — instead of per file, which would force a full device
+            // flush for every tiny sidecar.
+            try flushToDisk(outHandle, destination: destination)
+
+            return hasher.finalize()
         } catch {
-            throw FileCopierError.open(destination, error)
+            // We created this file; don't leave a partial behind on any failure.
+            try? FileManager.default.removeItem(at: destination)
+            throw error
         }
-        defer { try? outHandle.close() }
-
-        var hasher = XxHash64()
-
-        while true {
-            try Task.checkCancellation()
-
-            let chunk: Data?
-            do {
-                chunk = try inHandle.read(upToCount: bufferSize)
-            } catch {
-                throw FileCopierError.read(source, error)
-            }
-            guard let data = chunk, !data.isEmpty else { break }
-
-            do {
-                try outHandle.write(contentsOf: data)
-            } catch {
-                throw FileCopierError.write(destination, error)
-            }
-
-            data.withUnsafeBytes { rawBuf in
-                hasher.update(rawBuf)
-            }
-
-            onProgress(Int64(data.count))
-        }
-
-        // Flush this file's data out of the page cache before we return.
-        // Required on two counts: the cache-bypassing verify (F_NOCACHE) has to
-        // be able to read the bytes back from the device, and a crash mustn't
-        // lose a file we reported as copied. The stronger drive-cache barrier
-        // (F_FULLFSYNC) is issued once per volume at end of job — see
-        // fullSyncVolume — instead of per file, which would force a full device
-        // flush for every tiny sidecar.
-        try flushToDisk(outHandle, destination: destination)
-
-        return hasher.finalize()
     }
 
     // fsync the file's data through to the filesystem. Throws a write error on
