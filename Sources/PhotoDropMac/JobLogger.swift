@@ -10,7 +10,7 @@ enum JobLogger {
         startedAt: Date,
         elapsedSeconds: Double,
         primaryDestination: URL,
-        archiveDestination: URL?
+        archiveDestinations: [URL]
     ) -> URL? {
         let fm = FileManager.default
         guard let libraryDir = fm.urls(for: .libraryDirectory, in: .userDomainMask).first else {
@@ -40,8 +40,9 @@ enum JobLogger {
         content += "Started:  \(startedAt.formatted(.iso8601))\n"
         content += "Elapsed:  \(String(format: "%.1fs", elapsedSeconds))\n"
         content += "Primary:  \(primaryDestination.path(percentEncoded: false))\n"
-        if let archiveDestination {
-            content += "Archive:  \(archiveDestination.path(percentEncoded: false))\n"
+        for (i, archive) in archiveDestinations.enumerated() {
+            let label = archiveDestinations.count > 1 ? "Archive \(i + 1)" : "Archive"
+            content += "\(label):  \(archive.path(percentEncoded: false))\n"
         }
         content += String(repeating: "-", count: 64) + "\n"
 

@@ -12,6 +12,7 @@ struct MainView: View {
 
     @AppStorage("photodrop.primaryDestination") private var primaryDest: String = ""
     @AppStorage("photodrop.archiveDestination") private var archiveDest: String = ""
+    @AppStorage("photodrop.extraArchiveDestinations") private var extraArchives: String = ""
     @AppStorage("photodrop.verifyCopies") private var verifyCopies: Bool = true
     @AppStorage("photodrop.ejectAfterIngest") private var ejectAfterIngest: Bool = false
     @AppStorage("photodrop.template.folder") private var templateFolder = NamingTemplate.default.folder
@@ -203,7 +204,7 @@ struct MainView: View {
         if let warning = PreflightCheck.spaceWarning(
             plannedBytes: plannedBytes,
             primary: primaryURL,
-            archive: archiveURL
+            archives: archiveDestinations
         ) {
             preflightMessage = warning
             return
@@ -216,7 +217,7 @@ struct MainView: View {
         copier.start(
             yearGroups: groups,
             primaryDestination: URL(fileURLWithPath: primaryDest, isDirectory: true),
-            archiveDestination: archiveURL,
+            archiveDestinations: archiveDestinations,
             description: descriptionText,
             verify: verifyCopies,
             ejectAfter: ejectAfterIngest,
@@ -244,8 +245,10 @@ struct MainView: View {
         }
     }
 
-    private var archiveURL: URL? {
-        archiveDest.isEmpty ? nil : URL(fileURLWithPath: archiveDest, isDirectory: true)
+    // The full ordered list of archive (mirror) destinations: the primary
+    // archive followed by any additional locations.
+    private var archiveDestinations: [URL] {
+        ArchiveDestinations.list(archive: archiveDest, extra: extraArchives)
     }
 
     // Fulfils a one-click request from the menu bar: once the requested card

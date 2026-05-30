@@ -8,12 +8,12 @@ import Foundation
 enum PreflightCheck {
     /// Returns a human-readable warning if a destination volume looks too full,
     /// or `nil` if everything fits (or can't be checked).
-    static func spaceWarning(plannedBytes: Int64, primary: URL, archive: URL?) -> String? {
+    static func spaceWarning(plannedBytes: Int64, primary: URL, archives: [URL]) -> String? {
         guard plannedBytes > 0 else { return nil }
 
         var requiredByVolume: [URL: Int64] = [:]
         var nameByVolume: [URL: String] = [:]
-        for dest in [primary, archive].compactMap({ $0 }) {
+        for dest in [primary] + archives {
             guard let volume = volumeRoot(of: dest) else { continue }
             requiredByVolume[volume, default: 0] += plannedBytes
             nameByVolume[volume] = volumeName(of: dest) ?? volume.lastPathComponent

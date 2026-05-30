@@ -127,7 +127,7 @@ final class Copier {
     func start(
         yearGroups: [YearGroup],
         primaryDestination: URL,
-        archiveDestination: URL?,
+        archiveDestinations: [URL],
         description: String,
         verify: Bool,
         ejectAfter: Bool,
@@ -161,9 +161,10 @@ final class Copier {
         // needs to see what's already on disk. Byte totals don't depend on
         // naming, so we size the progress bar up front straight from the bundles.
         let perDestinationBytes = allBundles.reduce(Int64(0)) { $0 + $1.totalSize }
-        totalBytes = perDestinationBytes * (archiveDestination == nil ? 1 : 2)
+        let destinationCount = 1 + archiveDestinations.count
+        totalBytes = perDestinationBytes * Int64(destinationCount)
 
-        appendLog(.info, "Starting ingest: \(allBundles.count) bundles, \(totalBytes.formatted(.byteCount(style: .file)))\(archiveDestination == nil ? "" : " × 2 destinations")")
+        appendLog(.info, "Starting ingest: \(allBundles.count) bundles, \(totalBytes.formatted(.byteCount(style: .file)))\(destinationCount > 1 ? " × \(destinationCount) destinations" : "")")
         state = .running(currentProgress())
 
         task = Task { [weak self] in
@@ -172,7 +173,7 @@ final class Copier {
                 bundles: allBundles,
                 description: description,
                 primaryRoot: primaryDestination,
-                archiveRoot: archiveDestination,
+                archiveRoots: archiveDestinations,
                 verify: verify,
                 ejectAfter: ejectAfter,
                 sourceMountPoint: sourceMountPoint,
@@ -187,7 +188,7 @@ final class Copier {
         bundles: [AssetBundle],
         description: String,
         primaryRoot: URL,
-        archiveRoot: URL?,
+        archiveRoots: [URL],
         verify: Bool,
         ejectAfter: Bool,
         sourceMountPoint: String?,
@@ -197,56 +198,45 @@ final class Copier {
     ) async {
         appendLog(.info, "Indexing destinations for duplicate detection…")
         let indexStoreURL = self.indexStoreURL
-        let primaryIndex = await Task.detached(priority: .userInitiated) {
-            DestinationIndex.build(at: primaryRoot, storeURL: indexStoreURL)
-        }.value
-        let archiveIndex: DestinationIndex?
-        if let archiveRoot {
-            archiveIndex = await Task.detached(priority: .userInitiated) {
-                DestinationIndex.build(at: archiveRoot, storeURL: indexStoreURL)
-            }.value
-        } else {
-            archiveIndex = nil
-        }
+        // Primary at index 0, then each archive mirror.
+        let allRoots = [primaryRoot] + archiveRoots
 
-        // Build collision-safe plans. Collision avoidance only needs to know
-        // which files already sit in the *specific* day-folders this job writes
-        // into — never the whole library — so we scan just those target dirs
-        // fresh, independent of the (cached) dedup index above. Seeding
-        // planBatch with them means a new, different-content file that would map
-        // onto an existing name gets a "_1" variant instead of overwriting it;
-        // planBatch's own in-batch set handles same-run collisions.
-        let primaryPlans = await Task.detached(priority: .userInitiated) {
-            let targetDirs = Set(bundles.map {
-                CopyPlan.destinationDirectory(for: $0, destinationRoot: primaryRoot, description: description, template: template, cardLabel: cardLabel)
-            })
-            let existing = DestinationIndex.existingFilePaths(in: targetDirs)
-            return CopyPlan.planBatch(bundles: bundles, destinationRoot: primaryRoot, description: description, template: template, cardLabel: cardLabel, existingPaths: existing)
-        }.value
-        let archivePlans: [BundlePlan]
-        if let archiveRoot {
-            archivePlans = await Task.detached(priority: .userInitiated) {
+        // Build a dedup index + collision-safe plans per destination. Collision
+        // avoidance only needs to know which files already sit in the *specific*
+        // day-folders this job writes into — never the whole library — so we scan
+        // just those target dirs fresh, independent of the (cached) dedup index.
+        // Seeding planBatch with them means a new, different-content file that
+        // would map onto an existing name gets a "_1" variant instead of
+        // overwriting it; planBatch's own in-batch set handles same-run collisions.
+        var indexes: [DestinationIndex] = []
+        var plansPerRoot: [[BundlePlan]] = []
+        for root in allRoots {
+            let index = await Task.detached(priority: .userInitiated) {
+                DestinationIndex.build(at: root, storeURL: indexStoreURL)
+            }.value
+            let plans = await Task.detached(priority: .userInitiated) {
                 let targetDirs = Set(bundles.map {
-                    CopyPlan.destinationDirectory(for: $0, destinationRoot: archiveRoot, description: description, template: template, cardLabel: cardLabel)
+                    CopyPlan.destinationDirectory(for: $0, destinationRoot: root, description: description, template: template, cardLabel: cardLabel)
                 })
                 let existing = DestinationIndex.existingFilePaths(in: targetDirs)
-                return CopyPlan.planBatch(bundles: bundles, destinationRoot: archiveRoot, description: description, template: template, cardLabel: cardLabel, existingPaths: existing)
+                return CopyPlan.planBatch(bundles: bundles, destinationRoot: root, description: description, template: template, cardLabel: cardLabel, existingPaths: existing)
             }.value
-        } else {
-            archivePlans = []
+            indexes.append(index)
+            plansPerRoot.append(plans)
         }
 
         var haltReason: String?
 
-        outer: for i in 0..<primaryPlans.count {
+        let bundleCount = plansPerRoot.first?.count ?? 0
+        outer: for i in 0..<bundleCount {
             if Task.isCancelled { haltReason = "cancelled"; break }
 
-            let primaryPlan = primaryPlans[i]
             do {
-                try await copyBundle(primaryPlan, index: primaryIndex, verify: verify, sourceVolumeID: sourceVolumeID, recordManifest: true, root: primaryRoot)
-
-                if i < archivePlans.count, let archiveIndex {
-                    try await copyBundle(archivePlans[i], index: archiveIndex, verify: verify, sourceVolumeID: sourceVolumeID, recordManifest: false, root: archiveRoot ?? primaryRoot)
+                // Copy the bundle to every destination; only the primary (index
+                // 0) records the manifest — the mirrors are byte-identical. Each
+                // copyBundle rolls back its own destination on failure.
+                for d in allRoots.indices {
+                    try await copyBundle(plansPerRoot[d][i], index: indexes[d], verify: verify, sourceVolumeID: sourceVolumeID, recordManifest: d == 0, root: allRoots[d])
                 }
 
                 completedBundles += 1
@@ -295,8 +285,8 @@ final class Copier {
         if filesCopied > 0 {
             appendLog(.info, "Flushing destinations to disk…")
             let flushed = await Task.detached(priority: .userInitiated) { () -> Bool in
-                var ok = FileCopier.fullSyncVolume(at: primaryRoot)
-                if let archiveRoot { ok = FileCopier.fullSyncVolume(at: archiveRoot) && ok }
+                var ok = true
+                for root in allRoots { ok = FileCopier.fullSyncVolume(at: root) && ok }
                 return ok
             }.value
             if !flushed {
@@ -333,7 +323,7 @@ final class Copier {
             createdAt: startedAt,
             source: sourceMountPoint.map { URL(fileURLWithPath: $0).lastPathComponent },
             primaryDestination: primaryRoot.path(percentEncoded: false),
-            archiveDestination: archiveRoot?.path(percentEncoded: false),
+            archiveDestination: archiveRoots.first?.path(percentEncoded: false),
             verified: verify,
             filesCopied: filesCopied,
             filesSkipped: filesSkipped,
@@ -359,7 +349,7 @@ final class Copier {
                 startedAt: capturedStart,
                 elapsedSeconds: elapsed,
                 primaryDestination: primaryRoot,
-                archiveDestination: archiveRoot
+                archiveDestinations: archiveRoots
             )
         }.value
 
