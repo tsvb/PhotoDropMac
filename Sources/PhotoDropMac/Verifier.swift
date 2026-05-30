@@ -117,28 +117,42 @@ private struct WorkItem: Sendable {
 }
 
 private enum VerifierWork {
-    /// Reads every manifest near `target` and flattens it into a deduped list
-    /// of files to re-hash. Each entry's file is resolved relative to its
-    /// manifest's library root (two levels up from the JSON).
+    /// Reads every manifest near `target` and flattens it into a deduped list of
+    /// files to re-hash. Each entry's file is resolved relative to its manifest's
+    /// library root (two levels up from the JSON).
+    ///
+    /// When several manifests record the same file (e.g. re-ingests), the most
+    /// recent one wins: manifests are applied oldest-first by `createdAt`, so a
+    /// file is verified against its latest known-good hash. This is deterministic
+    /// regardless of the order the manifest files happen to be listed in — the
+    /// previous "first one seen" behaviour depended on filesystem listing order
+    /// and could check a file against a stale hash, falsely reporting "changed".
     static func build(target: URL) -> (items: [WorkItem], manifestCount: Int) {
-        var items: [WorkItem] = []
-        var seen = Set<String>()
-        var manifestCount = 0
-
+        // Decode every manifest, then order oldest → newest. The manifest's path
+        // is a stable tiebreaker for the (practically impossible) case of two
+        // equal createdAt timestamps.
+        var loaded: [(createdAt: Date, urlPath: String, root: URL, files: [ManifestEntry])] = []
         for manifestURL in ManifestWriter.manifestURLs(near: target) {
             guard let data = try? Data(contentsOf: manifestURL),
                   let manifest = ManifestWriter.decode(data) else { continue }
-            manifestCount += 1
             let root = manifestURL.deletingLastPathComponent().deletingLastPathComponent()
+            loaded.append((manifest.createdAt, manifestURL.path, root, manifest.files))
+        }
+        loaded.sort { ($0.createdAt, $0.urlPath) < ($1.createdAt, $1.urlPath) }
 
-            for entry in manifest.files {
+        // Newest-wins: iterating oldest → newest and overwriting by resolved path
+        // means a file recorded by a later ingest verifies against that later hash.
+        var byPath: [String: WorkItem] = [:]
+        for record in loaded {
+            for entry in record.files {
                 guard let hex = entry.xxhash64, let expected = UInt64(hex, radix: 16) else { continue }
-                let fileURL = root.appendingPathComponent(entry.path)
-                guard seen.insert(fileURL.path).inserted else { continue }
-                items.append(WorkItem(url: fileURL, relPath: entry.path, name: entry.name, expected: expected))
+                let fileURL = record.root.appendingPathComponent(entry.path)
+                byPath[fileURL.path] = WorkItem(url: fileURL, relPath: entry.path, name: entry.name, expected: expected)
             }
         }
-        return (items, manifestCount)
+        // Path-sorted output so progress and the report are deterministic.
+        let items = byPath.values.sorted { $0.relPath < $1.relPath }
+        return (items, loaded.count)
     }
 
     enum CheckResult { case verified, changed, missing, unreadable }
@@ -146,7 +160,10 @@ private enum VerifierWork {
     static func check(_ item: WorkItem) -> CheckResult {
         guard FileManager.default.fileExists(atPath: item.url.path) else { return .missing }
         do {
-            let actual = try XxHash64.hash(fileAt: item.url, bypassCache: false)
+            // Read past the page cache so we re-hash what is actually on the
+            // device — the whole point of a bit-rot check. Mirrors the copy
+            // engine's post-write verify, which also bypasses the cache.
+            let actual = try XxHash64.hash(fileAt: item.url, bypassCache: true)
             return actual == item.expected ? .verified : .changed
         } catch {
             return .unreadable
