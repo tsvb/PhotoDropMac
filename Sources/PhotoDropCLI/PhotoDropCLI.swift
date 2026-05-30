@@ -7,8 +7,53 @@ struct PhotoDropCommand: AsyncParsableCommand {
         commandName: "photodrop",
         abstract: "Verify and ingest photo libraries from the command line.",
         version: "0.0.1",
-        subcommands: [Verify.self, Ingest.self]
+        subcommands: [Verify.self, Ingest.self, Heal.self]
     )
+}
+
+// MARK: - heal
+
+struct Heal: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Report which damaged/missing files can be restored from a mirror (read-only — never writes to the library)."
+    )
+
+    @Argument(help: "A library folder or a manifest .json.")
+    var target: String
+
+    @Flag(name: .long, help: "Emit a JSON report instead of human-readable text.")
+    var json = false
+
+    @Option(name: .long, help: "Write a reviewable restore script here. PhotoDrop never touches the library itself — you run the script.")
+    var script: String?
+
+    func run() throws {
+        let url = URL(fileURLWithPath: target)
+        let showProgress = !json && isatty(FileHandle.standardError.fileDescriptor) != 0
+
+        guard let report = HealEngine.run(target: url, onProgress: { progress in
+            guard showProgress else { return }
+            FileHandle.standardError.write(Data("\r  checking \(progress.checked)/\(progress.total)…".utf8))
+        }) else {
+            CLIOutput.error("Heal scan was interrupted.")
+            throw ExitCode(2)
+        }
+        if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
+
+        guard report.total > 0 else {
+            CLIOutput.error("No verification manifest found at \(url.path). Run an ingest first, or point at a folder containing a “\(ManifestWriter.folderName)” folder.")
+            throw ExitCode(2)
+        }
+
+        print(json ? CLIOutput.healJSON(report) : CLIOutput.healHuman(report))
+
+        if let script, !report.recoverable.isEmpty {
+            try HealEngine.restoreScript(report).write(toFile: script, atomically: true, encoding: .utf8)
+            CLIOutput.error("Wrote restore script to \(script) — review it, then run it yourself.")
+        }
+
+        if !report.allHealthy { throw ExitCode(1) }   // 0 = healthy, 1 = damage found
+    }
 }
 
 // MARK: - ingest
@@ -163,6 +208,43 @@ struct Verify: ParsableCommand {
 enum CLIOutput {
     static func error(_ message: String) {
         FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+
+    static func healHuman(_ r: HealReport) -> String {
+        guard !r.allHealthy else {
+            return "✓ All \(r.total) file\(r.total == 1 ? "" : "s") healthy."
+        }
+        var lines = ["⚠ \(r.candidates.count) of \(r.total) files damaged/missing — \(r.recoverable.count) recoverable, \(r.unrecoverable.count) unrecoverable:"]
+        for c in r.candidates {
+            let kind = c.kind == .changed ? "CHANGED" : "MISSING"
+            lines.append("  \(kind) \(c.relPath)")
+            if let from = c.recoverableFrom {
+                lines.append("    ↳ recoverable from \(from)")
+            } else {
+                lines.append("    ↳ UNRECOVERABLE — no healthy mirror copy")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func healJSON(_ r: HealReport) -> String {
+        struct CandidateDTO: Encodable { let kind: String; let path: String; let badPath: String; let recoverableFrom: String? }
+        struct ReportDTO: Encodable {
+            let healthy: Int, total: Int, manifestCount: Int
+            let recoverable: Int, unrecoverable: Int, allHealthy: Bool
+            let candidates: [CandidateDTO]
+        }
+        let dto = ReportDTO(
+            healthy: r.healthy, total: r.total, manifestCount: r.manifestCount,
+            recoverable: r.recoverable.count, unrecoverable: r.unrecoverable.count, allHealthy: r.allHealthy,
+            candidates: r.candidates.map {
+                CandidateDTO(kind: $0.kind == .changed ? "changed" : "missing",
+                             path: $0.relPath, badPath: $0.badPath, recoverableFrom: $0.recoverableFrom)
+            }
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return (try? encoder.encode(dto)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
     }
 
     static func ingestSummary(_ r: CopyResult) -> String {

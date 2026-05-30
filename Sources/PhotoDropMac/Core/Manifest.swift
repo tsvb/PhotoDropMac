@@ -20,6 +20,12 @@ struct Manifest: Codable, Sendable {
     let source: String?       // card / volume label, if known
     let primaryDestination: String
     let archiveDestination: String?
+    // All destination roots written this job (primary at index 0, then mirrors),
+    // so heal can look for a healthy copy across every mirror. Optional for
+    // backward compatibility: manifests written before this field decode to nil
+    // (decodeIfPresent), and callers fall back to [primaryDestination] +
+    // archiveDestination.
+    let destinations: [String]?
     let verified: Bool        // whether xxHash verification was on for this job
     let filesCopied: Int
     let filesSkipped: Int
