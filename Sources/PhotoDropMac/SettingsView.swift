@@ -64,6 +64,7 @@ struct IngestPreferences: View {
     @AppStorage("photodrop.ejectAfterIngest") private var ejectAfterIngest: Bool = false
     @AppStorage("photodrop.showCompletionSheet") private var showCompletionSheet: Bool = true
     @AppStorage("photodrop.notifyOnCompletion") private var notifyOnCompletion: Bool = true
+    @AppStorage("photodrop.postIngestScript") private var postIngestScript: String = ""
 
     var body: some View {
         Form {
@@ -78,8 +79,45 @@ struct IngestPreferences: View {
             } footer: {
                 Text("Posts a notification when an ingest completes while PhotoDrop is in the background.")
             }
+
+            Section {
+                HStack(spacing: 8) {
+                    TextField("Run after ingest", text: $postIngestScript,
+                              prompt: Text("Path to an executable script (optional)"))
+                        .labelsHidden()
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button {
+                        chooseHookScript()
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Choose script…")
+                    if !postIngestScript.isEmpty {
+                        Button("Clear") { postIngestScript = "" }
+                            .controlSize(.small)
+                    }
+                }
+            } header: {
+                Text("Post-ingest hook")
+            } footer: {
+                Text("Runs an executable script after each completed ingest (argv[1] is the destination; job details are in PHOTODROP_* environment variables). Best-effort — a failing hook never affects the copy.")
+            }
         }
         .formStyle(.grouped)
+    }
+
+    private func chooseHookScript() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.message = "Choose an executable script to run after each ingest."
+        if panel.runModal() == .OK, let url = panel.url {
+            postIngestScript = url.path(percentEncoded: false)
+        }
     }
 }
 
