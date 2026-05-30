@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A native macOS (SwiftUI, Swift 6) app that ingests photos from removable memory cards into a date-organized library. It scans a card, previews a year/day folder tree, then copies each photo bundle with streaming hash verification, content-based deduplication, optional dual-destination archival, and optional card eject.
+A native macOS (SwiftUI, Swift 6) app that ingests photos from removable memory cards into a date-organized library. It scans a card, previews a year/day folder tree, then copies each photo bundle with streaming hash verification, content-based deduplication, optional multi-destination archival (primary + any number of mirror copies), and optional card eject.
 
 This is a port of a Windows app (`PhotoDrop`, .NET/WPF). The Windows `PhotoDrop.Core` is the **behavioral source of truth** — much of the discovery, dedup, companion-classification, and path-planning logic deliberately mirrors it (comments say "matches the Windows ..."). When changing that behavior, treat the Windows reference as authoritative rather than "fixing" it locally. See [HANDOFF_FROM_WINDOWS.md](HANDOFF_FROM_WINDOWS.md) for context (note: the Avalonia recipe there is explicitly *not* the path taken).
 
@@ -96,6 +96,7 @@ Preferences are plain `@AppStorage` keys with **no central store** — the same 
 
 - `photodrop.primaryDestination` (String)
 - `photodrop.archiveDestination` (String, optional second copy)
+- `photodrop.extraArchiveDestinations` (String, newline-separated extra archive folder paths) — additional mirror destinations beyond Primary + Archive (3-2-1 backups). Assembled with the primary archive into the ordered list via [ArchiveDestinations.swift](Sources/PhotoDropMac/ArchiveDestinations.swift); each gets its own verified copy. Edited in Settings → General
 - `photodrop.verifyCopies` (Bool, default `true`)
 - `photodrop.ejectAfterIngest` (Bool, default `false`)
 - `photodrop.showCompletionSheet` (Bool, default `true`)

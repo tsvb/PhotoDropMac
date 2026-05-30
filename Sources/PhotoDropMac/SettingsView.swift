@@ -23,6 +23,7 @@ struct SettingsView: View {
 struct GeneralPreferences: View {
     @AppStorage("photodrop.primaryDestination") private var primary: String = ""
     @AppStorage("photodrop.archiveDestination") private var archive: String = ""
+    @AppStorage("photodrop.extraArchiveDestinations") private var extraArchives: String = ""
     @AppStorage("photodrop.verificationStyle") private var verificationStyle = VerificationStyle.steady
 
     var body: some View {
@@ -38,6 +39,16 @@ struct GeneralPreferences: View {
                     path: $archive,
                     prompt: "Second copy location"
                 )
+            }
+
+            Section {
+                TextEditor(text: $extraArchives)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(minHeight: 56)
+            } header: {
+                Text("Additional archive locations")
+            } footer: {
+                Text("Optional — one folder path per line. Each gets its own verified copy (e.g. a NAS and an offsite drive for 3-2-1 backups). The Primary and Archive above are always included.")
             }
 
             Section {

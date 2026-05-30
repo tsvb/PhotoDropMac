@@ -54,8 +54,8 @@ final class CopierManifestTests: XCTestCase {
     }
 
     private func runToCompletion(_ copier: Copier, dest: URL, _ groups: [YearGroup],
-                                 archive: URL? = nil) async throws -> CopyResult {
-        copier.start(yearGroups: groups, primaryDestination: dest, archiveDestination: archive,
+                                 archives: [URL] = []) async throws -> CopyResult {
+        copier.start(yearGroups: groups, primaryDestination: dest, archiveDestinations: archives,
                      description: "", verify: true, ejectAfter: false, sourceMountPoint: nil,
                      sourceVolumeID: "test-vol", template: .default, cardLabel: "")
         var ticks = 0
@@ -105,12 +105,40 @@ final class CopierManifestTests: XCTestCase {
 
         let result = try await runToCompletion(makeCopier(tmp: tmp), dest: dest,
                                                 [yearGroup(primary: primary, companions: [])],
-                                                archive: archive)
+                                                archives: [archive])
 
         XCTAssertEqual(result.filesCopied, 2, "the file is written to both destinations")
         XCTAssertEqual(result.totalBytes, 4096, "reported size is the unique landed bytes, not 2×")
         let manifest = try decodeManifest(result.manifestURL)
         XCTAssertEqual(manifest.totalBytes, 4096)
+        XCTAssertEqual(manifest.files.count, 1, "manifest records the primary pass only")
+    }
+
+    /// N-way: the bundle is copied to the primary and every archive, the file
+    /// lands in all of them, and the manifest still records the primary only.
+    func testCopiesToPrimaryAndMultipleArchives() async throws {
+        let tmp = try freshTempDir()
+        let primary = try makeSourceFile("IMG_0004.DNG", bytes: 4096, in: tmp)
+        let dest = tmp.appendingPathComponent("library", isDirectory: true)
+        let nas = tmp.appendingPathComponent("nas", isDirectory: true)
+        let offsite = tmp.appendingPathComponent("offsite", isDirectory: true)
+
+        let result = try await runToCompletion(makeCopier(tmp: tmp), dest: dest,
+                                                [yearGroup(primary: primary, companions: [])],
+                                                archives: [nas, offsite])
+
+        XCTAssertEqual(result.filesFailed, 0)
+        XCTAssertEqual(result.filesCopied, 3, "copied to primary + 2 archives")
+        XCTAssertEqual(result.totalBytes, 4096, "reported size stays the unique landed bytes")
+
+        // The file is present under all three destination roots.
+        for root in [dest, nas, offsite] {
+            let dayFolder = root.appendingPathComponent("2026/2026-05-28")
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: dayFolder.path)) ?? []
+            XCTAssertTrue(files.contains { $0.hasSuffix(".DNG") }, "missing copy under \(root.lastPathComponent)")
+        }
+
+        let manifest = try decodeManifest(result.manifestURL)
         XCTAssertEqual(manifest.files.count, 1, "manifest records the primary pass only")
     }
 
