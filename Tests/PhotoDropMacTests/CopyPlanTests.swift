@@ -87,4 +87,17 @@ final class CopyPlanTests: XCTestCase {
         XCTAssertTrue(comps.contains("2026-05-28_Iceland"), "day-folder leaf follows the template")
         XCTAssertEqual(dest.pathExtension, "JPG", "the original extension is preserved")
     }
+
+    // §3.2: a very long description must yield a filesystem-safe day-folder leaf
+    // (≤ NAME_MAX) rather than a name that aborts directory creation.
+    func testLongDescriptionYieldsFilesystemSafeFolderLeaf() {
+        let date = localDate(2026, 5, 28, 12, 0, 0)
+        let a = bundle(dir: "100", name: "IMG_0001.JPG", date: date)
+        let dest = CopyPlan.plan(bundle: a, destinationRoot: root,
+                                 description: String(repeating: "x", count: 500),
+                                 template: .default, cardLabel: "").files[0].destination
+        let leaf = dest.deletingLastPathComponent().lastPathComponent
+        XCTAssertLessThanOrEqual(leaf.utf8.count, PathPlanner.maxComponentBytes)
+        XCTAssertTrue(leaf.hasPrefix("2026-05-28_"), "leaf still starts with the date prefix")
+    }
 }

@@ -89,15 +89,40 @@ enum PathPlanner {
             .sorted { $0.year > $1.year }
     }
 
+    /// Filesystem limit for a single path component, in UTF-8 bytes (APFS/HFS+
+    /// cap a name at 255). A rendered component longer than this — e.g. a very
+    /// long description or card label — would otherwise fail directory/file
+    /// creation and abort the whole bundle, so we truncate to fit instead.
+    static let maxComponentBytes = 255
+
     // Light folder-name sanitization: strip whitespace, collapse spaces
-    // to underscores, and replace characters that can't sit in a POSIX
-    // path component.
+    // to underscores, replace characters that can't sit in a POSIX path
+    // component, neutralize "."/".."/hidden names, and cap the length to
+    // what the filesystem allows.
     static func sanitize(_ s: String) -> String {
         var out = s.trimmingCharacters(in: .whitespacesAndNewlines)
         out = out.replacingOccurrences(of: "/", with: "-")
         out = out.replacingOccurrences(of: "\\", with: "-")
         out = out.replacingOccurrences(of: ":", with: "-")
         out = out.replacingOccurrences(of: " ", with: "_")
-        return out
+        // Strip leading dots so a rendered component can never become "." or
+        // ".." (a path-traversal / wrong-directory write) or a hidden entry.
+        out = String(out.drop(while: { $0 == "." }))
+        return truncatedToByteLimit(out, maxComponentBytes)
+    }
+
+    /// Longest prefix of `s` that fits within `limit` UTF-8 bytes, truncated on a
+    /// Character (grapheme) boundary so a multi-byte character is never split.
+    static func truncatedToByteLimit(_ s: String, _ limit: Int) -> String {
+        guard s.utf8.count > limit else { return s }
+        var end = s.startIndex
+        var bytes = 0
+        for ch in s {
+            let next = bytes + ch.utf8.count
+            if next > limit { break }
+            bytes = next
+            end = s.index(after: end)
+        }
+        return String(s[s.startIndex..<end])
     }
 }
