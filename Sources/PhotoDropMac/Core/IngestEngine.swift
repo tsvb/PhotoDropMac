@@ -240,6 +240,7 @@ final class IngestEngine {
             source: sourceMountPoint.map { URL(fileURLWithPath: $0).lastPathComponent },
             primaryDestination: primaryRoot.path(percentEncoded: false),
             archiveDestination: archiveRoots.first?.path(percentEncoded: false),
+            destinations: allRoots.map { $0.path(percentEncoded: false) },
             verified: verify,
             filesCopied: filesCopied,
             filesSkipped: filesSkipped,

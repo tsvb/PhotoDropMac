@@ -10,7 +10,7 @@ final class ManifestTests: XCTestCase {
                           createdAt: Date = Date(timeIntervalSince1970: 1_716_000_000)) -> Manifest {
         Manifest(schema: Manifest.schemaID, app: Manifest.appName, createdAt: createdAt,
                  source: "SDCARD", primaryDestination: "/lib", archiveDestination: nil,
-                 verified: true, filesCopied: entries.count, filesSkipped: 0, filesFailed: 0,
+                 destinations: nil, verified: true, filesCopied: entries.count, filesSkipped: 0, filesFailed: 0,
                  totalBytes: entries.reduce(0) { $0 + $1.bytes }, elapsedSeconds: 1.5, files: entries)
     }
 
