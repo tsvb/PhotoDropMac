@@ -15,7 +15,7 @@ struct SettingsView: View {
             MenuBarPreferences()
                 .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
         }
-        .frame(width: 520, height: 360)
+        .frame(width: 540, height: 430)
         .tint(theme.accent)
     }
 }
@@ -116,12 +116,14 @@ struct NamingPreferences: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Section("Tokens") {
-                ForEach(NamingTemplate.legend) { item in
-                    LabeledContent {
-                        Text(item.meaning).font(.caption).foregroundStyle(.secondary)
-                    } label: {
-                        Text(item.token).font(.system(.caption, design: .monospaced))
+            Section {
+                DisclosureGroup("Token reference") {
+                    ForEach(NamingTemplate.legend) { item in
+                        LabeledContent {
+                            Text(item.meaning).font(.caption).foregroundStyle(.secondary)
+                        } label: {
+                            Text(item.token).font(.system(.caption, design: .monospaced))
+                        }
                     }
                 }
             }

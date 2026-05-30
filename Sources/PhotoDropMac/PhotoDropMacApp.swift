@@ -38,6 +38,7 @@ struct PhotoDropMacApp: App {
                 .fontDesign(theme.fontDesign)
                 .preferredColorScheme(theme.colorScheme)
         }
+        .windowResizability(.contentSize)
     }
 
     private var menuBarVisible: Bool {
