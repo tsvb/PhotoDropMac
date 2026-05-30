@@ -100,4 +100,48 @@ final class CopyPlanTests: XCTestCase {
         XCTAssertLessThanOrEqual(leaf.utf8.count, PathPlanner.maxComponentBytes)
         XCTAssertTrue(leaf.hasPrefix("2026-05-28_"), "leaf still starts with the date prefix")
     }
+
+    // MARK: - Nested folder templates
+
+    func testFolderTemplateNestsBelowYear() {
+        let date = localDate(2026, 5, 28, 12, 0, 0)
+        let a = bundle(dir: "100", name: "IMG_0001.JPG", date: date)
+        let template = NamingTemplate(folder: "{MM}/{yyyy-MM-dd}", filename: NamingTemplate.default.filename)
+        let dest = CopyPlan.plan(bundle: a, destinationRoot: root, description: "",
+                                 template: template, cardLabel: "").files[0].destination
+
+        // …/2026/05/2026-05-28/<file>.JPG
+        let underRoot = dest.pathComponents.drop(while: { $0 != "2026" })
+        XCTAssertEqual(Array(underRoot.prefix(3)), ["2026", "05", "2026-05-28"])
+        XCTAssertEqual(dest.pathExtension, "JPG")
+    }
+
+    func testDescriptionCannotInjectNesting() {
+        // A "/" in the description is sanitized to "-" before interpolation, so
+        // it stays within one folder component — only the template author nests.
+        let date = localDate(2026, 5, 28, 12, 0, 0)
+        let a = bundle(dir: "100", name: "IMG_0001.JPG", date: date)
+        let dest = CopyPlan.plan(bundle: a, destinationRoot: root, description: "a/b",
+                                 template: .default, cardLabel: "").files[0].destination
+        let leaf = dest.deletingLastPathComponent().lastPathComponent
+        XCTAssertEqual(leaf, "2026-05-28_a-b")
+    }
+
+    // The preview grouping (PathPlanner.plan) and the copy directory
+    // (CopyPlan.destinationDirectory) must agree on the path below the year,
+    // including when nested.
+    func testPreviewGroupingAgreesWithNestedCopyDirectory() {
+        let date = localDate(2026, 5, 28, 12, 0, 0)
+        let a = bundle(dir: "100", name: "IMG_0001.JPG", date: date)
+        let template = NamingTemplate(folder: "{MM}/{yyyy-MM-dd}", filename: NamingTemplate.default.filename)
+
+        let groups = PathPlanner.plan(bundles: [a], description: "", template: template, cardLabel: "")
+        let folder = groups.first?.folders.first
+        XCTAssertEqual(folder?.dayName, "05/2026-05-28")
+
+        let dir = CopyPlan.destinationDirectory(for: a, destinationRoot: root,
+                                                description: "", template: template, cardLabel: "")
+        let relUnderYear = dir.pathComponents.drop(while: { $0 != "2026" }).dropFirst().joined(separator: "/")
+        XCTAssertEqual(relUnderYear, folder?.dayName, "preview folder must equal the copy's path below the year")
+    }
 }
