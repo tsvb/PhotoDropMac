@@ -18,6 +18,11 @@ settings:
     Debug:
       ENABLE_TESTABILITY: YES
 
+packages:
+  ArgumentParser:
+    url: https://github.com/apple/swift-argument-parser
+    from: "1.3.0"
+
 targets:
   PhotoDropMac:
     type: application
@@ -51,3 +56,25 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tsvb.PhotoDropMacTests
         GENERATE_INFOPLIST_FILE: YES
+
+  # Headless command-line tool. Compiles the shared Core/ sources (engines +
+  # pure logic) plus the CLI front-end; never the UI.
+  photodrop:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Sources/PhotoDropMac/Core
+      - path: Sources/PhotoDropCLI
+    dependencies:
+      - package: ArgumentParser
+    settings:
+      base:
+        PRODUCT_NAME: photodrop
+
+schemes:
+  photodrop:
+    build:
+      targets:
+        photodrop: all
+    run:
+      config: Debug
