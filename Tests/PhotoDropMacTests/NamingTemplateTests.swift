@@ -71,4 +71,25 @@ final class NamingTemplateTests: XCTestCase {
     func testSanitizeWhitespaceOnlyBecomesEmpty() {
         XCTAssertEqual(PathPlanner.sanitize("   "), "")
     }
+
+    // MARK: - Length cap (§3.2)
+
+    func testSanitizeLeavesShortComponentUntouched() {
+        XCTAssertEqual(PathPlanner.sanitize(String(repeating: "a", count: 255)).utf8.count, 255)
+    }
+
+    func testSanitizeTruncatesOverlongComponentToByteLimit() {
+        let out = PathPlanner.sanitize(String(repeating: "a", count: 400))
+        XCTAssertEqual(out.utf8.count, PathPlanner.maxComponentBytes)
+        XCTAssertEqual(out, String(repeating: "a", count: 255))
+    }
+
+    func testSanitizeNeverSplitsMultibyteCharacters() {
+        // "😀" is one grapheme = 4 UTF-8 bytes. 255 / 4 = 63 whole emoji (252 B);
+        // a 64th would be 256 B > 255, so it's dropped — never split mid-character.
+        let out = PathPlanner.sanitize(String(repeating: "😀", count: 200))
+        XCTAssertLessThanOrEqual(out.utf8.count, PathPlanner.maxComponentBytes)
+        XCTAssertEqual(out.count, 63)
+        XCTAssertEqual(out.utf8.count, 252)
+    }
 }
