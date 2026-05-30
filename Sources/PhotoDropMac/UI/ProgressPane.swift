@@ -186,7 +186,7 @@ struct LogView: View {
 #Preview("Progress pane") {
     ProgressPane(
         progress: CopyProgress(
-            totalBundles: 482, completedBundles: 311,
+            totalBundles: 482, completedBundles: 311, verifiedBundles: 311,
             totalBytes: 26_400_000_000, bytesCopied: 17_000_000_000,
             elapsedSeconds: 442, currentFile: "108_FUJI/DSCF1840.RAF"
         ),

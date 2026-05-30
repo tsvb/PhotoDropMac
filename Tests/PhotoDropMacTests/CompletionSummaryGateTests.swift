@@ -27,8 +27,8 @@ final class CompletionSummaryGateTests: XCTestCase {
     }
 
     func testNotShownForNonCompletedStates() {
-        let progress = CopyProgress(totalBundles: 1, completedBundles: 0, totalBytes: 1,
-                                    bytesCopied: 0, elapsedSeconds: 0, currentFile: "")
+        let progress = CopyProgress(totalBundles: 1, completedBundles: 0, verifiedBundles: 0,
+                                    totalBytes: 1, bytesCopied: 0, elapsedSeconds: 0, currentFile: "")
         for state: CopierState in [.idle, .cancelled, .failed("halted"), .running(progress)] {
             XCTAssertFalse(state.shouldPresentCompletionSummary(showSetting: true), "\(state)")
             XCTAssertFalse(state.shouldPresentCompletionSummary(showSetting: false), "\(state)")
