@@ -74,7 +74,8 @@ final class Copier {
         return false
     }
 
-    @ObservationIgnored private let cache = HashCache(storeURL: HashCache.defaultURL)
+    @ObservationIgnored private let cache: HashCache
+    @ObservationIgnored private let indexStoreURL: URL
     @ObservationIgnored private var task: Task<Void, Never>?
     // Explicit cancellation signal for the detached per-file copy, which does
     // not inherit Task cancellation. A fresh flag is installed per run.
@@ -92,6 +93,14 @@ final class Copier {
     // from the primary-destination pass only (the archive is a byte-identical
     // mirror, so its hashes match).
     @ObservationIgnored private var manifestEntries: [ManifestEntry] = []
+
+    // Store URLs for the dedup cache and destination-index snapshot are
+    // injectable so tests can point them at a temp directory; production uses
+    // the real Application Support locations.
+    init(cacheStoreURL: URL = HashCache.defaultURL, indexStoreURL: URL = DestinationIndex.defaultStoreURL) {
+        self.cache = HashCache(storeURL: cacheStoreURL)
+        self.indexStoreURL = indexStoreURL
+    }
 
     func cancel() {
         task?.cancel()
@@ -176,13 +185,14 @@ final class Copier {
         cardLabel: String
     ) async {
         appendLog(.info, "Indexing destinations for duplicate detection…")
+        let indexStoreURL = self.indexStoreURL
         let primaryIndex = await Task.detached(priority: .userInitiated) {
-            DestinationIndex.build(at: primaryRoot)
+            DestinationIndex.build(at: primaryRoot, storeURL: indexStoreURL)
         }.value
         let archiveIndex: DestinationIndex?
         if let archiveRoot {
             archiveIndex = await Task.detached(priority: .userInitiated) {
-                DestinationIndex.build(at: archiveRoot)
+                DestinationIndex.build(at: archiveRoot, storeURL: indexStoreURL)
             }.value
         } else {
             archiveIndex = nil
@@ -368,6 +378,14 @@ final class Copier {
 
     private func copyBundle(_ plan: BundlePlan, index: DestinationIndex, verify: Bool, sourceVolumeID: String, recordManifest: Bool, root: URL) async throws {
         var writtenFiles: [URL] = []
+        // A bundle is all-or-nothing. Its copied/skipped tallies and manifest
+        // entries are accumulated locally and committed to the job totals only
+        // once every file has landed (below) — so a bundle that fails partway
+        // and rolls back contributes nothing to the receipt or the counts,
+        // rather than leaving entries pointing at deleted files.
+        var bundleManifest: [ManifestEntry] = []
+        var copiedInBundle = 0
+        var skippedInBundle = 0
 
         do {
             for file in plan.files {
@@ -388,9 +406,9 @@ final class Copier {
 
                 if let existingDuplicate {
                     appendLog(.skipped, "\(file.source.lastPathComponent) — already present as \(existingDuplicate.lastPathComponent)")
-                    filesSkipped += 1
+                    skippedInBundle += 1
                     if recordManifest {
-                        manifestEntries.append(ManifestEntry(
+                        bundleManifest.append(ManifestEntry(
                             name: file.source.lastPathComponent,
                             path: relativePath(of: existingDuplicate, under: root),
                             bytes: file.size,
@@ -459,7 +477,7 @@ final class Copier {
                 await cache.recordDestination(url: file.destination, hash: copyHash)
 
                 if recordManifest {
-                    manifestEntries.append(ManifestEntry(
+                    bundleManifest.append(ManifestEntry(
                         name: file.source.lastPathComponent,
                         path: relativePath(of: file.destination, under: root),
                         bytes: file.size,
@@ -468,10 +486,12 @@ final class Copier {
                     ))
                 }
 
-                filesCopied += 1
+                copiedInBundle += 1
             }
         } catch {
-            // Rollback the partial bundle
+            // Rollback the partial bundle. The local tallies/manifest entries
+            // are simply discarded — never merged into the job totals — so the
+            // failed bundle leaves no trace in the receipt or the counts.
             if !writtenFiles.isEmpty {
                 appendLog(.error, "Rolling back \(writtenFiles.count) file(s) from the failed bundle.")
                 await Task.detached(priority: .userInitiated) {
@@ -483,6 +503,11 @@ final class Copier {
             }
             throw error
         }
+
+        // Bundle fully landed: commit its tallies and manifest entries now.
+        filesCopied += copiedInBundle
+        filesSkipped += skippedInBundle
+        if recordManifest { manifestEntries.append(contentsOf: bundleManifest) }
     }
 
     // MARK: - Progress / log helpers
