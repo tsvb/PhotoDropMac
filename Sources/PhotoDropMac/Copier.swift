@@ -34,6 +34,7 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     let elapsedSeconds: Double
     let primaryDestination: URL
     let logURL: URL?
+    let manifestURL: URL?
     let wasEjected: Bool
     let halted: Bool
     let haltReason: String?
@@ -84,6 +85,10 @@ final class Copier {
     @ObservationIgnored private var filesSkipped: Int = 0
     @ObservationIgnored private var filesFailed: Int = 0
     @ObservationIgnored private var currentFile: String = ""
+    // Structured per-file records for the verification manifest. Accumulated
+    // from the primary-destination pass only (the archive is a byte-identical
+    // mirror, so its hashes match).
+    @ObservationIgnored private var manifestEntries: [ManifestEntry] = []
 
     func cancel() {
         task?.cancel()
@@ -115,6 +120,7 @@ final class Copier {
         filesSkipped = 0
         filesFailed = 0
         currentFile = ""
+        manifestEntries = []
 
         let allBundles = yearGroups.flatMap { $0.folders.flatMap { $0.bundles } }
         guard !allBundles.isEmpty else {
@@ -205,10 +211,10 @@ final class Copier {
 
             let primaryPlan = primaryPlans[i]
             do {
-                try await copyBundle(primaryPlan, index: primaryIndex, verify: verify, sourceVolumeID: sourceVolumeID)
+                try await copyBundle(primaryPlan, index: primaryIndex, verify: verify, sourceVolumeID: sourceVolumeID, recordManifest: true, root: primaryRoot)
 
                 if i < archivePlans.count, let archiveIndex {
-                    try await copyBundle(archivePlans[i], index: archiveIndex, verify: verify, sourceVolumeID: sourceVolumeID)
+                    try await copyBundle(archivePlans[i], index: archiveIndex, verify: verify, sourceVolumeID: sourceVolumeID, recordManifest: false, root: archiveRoot ?? primaryRoot)
                 }
 
                 completedBundles += 1
@@ -279,6 +285,31 @@ final class Copier {
             }
         }
 
+        // Write a verification manifest (JSON + CSV) next to the photos — the
+        // exportable receipt of what landed, with each file's xxHash.
+        let manifest = Manifest(
+            schema: Manifest.schemaID,
+            app: Manifest.appName,
+            createdAt: startedAt,
+            source: sourceMountPoint.map { URL(fileURLWithPath: $0).lastPathComponent },
+            primaryDestination: primaryRoot.path(percentEncoded: false),
+            archiveDestination: archiveRoot?.path(percentEncoded: false),
+            verified: verify,
+            filesCopied: filesCopied,
+            filesSkipped: filesSkipped,
+            filesFailed: filesFailed,
+            totalBytes: bytesCopied,
+            elapsedSeconds: elapsed,
+            files: manifestEntries
+        )
+        let manifestStamp = startedAt
+        let manifestURL = await Task.detached(priority: .utility) {
+            ManifestWriter.write(manifest, intoRoot: primaryRoot, stamp: manifestStamp)
+        }.value
+        if manifestURL != nil {
+            appendLog(.info, "Verification manifest written to “\(ManifestWriter.folderName)”.")
+        }
+
         // Persist log file (best-effort, non-fatal if it fails)
         let capturedEntries = log
         let capturedStart = startedAt
@@ -305,6 +336,7 @@ final class Copier {
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
             logURL: logURL,
+            manifestURL: manifestURL,
             wasEjected: didEject,
             halted: haltReason != nil,
             haltReason: haltReason
@@ -321,7 +353,7 @@ final class Copier {
 
     // MARK: - Per-bundle copy (with rollback on failure)
 
-    private func copyBundle(_ plan: BundlePlan, index: DestinationIndex, verify: Bool, sourceVolumeID: String) async throws {
+    private func copyBundle(_ plan: BundlePlan, index: DestinationIndex, verify: Bool, sourceVolumeID: String, recordManifest: Bool, root: URL) async throws {
         var writtenFiles: [URL] = []
 
         do {
@@ -344,6 +376,15 @@ final class Copier {
                 if let existingDuplicate {
                     appendLog(.skipped, "\(file.source.lastPathComponent) — already present as \(existingDuplicate.lastPathComponent)")
                     filesSkipped += 1
+                    if recordManifest {
+                        manifestEntries.append(ManifestEntry(
+                            name: file.source.lastPathComponent,
+                            path: relativePath(of: existingDuplicate, under: root),
+                            bytes: file.size,
+                            xxhash64: nil,
+                            status: "skipped"
+                        ))
+                    }
                     // Count skip bytes toward progress so the bar fills smoothly.
                     bytesCopied += file.size
                     state = .running(currentProgress())
@@ -395,6 +436,16 @@ final class Copier {
                 // run doesn't re-hash this file.
                 await cache.recordDestination(url: file.destination, hash: copyHash)
 
+                if recordManifest {
+                    manifestEntries.append(ManifestEntry(
+                        name: file.source.lastPathComponent,
+                        path: relativePath(of: file.destination, under: root),
+                        bytes: file.size,
+                        xxhash64: String(format: "%016llx", copyHash),
+                        status: verify ? "verified" : "copied"
+                    ))
+                }
+
                 filesCopied += 1
             }
         } catch {
@@ -417,6 +468,17 @@ final class Copier {
     private func addBytesCopied(_ delta: Int64) {
         bytesCopied += delta
         state = .running(currentProgress())
+    }
+
+    /// Destination path relative to its root, for the manifest (e.g.
+    /// "2026/2026-05-28_Iceland/20260528_120002_DSCF1839.RAF").
+    private func relativePath(of url: URL, under root: URL) -> String {
+        let rootPath = root.path(percentEncoded: false)
+        let path = url.path(percentEncoded: false)
+        if path.hasPrefix(rootPath + "/") {
+            return String(path.dropFirst(rootPath.count + 1))
+        }
+        return path
     }
 
     private func currentProgress() -> CopyProgress {
