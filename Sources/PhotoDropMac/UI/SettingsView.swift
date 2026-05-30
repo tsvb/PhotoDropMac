@@ -14,9 +14,77 @@ struct SettingsView: View {
                 .tabItem { Label("Naming", systemImage: "textformat.abc") }
             MenuBarPreferences()
                 .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
+            MaintenancePreferences()
+                .tabItem { Label("Maintenance", systemImage: "checkmark.shield") }
         }
         .frame(width: 540, height: 430)
         .tint(theme.accent)
+    }
+}
+
+struct MaintenancePreferences: View {
+    @AppStorage("photodrop.primaryDestination") private var primary: String = ""
+    @AppStorage("photodrop.scheduledVerify.enabled") private var enabled: Bool = false
+    @AppStorage("photodrop.scheduledVerify.schedule") private var scheduleRaw: String = VerifySchedule.weekly.rawValue
+    @AppStorage("photodrop.scheduledVerify.binaryPath") private var binaryPath: String = ""
+    @AppStorage("photodrop.scheduledVerify.library") private var libraryOverride: String = ""
+    @State private var errorMessage: String?
+
+    private var schedule: VerifySchedule { VerifySchedule(rawValue: scheduleRaw) ?? .weekly }
+    private var libraryPath: String { libraryOverride.isEmpty ? primary : libraryOverride }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Verify the library on a schedule", isOn: $enabled)
+                    .disabled(binaryPath.isEmpty || libraryPath.isEmpty)
+                Picker("How often", selection: $scheduleRaw) {
+                    ForEach(VerifySchedule.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                .disabled(!enabled)
+            } header: {
+                Text("Scheduled verification")
+            } footer: {
+                Text("Runs `photodrop verify` in the background (03:00) via a launchd agent and notifies you if it finds bit-rot or missing files. Report-only — it never changes your library.")
+            }
+
+            Section {
+                TextField("photodrop CLI", text: $binaryPath,
+                          prompt: Text("Path to the built photodrop binary"))
+                    .lineLimit(1).truncationMode(.middle)
+                TextField("Library to verify", text: $libraryOverride,
+                          prompt: Text(primary.isEmpty ? "Library folder" : "Defaults to the primary destination"))
+                    .lineLimit(1).truncationMode(.middle)
+            } footer: {
+                if binaryPath.isEmpty {
+                    Text("Build the photodrop tool (scheme `photodrop`) and point here to enable scheduling.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onChange(of: enabled) { _, _ in apply() }
+        .onChange(of: scheduleRaw) { _, _ in if enabled { apply() } }
+        .alert("Scheduling failed", isPresented: Binding(
+            get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { errorMessage = nil }
+        } message: { Text(errorMessage ?? "") }
+    }
+
+    private func apply() {
+        do {
+            if enabled {
+                guard !binaryPath.isEmpty, !libraryPath.isEmpty else { enabled = false; return }
+                try ScheduledVerification.install(photodropPath: binaryPath, libraryPath: libraryPath, schedule: schedule)
+            } else {
+                try ScheduledVerification.uninstall()
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            if enabled { enabled = false }   // revert on failure
+        }
     }
 }
 
