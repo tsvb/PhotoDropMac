@@ -29,6 +29,15 @@ enum Notifier {
         post(title: "Ingest halted", body: "Stopped on \(reason) — see the app for details.")
     }
 
+    /// A configured post-ingest hook failed. Posted regardless of whether the app
+    /// is frontmost — unlike the completion banners there's no in-app surface for
+    /// it, so the user would otherwise never learn the hook broke.
+    @MainActor
+    static func notifyHookFailure(message: String) {
+        guard enabled else { return }
+        post(title: "Post-ingest hook failed", body: message)
+    }
+
     private static func post(title: String, body: String) {
         // Fire-and-forget. Build the non-Sendable UNUserNotificationCenter /
         // content objects inside the Task so nothing non-Sendable is captured

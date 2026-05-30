@@ -390,6 +390,25 @@ final class Copier {
         } else {
             state = .completed(result)
             Notifier.notifyCompletion(result: result)
+            runPostIngestHookIfConfigured(result)
+        }
+    }
+
+    // Runs the user's post-ingest hook (if configured) on a clean completion —
+    // fire-and-forget so a slow hook can't delay the completion UI, and
+    // best-effort so a missing/failing hook never affects the copy result.
+    private func runPostIngestHookIfConfigured(_ result: CopyResult) {
+        let script = (UserDefaults.standard.string(forKey: PostIngestHook.defaultsKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !script.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            do {
+                try await PostIngestHook.run(scriptPath: script, result: result)
+            } catch let error as PostIngestHookError {
+                await Notifier.notifyHookFailure(message: error.message)
+            } catch {
+                await Notifier.notifyHookFailure(message: error.localizedDescription)
+            }
         }
     }
 
