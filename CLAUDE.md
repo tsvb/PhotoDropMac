@@ -82,6 +82,7 @@ Preferences are plain `@AppStorage` keys with **no central store** — the same 
 - `photodrop.verifyCopies` (Bool, default `true`)
 - `photodrop.ejectAfterIngest` (Bool, default `false`)
 - `photodrop.showCompletionSheet` (Bool, default `true`)
+- `photodrop.notifyOnCompletion` (Bool, default `true`) — posts a Notification Center banner on finish when the app isn't frontmost ([Notifier.swift](Sources/PhotoDropMac/Notifier.swift), read via `UserDefaults`; toggled in `SettingsView`)
 - `photodrop.template.folder` (String, default `{yyyy-MM-dd}[_{Description}]`) — day-folder name template
 - `photodrop.template.filename` (String, default `{yyyyMMdd_HHmmss}_{OriginalStem}`) — primary file stem template (extension auto-appended). Both edited in Settings → Naming (`NamingPreferences`), read in `MainView` (threaded to `IngestPlanner`/`Copier`)
 - `photodrop.verificationStyle` (`VerificationStyle` rawValue, default `.steady`) — the app **theme**, a committed identity per option (not just an accent):
