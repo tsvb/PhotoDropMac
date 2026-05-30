@@ -53,6 +53,14 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
         )
     }
 
+    /// Decode the saved presets at `url` (nonisolated, so the CLI can read them
+    /// without the `@MainActor` `PresetStore`). Returns [] if absent/unreadable.
+    static func loadAll(from url: URL) -> [IngestPreset] {
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? JSONDecoder().decode([IngestPreset].self, from: data) else { return [] }
+        return decoded
+    }
+
     /// Write this preset's values into the shared settings.
     func apply(to defaults: UserDefaults = .standard) {
         defaults.set(primaryDestination, forKey: Keys.primary)
@@ -88,9 +96,7 @@ final class PresetStore {
     }
 
     func load() {
-        guard let data = try? Data(contentsOf: storeURL),
-              let decoded = try? JSONDecoder().decode([IngestPreset].self, from: data) else { return }
-        presets = decoded
+        presets = IngestPreset.loadAll(from: storeURL)
     }
 
     func save() {

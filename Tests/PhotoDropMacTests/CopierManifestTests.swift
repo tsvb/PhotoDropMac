@@ -169,4 +169,22 @@ final class CopierManifestTests: XCTestCase {
         XCTAssertFalse(landedFiles.contains { $0.hasSuffix(".DNG") },
                        "the primary file must have been rolled back from disk")
     }
+
+    /// Round-trip: an ingest's own manifest must re-verify cleanly. Guards that
+    /// manifest paths are recorded relative to the library root (a trailing
+    /// slash on the root URL previously left absolute paths, so re-verify saw
+    /// every file as "missing").
+    func testIngestThenVerifyRoundTrips() async throws {
+        let tmp = try freshTempDir()
+        let primary = try makeSourceFile("IMG_0005.DNG", bytes: 4096, in: tmp)
+        let dest = tmp.appendingPathComponent("library", isDirectory: true)
+
+        let result = try await runToCompletion(makeCopier(tmp: tmp), dest: dest,
+                                                [yearGroup(primary: primary, companions: [])])
+        XCTAssertEqual(result.filesCopied, 1)
+
+        let report = try XCTUnwrap(VerifyEngine.run(target: dest))
+        XCTAssertTrue(report.allGood, "the ingest's own manifest must verify; issues: \(report.issues.map(\.path))")
+        XCTAssertEqual(report.verified, 1)
+    }
 }

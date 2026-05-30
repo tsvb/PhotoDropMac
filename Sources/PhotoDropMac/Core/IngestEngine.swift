@@ -403,11 +403,16 @@ final class IngestEngine {
     }
 
     private func relativePath(of url: URL, under root: URL) -> String {
-        let rootPath = root.path(percentEncoded: false)
-        let path = url.path(percentEncoded: false)
-        if path.hasPrefix(rootPath + "/") {
-            return String(path.dropFirst(rootPath.count + 1))
+        // Compare path *components* rather than string prefixes: a directory URL
+        // renders with a trailing slash via path(percentEncoded:), which would
+        // defeat a naive hasPrefix and leave an absolute path in the manifest
+        // (re-verify then can't find the file).
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let urlComponents = url.standardizedFileURL.pathComponents
+        if urlComponents.count > rootComponents.count,
+           Array(urlComponents.prefix(rootComponents.count)) == rootComponents {
+            return urlComponents.dropFirst(rootComponents.count).joined(separator: "/")
         }
-        return path
+        return url.path(percentEncoded: false)
     }
 }
