@@ -7,8 +7,108 @@ struct PhotoDropCommand: AsyncParsableCommand {
         commandName: "photodrop",
         abstract: "Verify and ingest photo libraries from the command line.",
         version: "0.0.1",
-        subcommands: [Verify.self]
+        subcommands: [Verify.self, Ingest.self]
     )
+}
+
+// MARK: - ingest
+
+struct Ingest: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Ingest photos from a card into a date-organized library (hash-verified)."
+    )
+
+    @Option(name: .long, help: "Memory card or source folder to ingest from.")
+    var from: String
+
+    @Option(name: .long, help: "Primary destination library folder (or supplied by --preset).")
+    var to: String?
+
+    @Option(name: .long, help: "Additional mirror destination folder (repeatable).")
+    var archive: [String] = []
+
+    @Option(name: .long, help: "Apply a saved ingest preset by name.")
+    var preset: String?
+
+    @Flag(inversion: .prefixedNo, help: "Hash-verify each copy (default on).")
+    var verify: Bool?
+
+    @Flag(inversion: .prefixedNo, help: "Eject the card when finished (default off).")
+    var eject: Bool?
+
+    @Option(name: .customLong("description"), help: "Description used by the naming templates.")
+    var descriptionText: String = ""
+
+    @Option(name: .long, help: "Day-folder name template.")
+    var folderTemplate: String?
+
+    @Option(name: .long, help: "File-name stem template.")
+    var fileTemplate: String?
+
+    func run() async throws {
+        let cardURL = URL(fileURLWithPath: from, isDirectory: true)
+
+        let loadedPreset: IngestPreset?
+        if let preset {
+            loadedPreset = IngestPreset.loadAll(from: PresetStore.defaultURL).first { $0.name == preset }
+            guard loadedPreset != nil else { CLIOutput.error("No preset named “\(preset)”."); throw ExitCode(2) }
+        } else {
+            loadedPreset = nil
+        }
+
+        guard let primaryPath = (to ?? loadedPreset?.primaryDestination).flatMap({ $0.isEmpty ? nil : $0 }) else {
+            CLIOutput.error("A primary destination is required (--to or a preset that defines one).")
+            throw ExitCode(2)
+        }
+        let primaryURL = URL(fileURLWithPath: primaryPath, isDirectory: true)
+
+        let archiveURLs: [URL]
+        if !archive.isEmpty {
+            archiveURLs = archive.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        } else if let a = loadedPreset?.archiveDestination, !a.isEmpty {
+            archiveURLs = [URL(fileURLWithPath: a, isDirectory: true)]
+        } else {
+            archiveURLs = []
+        }
+
+        let template = NamingTemplate(
+            folder: folderTemplate ?? loadedPreset?.folderTemplate ?? NamingTemplate.default.folder,
+            filename: fileTemplate ?? loadedPreset?.fileTemplate ?? NamingTemplate.default.filename
+        )
+        let doVerify = verify ?? loadedPreset?.verifyCopies ?? true
+        let doEject = eject ?? loadedPreset?.ejectAfterIngest ?? false
+
+        let bundles = AssetDiscovery.scan(root: cardURL)
+        guard !bundles.isEmpty else {
+            print("No recognized photos found on \(cardURL.path).")
+            return
+        }
+
+        let volumeID = (try? cardURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? cardURL.path
+        let cardLabel = (try? cardURL.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? cardURL.lastPathComponent
+        let showProgress = isatty(FileHandle.standardError.fileDescriptor) != 0
+
+        let engine = IngestEngine(
+            bundles: bundles, description: descriptionText, primaryRoot: primaryURL,
+            archiveRoots: archiveURLs, verify: doVerify, ejectAfter: doEject,
+            sourceMountPoint: cardURL.path, sourceVolumeID: volumeID,
+            template: template, cardLabel: cardLabel,
+            cache: HashCache(storeURL: HashCache.defaultURL),
+            indexStoreURL: DestinationIndex.defaultStoreURL,
+            onProgress: { progress in
+                guard showProgress else { return }
+                let size = ByteCountFormatter.string(fromByteCount: progress.bytesCopied, countStyle: .file)
+                FileHandle.standardError.write(Data("\r  \(progress.completedBundles)/\(progress.totalBundles) bundles · \(size)\u{1B}[K".utf8))
+            }
+        )
+        let result = await engine.run()
+        if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
+
+        guard let result else { CLIOutput.error("Ingest cancelled."); throw ExitCode(2) }
+        print(CLIOutput.ingestSummary(result))
+        if result.halted { throw ExitCode(2) }
+        if result.filesFailed > 0 { throw ExitCode(1) }
+    }
 }
 
 // MARK: - verify
@@ -53,6 +153,19 @@ struct Verify: ParsableCommand {
 enum CLIOutput {
     static func error(_ message: String) {
         FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+
+    static func ingestSummary(_ r: CopyResult) -> String {
+        var parts = ["\(r.filesCopied) copied"]
+        if r.filesSkipped > 0 { parts.append("\(r.filesSkipped) skipped") }
+        if r.filesFailed > 0 { parts.append("\(r.filesFailed) failed") }
+        let size = ByteCountFormatter.string(fromByteCount: r.totalBytes, countStyle: .file)
+        let lead = r.halted ? "✗ Halted (\(r.haltReason ?? "error")): "
+            : (r.filesFailed > 0 ? "⚠ Completed with errors: " : "✓ Ingest complete: ")
+        var s = lead + parts.joined(separator: ", ") + " · " + size
+        if let manifestURL = r.manifestURL { s += "\n  manifest: \(manifestURL.path)" }
+        if r.wasEjected { s += "\n  card ejected" }
+        return s
     }
 
     static func verifyHuman(_ r: VerifyReport) -> String {
