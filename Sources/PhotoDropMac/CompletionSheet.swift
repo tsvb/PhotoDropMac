@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct CompletionSheet: View {
     let result: CopyResult
@@ -50,6 +51,9 @@ struct CompletionSheet: View {
                 }
                 Button("Show in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([result.primaryDestination])
+                }
+                if let manifestURL = result.manifestURL {
+                    Button("Export Manifest…") { exportManifest(manifestURL) }
                 }
                 Button("Done", action: onDismiss)
                     .keyboardShortcut(.defaultAction)
@@ -154,6 +158,20 @@ struct CompletionSheet: View {
         let mib = Double(result.totalBytes) / result.elapsedSeconds / (1024 * 1024)
         return "\(mib.formatted(.number.precision(.fractionLength(1)))) MB/s"
     }
+
+    // The manifest is already written next to the photos; this saves a copy
+    // wherever the user wants (e.g. to send a receipt with a delivery).
+    private func exportManifest(_ manifestURL: URL) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = manifestURL.lastPathComponent
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.title = "Export Verification Manifest"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let fm = FileManager.default
+        try? fm.removeItem(at: destination)
+        try? fm.copyItem(at: manifestURL, to: destination)
+    }
 }
 
 private func previewResult(copied: Int, skipped: Int, failed: Int, ejected: Bool, log: Bool) -> CopyResult {
@@ -163,6 +181,7 @@ private func previewResult(copied: Int, skipped: Int, failed: Int, ejected: Bool
         totalBytes: 26_400_000_000, elapsedSeconds: 642,
         primaryDestination: URL(fileURLWithPath: "/Users/you/Pictures/Library"),
         logURL: log ? URL(fileURLWithPath: "/tmp/ingest.log") : nil,
+        manifestURL: log ? URL(fileURLWithPath: "/tmp/ingest.json") : nil,
         wasEjected: ejected, halted: false, haltReason: nil
     )
 }

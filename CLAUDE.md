@@ -55,7 +55,13 @@ A bundle is one primary photo + its companions (`.xmp`/`.dop`/`.pp3` sidecars, J
 - Per bundle, per file: dedup-check → copy+tee-hash → optional verify → record hash. Skipped (duplicate) bytes still count toward progress so the bar fills smoothly.
 - **Rollback:** if any file in a bundle fails, already-written files from *that bundle* are deleted (the bundle is all-or-nothing).
 - **Halt vs. continue:** a verification mismatch halts the entire job; any other per-bundle error is logged, counted as failed, and the job continues.
-- Optionally ejects the card (`DriveEjector` → `diskutil eject`), writes a log file (`JobLogger` → `~/Library/Logs/PhotoDrop/ingest-<ts>.log`), and persists the hash cache.
+- Optionally ejects the card (`DriveEjector` → `diskutil eject`), writes a log file (`JobLogger` → `~/Library/Logs/PhotoDrop/ingest-<ts>.log`), writes a **verification manifest** (`ManifestWriter` → `<primaryRoot>/PhotoDrop Manifests/ingest-<ts>.{json,csv}`), and persists the hash cache.
+
+### Verification manifest (`Manifest` / `ManifestWriter`)
+
+Every ingest writes a receipt of what landed and its checksums, as JSON + CSV, into a `PhotoDrop Manifests/` folder at the primary destination root (filename stamp matches the job's log). Entries are accumulated during the **primary** copy pass only (`recordManifest:` in `copyBundle`) — the archive is a byte-identical mirror — and cover copied/verified files (with their `xxhash64`) and skipped duplicates (matched path, no re-hash). The manifest URL flows back in `CopyResult.manifestURL`; the completion sheet's **Export Manifest…** saves a copy elsewhere. This surfaces the hashes the copy engine already computes rather than discarding them after the verify step.
+
+**Re-verification** (`Verifier` / `VerifySheet`, launched from the toolbar's *Verify Library* button): pick a library folder (or a manifest `.json`) and it re-hashes every file recorded in the manifest(s) under `<folder>/PhotoDrop Manifests/`, reporting matches / changed (silent corruption) / missing. The manifest is the source of truth — each file resolves relative to its own manifest's location (two levels up), so a moved library still verifies. Hashing reuses `XxHash64.hash(fileAt:)` and runs off-main with throttled progress, mirroring the copy engine.
 
 State is exposed as a `CopierState` enum (`idle`/`running`/`completed`/`cancelled`/`failed`) that the UI switches on.
 
