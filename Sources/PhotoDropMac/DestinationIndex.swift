@@ -38,6 +38,11 @@ struct DestinationIndex: Sendable {
         sourceURL: URL,
         using cache: HashCache
     ) async -> URL? {
+        // Never dedup zero-byte files: every empty file shares size 0 and the
+        // same (constant) empty-input hash, so treating them as duplicates would
+        // skip a distinct empty companion as a "duplicate" of an unrelated empty
+        // file — silently dropping it from its bundle. Always copy them instead.
+        guard sourceSize > 0 else { return nil }
         guard let candidates = bySize[sourceSize], !candidates.isEmpty else { return nil }
         guard let sourceHash = await cache.sourceHash(volumeUUID: sourceVolumeID, url: sourceURL) else {
             return nil
