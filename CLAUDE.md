@@ -18,7 +18,19 @@ xcodebuild -project PhotoDropMac.xcodeproj -scheme PhotoDropMac \
            -configuration Debug -destination 'platform=macOS' build    # build
 ```
 
-`xcodegen` is installed via Homebrew (`brew install xcodegen`). There is a single application target/scheme, `PhotoDropMac`. Deployment target is macOS 14.0.
+`xcodegen` is installed via Homebrew (`brew install xcodegen`). Deployment target is macOS 14.0. There are two targets: the `PhotoDropMac` app (scheme `PhotoDropMac`), and `photodrop`, a headless command-line tool (scheme `photodrop`).
+
+### The `photodrop` CLI
+
+`photodrop` is a `tool` target that compiles the shared `Core/` sources (the engines + pure logic) plus `Sources/PhotoDropCLI/`, and links **swift-argument-parser** (declared under `packages:` in `project.yml`). It never compiles the SwiftUI `UI/`. Build it with a **scheme** (a `-target` build mishandles the SPM module under Swift 6 explicit modules):
+
+```bash
+xcodegen generate
+xcodebuild -project PhotoDropMac.xcodeproj -scheme photodrop \
+           -configuration Debug -destination 'platform=macOS' build
+```
+
+`photodrop verify <library|manifest.json> [--json]` re-verifies a library against its manifests (exit `0` all-verified, `1` issues found, `2` no manifest / error), driving the same `VerifyEngine` the app uses.
 
 ### Tests
 
