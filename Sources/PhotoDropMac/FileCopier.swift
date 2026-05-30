@@ -1,5 +1,18 @@
 import Foundation
 import Darwin
+import os
+
+/// A thread-safe, one-way "cancelled" flag the copy loop polls cheaply from its
+/// detached worker. The per-file copy runs in a `Task.detached`, which does
+/// **not** inherit cancellation from the Copier's task — so `Task.checkCancellation()`
+/// alone never fires for a user cancel mid-file. The Copier sets this flag from
+/// its own task on cancel and threads it into `copyAndHash`, carrying the signal
+/// across the detached boundary that `Task` cancellation can't cross.
+final class CancellationFlag: Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: false)
+    func cancel() { state.withLock { $0 = true } }
+    var isCancelled: Bool { state.withLock { $0 } }
+}
 
 enum FileCopierError: Error, CustomStringConvertible {
     case verificationMismatch(file: URL, expected: UInt64, actual: UInt64)
@@ -28,12 +41,16 @@ enum FileCopier {
     // calling thread; the caller decides how to reflect it (e.g. Task hop
     // to MainActor).
     //
-    // Returns the xxhash64 digest of the stream. Throws `CancellationError`
-    // if the surrounding Task is cancelled.
+    // Returns the xxhash64 digest of the stream. Throws `CancellationError` if
+    // `isCancelled()` returns true between chunks (or the surrounding Task is
+    // cancelled). An explicit signal is needed because the only caller runs this
+    // in a Task.detached, which doesn't inherit Task cancellation — see
+    // `CancellationFlag`.
     static func copyAndHash(
         source: URL,
         destination: URL,
         bufferSize: Int = 1 << 20,
+        isCancelled: () -> Bool = { false },
         onProgress: (Int64) -> Void
     ) throws -> UInt64 {
         let destDir = destination.deletingLastPathComponent()
@@ -74,7 +91,10 @@ enum FileCopier {
             var hasher = XxHash64()
 
             while true {
-                try Task.checkCancellation()
+                // Detached work doesn't inherit Task cancellation, so honour the
+                // explicit flag too; either signal aborts here and the catch
+                // below removes the partial file we created.
+                if Task.isCancelled || isCancelled() { throw CancellationError() }
 
                 let chunk: Data?
                 do {
