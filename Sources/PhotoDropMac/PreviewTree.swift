@@ -66,16 +66,17 @@ struct YearRow: View {
 
 struct FolderRow: View {
     let folder: DestinationFolder
+    @AppStorage("photodrop.verificationStyle") private var theme = VerificationStyle.steady
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "folder.fill")
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(theme.resolvedAccent)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(folder.dayName)
                     .fontWeight(.semibold)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(theme.resolvedAccent)
                 Text("\(folder.fileCount.formatted()) files · \(folder.totalBytes.formatted(.byteCount(style: .file)))")
                     .font(.caption)
                     .foregroundStyle(.secondary)

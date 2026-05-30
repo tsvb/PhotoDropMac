@@ -5,6 +5,8 @@ struct ProgressPane: View {
     let log: [LogEntry]
     let onCancel: () -> Void
 
+    @AppStorage("photodrop.verificationStyle") private var verificationStyle = VerificationStyle.steady
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             progressCard
@@ -14,15 +16,33 @@ struct ProgressPane: View {
             Divider()
             LogView(entries: log)
         }
+        .tint(verificationStyle.accent)
     }
 
     private var progressCard: some View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("Ingesting… \(Int(progress.percent * 100))%")
-                        .font(.headline)
-                        .monospacedDigit()
+                    Group {
+                        switch verificationStyle {
+                        case .ledger:
+                            // Serif italic verb + monospaced percent.
+                            Text("Ingesting ").font(.system(.title3, design: .serif).italic())
+                                + Text("\(Int(progress.percent * 100))%")
+                                    .font(.system(.title3, design: .monospaced))
+                        case .pressroom:
+                            // Wire-dispatch: uppercase tracked mono verb + percent.
+                            Text("INGESTING ")
+                                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                                .tracking(2)
+                                + Text("\(Int(progress.percent * 100))%")
+                                    .font(.system(.subheadline, design: .monospaced).weight(.bold))
+                        case .steady:
+                            Text("Ingesting… \(Int(progress.percent * 100))%")
+                                .font(.headline)
+                        }
+                    }
+                    .monospacedDigit()
                     Spacer()
                     Button("Cancel", role: .destructive, action: onCancel)
                         .controlSize(.small)
@@ -51,10 +71,20 @@ struct ProgressPane: View {
                 }
             }
 
-            // Seal-grid trust badge — fills cell-by-cell as the job verifies.
+            // Trust badge — fills as the job verifies. The mark depends on the
+            // verification-style setting: seal grid, stamp ring, or aperture.
             VStack(spacing: 4) {
-                SealGrid(progress: progress.percent)
-                    .frame(width: 52, height: 52)
+                switch verificationStyle {
+                case .ledger:
+                    StampMark(progress: progress.percent, accent: verificationStyle.resolvedAccent)
+                        .frame(width: 52, height: 52)
+                case .pressroom:
+                    ApertureMark(progress: progress.percent, accent: verificationStyle.resolvedAccent)
+                        .frame(width: 52, height: 52)
+                case .steady:
+                    SealGrid(progress: progress.percent, accent: verificationStyle.resolvedAccent)
+                        .frame(width: 52, height: 52)
+                }
                 Text("VERIFIED")
                     .font(.system(size: 9, weight: .semibold))
                     .tracking(0.5)

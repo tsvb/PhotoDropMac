@@ -2,6 +2,8 @@ import SwiftUI
 import AppKit
 
 struct SettingsView: View {
+    @AppStorage("photodrop.verificationStyle") private var theme = VerificationStyle.steady
+
     var body: some View {
         TabView {
             GeneralPreferences()
@@ -12,12 +14,14 @@ struct SettingsView: View {
                 .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
         }
         .frame(width: 520, height: 360)
+        .tint(theme.accent)
     }
 }
 
 struct GeneralPreferences: View {
     @AppStorage("photodrop.primaryDestination") private var primary: String = ""
     @AppStorage("photodrop.archiveDestination") private var archive: String = ""
+    @AppStorage("photodrop.verificationStyle") private var verificationStyle = VerificationStyle.steady
 
     var body: some View {
         Form {
@@ -32,6 +36,21 @@ struct GeneralPreferences: View {
                     path: $archive,
                     prompt: "Second copy location"
                 )
+            }
+
+            Section {
+                Picker("Theme", selection: $verificationStyle) {
+                    ForEach(VerificationStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text(verificationStyle.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

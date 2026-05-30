@@ -5,6 +5,8 @@ struct CompletionSheet: View {
     let result: CopyResult
     let onDismiss: () -> Void
 
+    @AppStorage("photodrop.verificationStyle") private var verificationStyle = VerificationStyle.steady
+
     var body: some View {
         VStack(spacing: 20) {
             if hadIssues {
@@ -13,13 +15,24 @@ struct CompletionSheet: View {
                     .foregroundStyle(.orange)
                     .symbolRenderingMode(.hierarchical)
             } else {
-                SealGrid(progress: 1, pulse: true)
-                    .frame(width: 56, height: 56)
+                // Success hero — the mark depends on the verification style.
+                switch verificationStyle {
+                case .ledger:
+                    StampMark(progress: 1, stamped: true, accent: verificationStyle.resolvedAccent)
+                        .frame(width: 72, height: 72)
+                case .pressroom:
+                    ApertureMark(progress: 1, closed: true, accent: verificationStyle.resolvedAccent)
+                        .frame(width: 72, height: 72)
+                case .steady:
+                    SealGrid(progress: 1, pulse: true, accent: verificationStyle.resolvedAccent)
+                        .frame(width: 56, height: 56)
+                }
             }
 
             VStack(spacing: 4) {
-                Text(title)
-                    .font(.title2.weight(.semibold))
+                Text(verificationStyle == .pressroom ? title.uppercased() : title)
+                    .font(titleFont)
+                    .tracking(verificationStyle == .pressroom ? 2 : 0)
                 Text(subtitle)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -45,9 +58,20 @@ struct CompletionSheet: View {
         }
         .padding(32)
         .frame(minWidth: 440, idealWidth: 480)
+        .tint(verificationStyle.accent)
     }
 
     private var hadIssues: Bool { result.filesFailed > 0 }
+
+    // Ledger swaps the SF Pro semibold headline for a regular-weight system
+    // serif (New York) — the "single moment of typographic warmth".
+    private var titleFont: Font {
+        switch verificationStyle {
+        case .ledger:    return .system(.title, design: .serif)
+        case .pressroom: return .system(.title3, design: .monospaced).weight(.bold)
+        case .steady:    return .title2.weight(.semibold)
+        }
+    }
 
     private var title: String {
         if hadIssues {

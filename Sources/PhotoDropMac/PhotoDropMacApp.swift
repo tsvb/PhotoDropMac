@@ -6,12 +6,16 @@ struct PhotoDropMacApp: App {
     @State private var watcher = DriveWatcher()
     @State private var coordinator = AppCoordinator()
     @AppStorage("photodrop.menuBar.visibility") private var menuBarVisibility = MenuBarVisibility.always
+    @AppStorage("photodrop.verificationStyle") private var theme = VerificationStyle.steady
 
     var body: some Scene {
         Window("PhotoDrop", id: "main") {
             MainView()
                 .environment(watcher)
                 .environment(coordinator)
+                .tint(theme.accent)
+                .fontDesign(theme.fontDesign)
+                .preferredColorScheme(theme.colorScheme)
         }
         .defaultSize(width: 1020, height: 700)
         .windowToolbarStyle(.unified)
@@ -30,6 +34,9 @@ struct PhotoDropMacApp: App {
 
         Settings {
             SettingsView()
+                .tint(theme.accent)
+                .fontDesign(theme.fontDesign)
+                .preferredColorScheme(theme.colorScheme)
         }
     }
 

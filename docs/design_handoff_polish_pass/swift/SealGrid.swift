@@ -25,9 +25,6 @@ struct SealGrid: View {
     /// If true, the last cell does a single scale pulse on appear.
     /// Use on the completion sheet; do not toggle during ingest.
     var pulse: Bool = false
-    /// Fill colour for verified cells. Defaults to the system accent; callers
-    /// pass the active theme's resolved accent.
-    var accent: Color = .accentColor
 
     private let columns = 4
     private let rows = 4
@@ -63,7 +60,7 @@ struct SealGrid: View {
                 let path = Path(roundedRect: rect, cornerRadius: 1.5)
 
                 if i < filled {
-                    ctx.fill(path, with: .color(accent))
+                    ctx.fill(path, with: .color(.accentColor))
                 } else {
                     ctx.fill(path, with: .color(.primary.opacity(0.10)))
                 }
