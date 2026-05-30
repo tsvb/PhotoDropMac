@@ -53,8 +53,9 @@ final class CopierManifestTests: XCTestCase {
         return YearGroup(id: 2026, year: 2026, folders: [folder])
     }
 
-    private func runToCompletion(_ copier: Copier, dest: URL, _ groups: [YearGroup]) async throws -> CopyResult {
-        copier.start(yearGroups: groups, primaryDestination: dest, archiveDestination: nil,
+    private func runToCompletion(_ copier: Copier, dest: URL, _ groups: [YearGroup],
+                                 archive: URL? = nil) async throws -> CopyResult {
+        copier.start(yearGroups: groups, primaryDestination: dest, archiveDestination: archive,
                      description: "", verify: true, ejectAfter: false, sourceMountPoint: nil,
                      sourceVolumeID: "test-vol", template: .default, cardLabel: "")
         var ticks = 0
@@ -91,6 +92,26 @@ final class CopierManifestTests: XCTestCase {
         XCTAssertEqual(manifest.files.first?.name, "IMG_0001.DNG")
         XCTAssertEqual(manifest.files.first?.status, "verified")
         XCTAssertNotNil(manifest.files.first?.xxhash64)
+    }
+
+    /// §2.2/§2.3: the reported total bytes is the unique bytes that landed in the
+    /// primary library — not doubled by the archive pass, and derived from the
+    /// receipt (deterministic) rather than the async progress counter.
+    func testReportedTotalBytesNotDoubledWithArchive() async throws {
+        let tmp = try freshTempDir()
+        let primary = try makeSourceFile("IMG_0003.DNG", bytes: 4096, in: tmp)
+        let dest = tmp.appendingPathComponent("library", isDirectory: true)
+        let archive = tmp.appendingPathComponent("backup", isDirectory: true)
+
+        let result = try await runToCompletion(makeCopier(tmp: tmp), dest: dest,
+                                                [yearGroup(primary: primary, companions: [])],
+                                                archive: archive)
+
+        XCTAssertEqual(result.filesCopied, 2, "the file is written to both destinations")
+        XCTAssertEqual(result.totalBytes, 4096, "reported size is the unique landed bytes, not 2×")
+        let manifest = try decodeManifest(result.manifestURL)
+        XCTAssertEqual(manifest.totalBytes, 4096)
+        XCTAssertEqual(manifest.files.count, 1, "manifest records the primary pass only")
     }
 
     /// Regression for §1.2: a bundle that fails partway (a companion whose source
