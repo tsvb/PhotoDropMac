@@ -1,10 +1,13 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 struct MainView: View {
     @Environment(DriveWatcher.self) private var watcher
     @Environment(AppCoordinator.self) private var coordinator
     @State private var planner = IngestPlanner()
     @State private var copier = Copier()
+    @State private var verifier = Verifier()
 
     @AppStorage("photodrop.primaryDestination") private var primaryDest: String = ""
     @AppStorage("photodrop.archiveDestination") private var archiveDest: String = ""
@@ -15,6 +18,7 @@ struct MainView: View {
     @State private var descriptionText: String = ""
     @State private var showInspector: Bool = true
     @State private var autoIngestPending = false
+    @State private var showVerifySheet = false
 
     private var source: DetectedDrive? {
         guard let id = selectedSourceID else { return nil }
@@ -39,6 +43,14 @@ struct MainView: View {
             .navigationSubtitle(detailSubtitle)
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        chooseVerifyTarget()
+                    } label: {
+                        Label("Verify Library", systemImage: "checkmark.shield")
+                    }
+                    .help("Re-verify a library folder against its manifest")
+                    .disabled(copier.isRunning || verifier.isRunning)
+
                     Button {
                         watcher.rescan()
                         planner.setSource(source, description: descriptionText)
@@ -103,6 +115,12 @@ struct MainView: View {
         .onChange(of: planner.isScanning) { _, _ in
             tryAutoIngest()
         }
+        .sheet(isPresented: $showVerifySheet) {
+            VerifySheet(verifier: verifier) {
+                showVerifySheet = false
+                verifier.reset()
+            }
+        }
     }
 
     private var canStartIngest: Bool {
@@ -145,6 +163,25 @@ struct MainView: View {
         autoIngestPending = false
         coordinator.pendingOneClickCardID = nil
         startIngest()
+    }
+
+    // Re-verify an existing library against its manifest. Accepts a library
+    // folder (we find the manifests inside it) or a manifest .json directly.
+    private func chooseVerifyTarget() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        panel.message = "Choose a library folder, or a manifest .json, to re-verify."
+        panel.prompt = "Verify"
+        if !primaryDest.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: primaryDest, isDirectory: true)
+        }
+        if panel.runModal() == .OK, let url = panel.url {
+            verifier.start(target: url)
+            showVerifySheet = true
+        }
     }
 
     private var detailSubtitle: String {

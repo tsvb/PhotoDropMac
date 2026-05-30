@@ -71,6 +71,39 @@ enum ManifestWriter {
         return try? encoder.encode(manifest)
     }
 
+    static func decode(_ data: Data) -> Manifest? {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(Manifest.self, from: data)
+    }
+
+    /// Manifest JSON files reachable from `target`, for re-verification:
+    /// - a `.json` file → just that one;
+    /// - a library root → every `.json` in its `PhotoDrop Manifests/` folder;
+    /// - the `PhotoDrop Manifests/` folder itself → every `.json` in it.
+    /// Each manifest's library root is recovered as two levels up from the JSON
+    /// (it lives in `<root>/PhotoDrop Manifests/`), so a moved library still
+    /// resolves against where the files now are.
+    static func manifestURLs(near target: URL) -> [URL] {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: target.path, isDirectory: &isDir) else { return [] }
+
+        if !isDir.boolValue {
+            return target.pathExtension.lowercased() == "json" ? [target] : []
+        }
+
+        var searchDirs = [target.appendingPathComponent(folderName, isDirectory: true)]
+        if target.lastPathComponent == folderName { searchDirs.append(target) }
+
+        var found: [URL] = []
+        for dir in searchDirs {
+            let items = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+            found += items.filter { $0.pathExtension.lowercased() == "json" }
+        }
+        return found
+    }
+
     static func csv(_ manifest: Manifest) -> String {
         var out = "name,path,bytes,xxhash64,status\n"
         for entry in manifest.files {
