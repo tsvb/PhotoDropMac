@@ -39,9 +39,10 @@ enum PathPlanner {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = .current
 
-        // The day-folder leaf a bundle lands in, per the folder template. Must
-        // match CopyPlan.destinationDirectory's leaf for the preview to agree
-        // with the copy.
+        // The day-folder a bundle lands in (relative to its year), per the
+        // folder template — a "/" in the template nests subfolders. Joined with
+        // "/" so it groups identically to CopyPlan.destinationDirectory's
+        // components; the preview must agree with the copy.
         func leaf(for bundle: AssetBundle) -> String {
             let context = TemplateContext(
                 date: bundle.primary.dateTaken,
@@ -50,8 +51,8 @@ enum PathPlanner {
                 originalStem: bundle.primary.url.deletingPathExtension().lastPathComponent,
                 cardLabel: safeCardLabel
             )
-            let rendered = sanitize(TemplateRenderer.render(template.folder, context))
-            if !rendered.isEmpty { return rendered }
+            let components = sanitizedComponents(TemplateRenderer.render(template.folder, context))
+            if !components.isEmpty { return components.joined(separator: "/") }
             let c = cal.dateComponents([.year, .month, .day], from: bundle.primary.dateTaken)
             return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 1, c.day ?? 1)
         }
@@ -109,6 +110,19 @@ enum PathPlanner {
         // ".." (a path-traversal / wrong-directory write) or a hidden entry.
         out = String(out.drop(while: { $0 == "." }))
         return truncatedToByteLimit(out, maxComponentBytes)
+    }
+
+    /// Splits a rendered folder template into one or more sanitized path
+    /// components. A "/" in the *template* nests a subfolder (e.g.
+    /// `{MM}/{yyyy-MM-dd}` → `["05", "2026-05-28"]`); each component is sanitized
+    /// independently and empties — including `.`/`..`, which `sanitize` empties —
+    /// are dropped. User data interpolated into the template is already
+    /// slash-stripped by `sanitize` before interpolation, so it can't inject
+    /// nesting; only the template author's literal "/" does.
+    static func sanitizedComponents(_ rendered: String) -> [String] {
+        rendered.split(separator: "/", omittingEmptySubsequences: true)
+            .map { sanitize(String($0)) }
+            .filter { !$0.isEmpty }
     }
 
     /// Longest prefix of `s` that fits within `limit` UTF-8 bytes, truncated on a

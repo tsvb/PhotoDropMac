@@ -81,16 +81,19 @@ enum CopyPlan {
             originalStem: bundle.primary.url.deletingPathExtension().lastPathComponent,
             cardLabel: PathPlanner.sanitize(cardLabel)
         )
-        let renderedLeaf = PathPlanner.sanitize(TemplateRenderer.render(template.folder, context))
+        // A "/" in the folder template nests subfolders below the (fixed) year.
+        let components = PathPlanner.sanitizedComponents(TemplateRenderer.render(template.folder, context))
         // Never produce a nameless folder — fall back to the ISO date if the
-        // template renders empty.
-        let leaf = renderedLeaf.isEmpty
-            ? String(format: "%04d-%02d-%02d", year, c.month ?? 1, c.day ?? 1)
-            : renderedLeaf
+        // template renders nothing usable.
+        let safeComponents = components.isEmpty
+            ? [String(format: "%04d-%02d-%02d", year, c.month ?? 1, c.day ?? 1)]
+            : components
 
-        return destinationRoot
-            .appendingPathComponent(String(year), isDirectory: true)
-            .appendingPathComponent(leaf, isDirectory: true)
+        var dir = destinationRoot.appendingPathComponent(String(year), isDirectory: true)
+        for component in safeComponents {
+            dir = dir.appendingPathComponent(component, isDirectory: true)
+        }
+        return dir
     }
 
     /// Plan a single bundle. `isTaken` reports whether a candidate destination

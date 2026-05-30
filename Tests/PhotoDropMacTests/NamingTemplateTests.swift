@@ -111,4 +111,18 @@ final class NamingTemplateTests: XCTestCase {
     func testSanitizeKeepsInteriorDots() {
         XCTAssertEqual(PathPlanner.sanitize("v1.2.3"), "v1.2.3")
     }
+
+    // MARK: - Nested folder components
+
+    func testSanitizedComponentsSplitsOnSlash() {
+        XCTAssertEqual(PathPlanner.sanitizedComponents("05/2026-05-28"), ["05", "2026-05-28"])
+        XCTAssertEqual(PathPlanner.sanitizedComponents("2026-05-28"), ["2026-05-28"])
+    }
+
+    func testSanitizedComponentsDropsEmptyAndTraversalSegments() {
+        XCTAssertEqual(PathPlanner.sanitizedComponents("a//b"), ["a", "b"])
+        XCTAssertEqual(PathPlanner.sanitizedComponents("../x"), ["x"])   // ".." -> "" -> dropped
+        XCTAssertEqual(PathPlanner.sanitizedComponents(""), [])
+        XCTAssertEqual(PathPlanner.sanitizedComponents("  /  "), [])
+    }
 }
