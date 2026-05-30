@@ -314,8 +314,10 @@ final class Copier {
 
         if let haltReason {
             state = .failed("Halted: \(haltReason). See log.")
+            Notifier.notifyHalt(reason: haltReason)
         } else {
             state = .completed(result)
+            Notifier.notifyCompletion(result: result)
         }
     }
 
