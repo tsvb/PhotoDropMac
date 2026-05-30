@@ -60,6 +60,17 @@ enum CopierState: Equatable {
     case failed(String)
 }
 
+extension CopierState {
+    /// Whether the completion-summary sheet should be presented for this state,
+    /// honouring the user's "Show completion summary" preference. A finish that
+    /// had failures is always surfaced, so disabling the summary can never
+    /// silently hide files that didn't land — important for a never-lossy tool.
+    func shouldPresentCompletionSummary(showSetting: Bool) -> Bool {
+        guard case .completed(let result) = self else { return false }
+        return showSetting || result.filesFailed > 0
+    }
+}
+
 @MainActor
 @Observable
 final class Copier {
