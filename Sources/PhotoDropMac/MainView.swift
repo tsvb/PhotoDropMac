@@ -15,6 +15,9 @@ struct MainView: View {
     @State private var descriptionText: String = ""
     @State private var showInspector: Bool = true
     @State private var autoIngestPending = false
+    @State private var previewMode: PreviewMode = .tree
+    @State private var deselectedIDs: Set<AssetBundle.ID> = []
+    @State private var thumbnailLoader = ThumbnailLoader()
     @State private var preflightMessage: String?
 
     private var source: DetectedDrive? {
@@ -34,12 +37,22 @@ struct MainView: View {
             DetailPane(
                 source: source,
                 planner: planner,
-                copier: copier
+                copier: copier,
+                previewMode: previewMode,
+                deselectedIDs: $deselectedIDs,
+                loader: thumbnailLoader
             )
             .navigationTitle(source?.label ?? "PhotoDrop")
             .navigationSubtitle(detailSubtitle)
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
+                    Picker("Preview", selection: $previewMode) {
+                        Image(systemName: "list.bullet").tag(PreviewMode.tree)
+                        Image(systemName: "square.grid.2x2").tag(PreviewMode.grid)
+                    }
+                    .pickerStyle(.segmented)
+                    .help("Tree or grid preview")
+
                     Button {
                         watcher.rescan()
                         planner.setSource(source, description: descriptionText)
@@ -90,6 +103,7 @@ struct MainView: View {
             }
         }
         .onChange(of: selectedSourceID) { _, _ in
+            deselectedIDs = []   // a different card → start with everything selected
             planner.setSource(source, description: descriptionText)
         }
         .onChange(of: descriptionText) { _, new in
@@ -114,7 +128,7 @@ struct MainView: View {
         ) { _ in
             Button("Ingest Anyway") {
                 preflightMessage = nil
-                launchIngest()
+                launchIngest(selectedYearGroups())
             }
             Button("Cancel", role: .cancel) { preflightMessage = nil }
         } message: { message in
@@ -128,28 +142,40 @@ struct MainView: View {
             && planner.totalFiles > 0
             && !primaryDest.isEmpty
             && !copier.isRunning
+            && selectedBundleCount > 0
+    }
+
+    private var selectedBundleCount: Int {
+        planner.yearGroups
+            .flatMap { $0.folders.flatMap(\.bundles) }
+            .lazy.filter { !deselectedIDs.contains($0.id) }
+            .count
     }
 
     private func startIngest() {
         guard source != nil, !primaryDest.isEmpty else { return }
+        let groups = selectedYearGroups()
+        guard !groups.isEmpty else { return }
         let primaryURL = URL(fileURLWithPath: primaryDest, isDirectory: true)
-        // Preflight: warn (don't hard-block) if a destination volume looks too
-        // full. The user can still proceed — dedup may make it fit.
+        // Preflight on the *selected* bytes: warn (don't hard-block) if a
+        // destination volume looks too full. The user can still proceed —
+        // dedup may make it fit.
+        let plannedBytes = groups.reduce(Int64(0)) { $0 + $1.totalBytes }
         if let warning = PreflightCheck.spaceWarning(
-            plannedBytes: planner.totalBytes,
+            plannedBytes: plannedBytes,
             primary: primaryURL,
             archive: archiveURL
         ) {
             preflightMessage = warning
             return
         }
-        launchIngest()
+        launchIngest(groups)
     }
 
-    private func launchIngest() {
+    private func launchIngest(_ groups: [YearGroup]) {
         guard let source, !primaryDest.isEmpty else { return }
         copier.start(
-            yearGroups: planner.yearGroups,
+            yearGroups: groups,
             primaryDestination: URL(fileURLWithPath: primaryDest, isDirectory: true),
             archiveDestination: archiveURL,
             description: descriptionText,
@@ -158,6 +184,23 @@ struct MainView: View {
             sourceMountPoint: source.mountPoint,
             sourceVolumeID: source.id
         )
+    }
+
+    // Filter the planned groups down to the bundles still selected in the
+    // contact sheet, dropping any now-empty folders/years.
+    private func selectedYearGroups() -> [YearGroup] {
+        planner.yearGroups.compactMap { yearGroup in
+            let folders = yearGroup.folders.compactMap { folder -> DestinationFolder? in
+                let bundles = folder.bundles.filter { !deselectedIDs.contains($0.id) }
+                guard !bundles.isEmpty else { return nil }
+                return DestinationFolder(
+                    id: folder.id, year: folder.year, dayDate: folder.dayDate,
+                    dayName: folder.dayName, bundles: bundles
+                )
+            }
+            guard !folders.isEmpty else { return nil }
+            return YearGroup(id: yearGroup.id, year: yearGroup.year, folders: folders)
+        }
     }
 
     private var archiveURL: URL? {
@@ -266,6 +309,9 @@ struct DetailPane: View {
     let source: DetectedDrive?
     let planner: IngestPlanner
     let copier: Copier
+    let previewMode: PreviewMode
+    @Binding var deselectedIDs: Set<AssetBundle.ID>
+    let loader: ThumbnailLoader
 
     var body: some View {
         switch copier.state {
@@ -343,7 +389,12 @@ struct DetailPane: View {
                 description: Text("This card has no recognized photo files.")
             )
         } else {
-            PreviewTree(yearGroups: planner.yearGroups)
+            switch previewMode {
+            case .tree:
+                PreviewTree(yearGroups: planner.yearGroups)
+            case .grid:
+                ContactSheet(yearGroups: planner.yearGroups, deselectedIDs: $deselectedIDs, loader: loader)
+            }
         }
     }
 }
