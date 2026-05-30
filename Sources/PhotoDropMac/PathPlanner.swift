@@ -97,13 +97,17 @@ enum PathPlanner {
 
     // Light folder-name sanitization: strip whitespace, collapse spaces
     // to underscores, replace characters that can't sit in a POSIX path
-    // component, and cap the length to what the filesystem allows.
+    // component, neutralize "."/".."/hidden names, and cap the length to
+    // what the filesystem allows.
     static func sanitize(_ s: String) -> String {
         var out = s.trimmingCharacters(in: .whitespacesAndNewlines)
         out = out.replacingOccurrences(of: "/", with: "-")
         out = out.replacingOccurrences(of: "\\", with: "-")
         out = out.replacingOccurrences(of: ":", with: "-")
         out = out.replacingOccurrences(of: " ", with: "_")
+        // Strip leading dots so a rendered component can never become "." or
+        // ".." (a path-traversal / wrong-directory write) or a hidden entry.
+        out = String(out.drop(while: { $0 == "." }))
         return truncatedToByteLimit(out, maxComponentBytes)
     }
 

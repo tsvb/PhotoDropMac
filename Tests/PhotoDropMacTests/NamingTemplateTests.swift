@@ -92,4 +92,23 @@ final class NamingTemplateTests: XCTestCase {
         XCTAssertEqual(out.count, 63)
         XCTAssertEqual(out.utf8.count, 252)
     }
+
+    // MARK: - Traversal / hidden components (§3.1)
+
+    func testSanitizeNeutralizesDotComponents() {
+        XCTAssertEqual(PathPlanner.sanitize("."), "")
+        XCTAssertEqual(PathPlanner.sanitize(".."), "")
+        // "/" -> "-" gives "..-..-etc", then leading dots are stripped. The
+        // result is a single safe component; no separators survive to traverse.
+        XCTAssertEqual(PathPlanner.sanitize("../../etc"), "-..-etc")
+    }
+
+    func testSanitizeStripsLeadingDotsFromHiddenNames() {
+        XCTAssertEqual(PathPlanner.sanitize(".hidden"), "hidden")
+        XCTAssertEqual(PathPlanner.sanitize("...intro"), "intro")
+    }
+
+    func testSanitizeKeepsInteriorDots() {
+        XCTAssertEqual(PathPlanner.sanitize("v1.2.3"), "v1.2.3")
+    }
 }
