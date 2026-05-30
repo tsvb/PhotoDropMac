@@ -106,6 +106,54 @@ enum VerifyEngine {
         return (items, loaded.count)
     }
 
+    /// Manifest-free verification: walk `folder`, and for every regular file
+    /// that carries a `FileChecksumXattr` digest, re-hash it (past the page
+    /// cache) and compare. Files without the xattr are skipped (unstamped, not an
+    /// issue), so this works on any subtree even after the library is reorganized
+    /// or the manifest is gone. `manifestCount` is 0 (this path doesn't use one).
+    static func runXattr(folder: URL,
+                         isCancelled: () -> Bool = { false },
+                         onProgress: (VerifyProgress) -> Void = { _ in }) -> VerifyReport? {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.isRegularFileKey]
+        guard let enumerator = fm.enumerator(at: folder, includingPropertiesForKeys: keys,
+                                             options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
+            return VerifyReport(verified: 0, issues: [], manifestCount: 0)
+        }
+
+        var items: [(url: URL, rel: String, expected: UInt64)] = []
+        for case let url as URL in enumerator {
+            guard (try? url.resourceValues(forKeys: Set(keys)))?.isRegularFile == true else { continue }
+            guard let expected = FileChecksumXattr.read(from: url) else { continue }   // unstamped → skip
+            items.append((url, relativePath(of: url, under: folder), expected))
+        }
+        items.sort { $0.rel < $1.rel }
+
+        var verified = 0
+        var issues: [VerifyIssue] = []
+        for (i, item) in items.enumerated() {
+            if isCancelled() { return nil }
+            if let actual = try? XxHash64.hash(fileAt: item.url, bypassCache: true) {
+                if actual == item.expected { verified += 1 }
+                else { issues.append(VerifyIssue(name: item.url.lastPathComponent, path: item.rel, kind: .changed)) }
+            } else {
+                issues.append(VerifyIssue(name: item.url.lastPathComponent, path: item.rel, kind: .unreadable))
+            }
+            onProgress(VerifyProgress(total: items.count, checked: i + 1, currentFile: item.url.lastPathComponent))
+        }
+        return VerifyReport(verified: verified, issues: issues, manifestCount: 0)
+    }
+
+    private static func relativePath(of url: URL, under root: URL) -> String {
+        let rootComponents = root.standardizedFileURL.pathComponents
+        let urlComponents = url.standardizedFileURL.pathComponents
+        if urlComponents.count > rootComponents.count,
+           Array(urlComponents.prefix(rootComponents.count)) == rootComponents {
+            return urlComponents.dropFirst(rootComponents.count).joined(separator: "/")
+        }
+        return url.path(percentEncoded: false)
+    }
+
     enum CheckResult { case verified, changed, missing, unreadable }
 
     static func check(_ item: WorkItem) -> CheckResult {

@@ -124,14 +124,20 @@ struct Verify: ParsableCommand {
     @Flag(name: .long, help: "Emit a JSON report instead of human-readable text.")
     var json = false
 
+    @Flag(name: .long, help: "Verify by each file's embedded checksum (xattr) instead of the manifest — works on any folder, even reorganized.")
+    var xattr = false
+
     func run() throws {
         let url = URL(fileURLWithPath: target)
         let showProgress = !json && isatty(FileHandle.standardError.fileDescriptor) != 0
-
-        let report = VerifyEngine.run(target: url, onProgress: { progress in
+        let onProgress: (VerifyProgress) -> Void = { progress in
             guard showProgress else { return }
             FileHandle.standardError.write(Data("\r  verifying \(progress.checked)/\(progress.total)…".utf8))
-        })
+        }
+
+        let report = xattr
+            ? VerifyEngine.runXattr(folder: url, onProgress: onProgress)
+            : VerifyEngine.run(target: url, onProgress: onProgress)
         if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }   // clear progress line
 
         guard let report else {
@@ -139,6 +145,10 @@ struct Verify: ParsableCommand {
             throw ExitCode(2)
         }
         guard report.total > 0 else {
+            if xattr {
+                print("No checksummed (xattr) files found under \(url.path).")
+                return   // nothing stamped is not an error
+            }
             CLIOutput.error("No verification manifest found at \(url.path). Run an ingest first, or point at a folder containing a “\(ManifestWriter.folderName)” folder.")
             throw ExitCode(2)
         }
@@ -169,7 +179,10 @@ enum CLIOutput {
     }
 
     static func verifyHuman(_ r: VerifyReport) -> String {
-        let scope = "\(r.total) file\(r.total == 1 ? "" : "s") across \(r.manifestCount) manifest\(r.manifestCount == 1 ? "" : "s")"
+        let files = "\(r.total) file\(r.total == 1 ? "" : "s")"
+        let scope = r.manifestCount == 0   // xattr mode doesn't use manifests
+            ? files
+            : "\(files) across \(r.manifestCount) manifest\(r.manifestCount == 1 ? "" : "s")"
         guard !r.allGood else {
             return "✓ All \(scope) match their recorded checksums."
         }
