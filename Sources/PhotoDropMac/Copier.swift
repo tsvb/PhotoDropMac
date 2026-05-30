@@ -317,6 +317,14 @@ final class Copier {
             }
         }
 
+        // Bytes that actually landed in the primary library — the sum of the
+        // manifest entries (copied + already-present), accumulated per bundle on
+        // the main actor. Distinct from the progress counter `bytesCopied`, which
+        // smooths the bar by counting every pass (≈2× under dual destination) and
+        // is updated via async hops; deriving the reported size from the receipt
+        // keeps it accurate (no double-count) and deterministic (no hop race).
+        let landedBytes = manifestEntries.reduce(Int64(0)) { $0 + $1.bytes }
+
         // Write a verification manifest (JSON + CSV) next to the photos — the
         // exportable receipt of what landed, with each file's xxHash.
         let manifest = Manifest(
@@ -330,7 +338,7 @@ final class Copier {
             filesCopied: filesCopied,
             filesSkipped: filesSkipped,
             filesFailed: filesFailed,
-            totalBytes: bytesCopied,
+            totalBytes: landedBytes,
             elapsedSeconds: elapsed,
             files: manifestEntries
         )
@@ -364,7 +372,7 @@ final class Copier {
             filesCopied: filesCopied,
             filesSkipped: filesSkipped,
             filesFailed: filesFailed,
-            totalBytes: bytesCopied,
+            totalBytes: landedBytes,
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
             logURL: logURL,
