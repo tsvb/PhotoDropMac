@@ -140,11 +140,12 @@ struct MainView: View {
             tryAutoIngest()
         }
         .onChange(of: copier.state) { _, newState in
-            // Summary suppressed for a clean finish → return to the idle preview
+            // Summary suppressed for a completion → return to the idle preview
             // instead of lingering in the completed state (mirrors dismissing the
-            // sheet). Finishes with failures keep their summary, so this only
-            // resets when nothing failed.
-            if case .completed(let result) = newState, !showCompletionSheet, result.filesFailed == 0 {
+            // sheet). Expressed as the complement of the presentation gate so the
+            // two can't drift: reset exactly when the summary won't be shown.
+            if case .completed = newState,
+               !newState.shouldPresentCompletionSummary(showSetting: showCompletionSheet) {
                 copier.reset()
             }
         }
