@@ -347,6 +347,10 @@ final class IngestEngine {
                 }
 
                 await cache.recordDestination(url: dest, hash: copyHash)
+                // Stamp the digest into an xattr so the file carries its own
+                // checksum (survives a library reorg / a lost manifest).
+                // Best-effort — silently no-ops on volumes without xattr support.
+                FileChecksumXattr.stamp(copyHash, on: dest)
 
                 if recordManifest {
                     bundleManifest.append(ManifestEntry(

@@ -30,7 +30,7 @@ xcodebuild -project PhotoDropMac.xcodeproj -scheme photodrop \
            -configuration Debug -destination 'platform=macOS' build
 ```
 
-`photodrop verify <library|manifest.json> [--json]` re-verifies a library against its manifests (exit `0` all-verified, `1` issues found, `2` no manifest / error), driving the same `VerifyEngine` the app uses.
+`photodrop verify <library|manifest.json> [--json] [--xattr]` re-verifies a library (exit `0` all-verified, `1` issues found, `2` no manifest / error), driving the same `VerifyEngine` the app uses. `--xattr` verifies by each file's embedded checksum attribute instead of the manifest (see below), so it works on any folder even after a reorg. `photodrop ingest --from <card> --to <primary> [--archive …] [--preset …] [--[no-]verify] [--[no-]eject] [--description …] [--folder-template …] [--file-template …]` drives `IngestEngine` headlessly.
 
 ### Tests
 
@@ -82,6 +82,8 @@ A bundle is one primary photo + its companions (`.xmp`/`.dop`/`.pp3` sidecars, J
 ### Verification manifest (`Manifest` / `ManifestWriter`)
 
 Every ingest writes a receipt of what landed and its checksums, as JSON + CSV, into a `PhotoDrop Manifests/` folder at the primary destination root (filename stamp matches the job's log). Entries are accumulated during the **primary** copy pass only (`recordManifest:` in `copyBundle`) — the archive is a byte-identical mirror — and cover copied/verified files (with their `xxhash64`) and skipped duplicates (matched path, no re-hash). The manifest URL flows back in `CopyResult.manifestURL`; the completion sheet's **Export Manifest…** saves a copy elsewhere. This surfaces the hashes the copy engine already computes rather than discarding them after the verify step.
+
+**Per-file checksum xattr.** In addition to the manifest, `IngestEngine` stamps each copied file's `xxhash64` into an extended attribute (`com.tsvb.photodrop.xxh64`, [FileChecksumXattr.swift](Sources/PhotoDropMac/Core/FileChecksumXattr.swift)) so the file carries its own checksum. `VerifyEngine.runXattr` (CLI `verify --xattr`) walks a folder and re-checks every stamped file — manifest-free, so it survives a library reorg or a lost manifest. **Secondary and best-effort**: xattrs are stripped by exFAT/FAT, some cloud sync, and `cp -X`, so the manifest stays authoritative; an absent attribute means "unstamped", never "changed".
 
 **Re-verification** (`Verifier` / `VerifySheet`, launched from the toolbar's *Verify Library* button): pick a library folder (or a manifest `.json`) and it re-hashes every file recorded in the manifest(s) under `<folder>/PhotoDrop Manifests/`, reporting matches / changed (silent corruption) / missing. The manifest is the source of truth — each file resolves relative to its own manifest's location (two levels up), so a moved library still verifies. Hashing reuses `XxHash64.hash(fileAt:)` and runs off-main with throttled progress, mirroring the copy engine.
 
