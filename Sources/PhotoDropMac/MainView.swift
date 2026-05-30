@@ -15,6 +15,7 @@ struct MainView: View {
     @AppStorage("photodrop.ejectAfterIngest") private var ejectAfterIngest: Bool = false
     @AppStorage("photodrop.template.folder") private var templateFolder = NamingTemplate.default.folder
     @AppStorage("photodrop.template.filename") private var templateFilename = NamingTemplate.default.filename
+    @AppStorage("photodrop.showCompletionSheet") private var showCompletionSheet: Bool = true
 
     @State private var selectedSourceID: DetectedDrive.ID?
     @State private var descriptionText: String = ""
@@ -97,7 +98,7 @@ struct MainView: View {
                 .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
             }
             .sheet(item: Binding<CopyResult?>(
-                get: { completionResult },
+                get: { copier.state.shouldPresentCompletionSummary(showSetting: showCompletionSheet) ? completionResult : nil },
                 set: { newValue in
                     if newValue == nil {
                         copier.reset()
@@ -137,6 +138,15 @@ struct MainView: View {
         }
         .onChange(of: planner.isScanning) { _, _ in
             tryAutoIngest()
+        }
+        .onChange(of: copier.state) { _, newState in
+            // Summary suppressed for a clean finish → return to the idle preview
+            // instead of lingering in the completed state (mirrors dismissing the
+            // sheet). Finishes with failures keep their summary, so this only
+            // resets when nothing failed.
+            if case .completed(let result) = newState, !showCompletionSheet, result.filesFailed == 0 {
+                copier.reset()
+            }
         }
         .sheet(isPresented: $showVerifySheet) {
             VerifySheet(verifier: verifier) {
