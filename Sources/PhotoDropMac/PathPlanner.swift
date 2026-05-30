@@ -30,32 +30,48 @@ struct YearGroup: Identifiable, Hashable, Sendable {
 }
 
 enum PathPlanner {
-    static func plan(bundles: [AssetBundle], description: String) -> [YearGroup] {
+    static func plan(bundles: [AssetBundle], description: String, template: NamingTemplate, cardLabel: String) -> [YearGroup] {
         guard !bundles.isEmpty else { return [] }
 
         let safeDescription = sanitize(description)
+        let safeCardLabel = sanitize(cardLabel)
 
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = .current
 
-        // Group bundles by (year, month, day) of the primary's capture
-        // date. Companions ride along with their primary.
-        struct DayKey: Hashable { let year: Int; let month: Int; let day: Int }
-        let grouped = Dictionary(grouping: bundles) { bundle -> DayKey in
+        // The day-folder leaf a bundle lands in, per the folder template. Must
+        // match CopyPlan.destinationDirectory's leaf for the preview to agree
+        // with the copy.
+        func leaf(for bundle: AssetBundle) -> String {
+            let context = TemplateContext(
+                date: bundle.primary.dateTaken,
+                description: safeDescription,
+                originalName: bundle.primary.url.lastPathComponent,
+                originalStem: bundle.primary.url.deletingPathExtension().lastPathComponent,
+                cardLabel: safeCardLabel
+            )
+            let rendered = sanitize(TemplateRenderer.render(template.folder, context))
+            if !rendered.isEmpty { return rendered }
             let c = cal.dateComponents([.year, .month, .day], from: bundle.primary.dateTaken)
-            return DayKey(year: c.year ?? 0, month: c.month ?? 0, day: c.day ?? 0)
+            return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 1, c.day ?? 1)
         }
 
-        // Turn each day group into a DestinationFolder.
+        // Group by (year, rendered leaf). The folder template defines the
+        // grouping: the default day template groups by day, but e.g.
+        // `{yyyy-MM}` groups by month. Year is always the top level.
+        struct FolderKey: Hashable { let year: Int; let leaf: String }
+        let grouped = Dictionary(grouping: bundles) { bundle -> FolderKey in
+            FolderKey(year: cal.component(.year, from: bundle.primary.dateTaken), leaf: leaf(for: bundle))
+        }
+
         let folders: [DestinationFolder] = grouped.map { key, dayBundles in
-            let dayDate = cal.date(from: DateComponents(year: key.year, month: key.month, day: key.day)) ?? Date()
-            let dateString = String(format: "%04d-%02d-%02d", key.year, key.month, key.day)
-            let dayName = safeDescription.isEmpty ? dateString : "\(dateString)_\(safeDescription)"
+            // Representative date for sorting: the latest capture in the group.
+            let dayDate = dayBundles.map(\.primary.dateTaken).max() ?? Date()
             return DestinationFolder(
-                id: "\(key.year)/\(dateString)",
+                id: "\(key.year)/\(key.leaf)",
                 year: key.year,
                 dayDate: dayDate,
-                dayName: dayName,
+                dayName: key.leaf,
                 bundles: dayBundles.sorted { $0.primary.dateTaken < $1.primary.dateTaken }
             )
         }

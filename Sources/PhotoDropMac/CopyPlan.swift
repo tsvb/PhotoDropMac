@@ -20,7 +20,10 @@ struct BundlePlan: Sendable, Hashable {
 }
 
 enum CopyPlan {
-    // Path pattern (from Windows PhotoDrop):
+    // Path: {root}/{yyyy}/{folder-template}/{filename-template}.{ext}. The
+    // folder (day-folder leaf) and filename (primary stem) are user-configurable
+    // via NamingTemplate; the year is always the fixed top level. The default
+    // templates reproduce the Windows PhotoDrop pattern:
     //   {root}/{yyyy}/{yyyy-MM-dd}[_{Description}]/{yyyyMMdd_HHmmss}_{OriginalName}
     //
     // Companions travel with their primary — their new names are derived
@@ -44,13 +47,15 @@ enum CopyPlan {
         bundles: [AssetBundle],
         destinationRoot: URL,
         description: String,
+        template: NamingTemplate,
+        cardLabel: String,
         existingPaths: Set<String> = []
     ) -> [BundlePlan] {
         var taken = existingPaths
         var plans: [BundlePlan] = []
         plans.reserveCapacity(bundles.count)
         for bundle in bundles {
-            let bundlePlan = plan(bundle: bundle, destinationRoot: destinationRoot, description: description) { url in
+            let bundlePlan = plan(bundle: bundle, destinationRoot: destinationRoot, description: description, template: template, cardLabel: cardLabel) { url in
                 taken.contains(url.path)
             }
             for file in bundlePlan.files { taken.insert(file.destination.path) }
@@ -62,17 +67,30 @@ enum CopyPlan {
     /// The day-folder a bundle's files land in: `{root}/{yyyy}/{yyyy-MM-dd}[_{desc}]`.
     /// Shared by `plan` and by the collision scan so both agree on exactly
     /// which directory a job writes into.
-    static func destinationDirectory(for bundle: AssetBundle, destinationRoot: URL, description: String) -> URL {
+    static func destinationDirectory(for bundle: AssetBundle, destinationRoot: URL, description: String, template: NamingTemplate, cardLabel: String) -> URL {
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = .current
-        let c = cal.dateComponents([.year, .month, .day], from: bundle.primary.dateTaken)
+        let date = bundle.primary.dateTaken
+        let c = cal.dateComponents([.year, .month, .day], from: date)
         let year = c.year ?? 0
-        let yyyymmdd = String(format: "%04d-%02d-%02d", year, c.month ?? 1, c.day ?? 1)
-        let safeDescription = PathPlanner.sanitize(description)
-        let dayFolder = safeDescription.isEmpty ? yyyymmdd : "\(yyyymmdd)_\(safeDescription)"
+
+        let context = TemplateContext(
+            date: date,
+            description: PathPlanner.sanitize(description),
+            originalName: bundle.primary.url.lastPathComponent,
+            originalStem: bundle.primary.url.deletingPathExtension().lastPathComponent,
+            cardLabel: PathPlanner.sanitize(cardLabel)
+        )
+        let renderedLeaf = PathPlanner.sanitize(TemplateRenderer.render(template.folder, context))
+        // Never produce a nameless folder — fall back to the ISO date if the
+        // template renders empty.
+        let leaf = renderedLeaf.isEmpty
+            ? String(format: "%04d-%02d-%02d", year, c.month ?? 1, c.day ?? 1)
+            : renderedLeaf
+
         return destinationRoot
             .appendingPathComponent(String(year), isDirectory: true)
-            .appendingPathComponent(dayFolder, isDirectory: true)
+            .appendingPathComponent(leaf, isDirectory: true)
     }
 
     /// Plan a single bundle. `isTaken` reports whether a candidate destination
@@ -84,6 +102,8 @@ enum CopyPlan {
         bundle: AssetBundle,
         destinationRoot: URL,
         description: String,
+        template: NamingTemplate,
+        cardLabel: String,
         isTaken: (URL) -> Bool = { _ in false }
     ) -> BundlePlan {
         let primary = bundle.primary
@@ -91,19 +111,17 @@ enum CopyPlan {
         let primaryOldStem = primary.url.deletingPathExtension().lastPathComponent
         let primaryExt = primary.url.pathExtension
 
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = .current
-        let c = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: primary.dateTaken)
-        let year = c.year ?? 0
-        let month = c.month ?? 1
-        let day = c.day ?? 1
-        let hour = c.hour ?? 0
-        let minute = c.minute ?? 0
-        let second = c.second ?? 0
+        let destDir = destinationDirectory(for: bundle, destinationRoot: destinationRoot, description: description, template: template, cardLabel: cardLabel)
 
-        let destDir = destinationDirectory(for: bundle, destinationRoot: destinationRoot, description: description)
-        let timestamp = String(format: "%04d%02d%02d_%02d%02d%02d", year, month, day, hour, minute, second)
-        let baseStem = "\(timestamp)_\(primaryOldStem)"
+        let context = TemplateContext(
+            date: primary.dateTaken,
+            description: PathPlanner.sanitize(description),
+            originalName: primaryOldName,
+            originalStem: primaryOldStem,
+            cardLabel: PathPlanner.sanitize(cardLabel)
+        )
+        let renderedStem = PathPlanner.sanitize(TemplateRenderer.render(template.filename, context))
+        let baseStem = renderedStem.isEmpty ? fallbackStem(date: primary.dateTaken, stem: primaryOldStem) : renderedStem
 
         // Smallest disambiguator (0 = none) that frees every file in the bundle.
         // `taken` is a finite set (on-disk + already-claimed), so some `n` is
@@ -125,6 +143,16 @@ enum CopyPlan {
             }
             n += 1
         }
+    }
+
+    // Default stem when a filename template renders empty: the Windows-style
+    // {yyyyMMdd_HHmmss}_{OriginalStem}, so a blank template never strands files.
+    private static func fallbackStem(date: Date, stem: String) -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = .current
+        let c = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        let ts = String(format: "%04d%02d%02d_%02d%02d%02d", c.year ?? 0, c.month ?? 1, c.day ?? 1, c.hour ?? 0, c.minute ?? 0, c.second ?? 0)
+        return "\(ts)_\(stem)"
     }
 
     // Build the bundle's planned files for a given resolved primary name/stem.

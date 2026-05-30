@@ -9,6 +9,8 @@ final class IngestPlanner {
 
     @ObservationIgnored private var bundles: [AssetBundle] = []
     @ObservationIgnored private var lastDescription: String = ""
+    @ObservationIgnored private var lastTemplate: NamingTemplate = .default
+    @ObservationIgnored private var lastCardLabel: String = ""
     @ObservationIgnored private var scanTask: Task<Void, Never>?
 
     // `totalFiles` includes companions — the UI uses it for the
@@ -21,9 +23,11 @@ final class IngestPlanner {
     // "files on disk" (e.g. the detail subtitle).
     var photoCount: Int { yearGroups.reduce(0) { $0 + $1.bundleCount } }
 
-    func setSource(_ source: DetectedDrive?, description: String) {
+    func setSource(_ source: DetectedDrive?, description: String, template: NamingTemplate) {
         scanTask?.cancel()
         lastDescription = description
+        lastTemplate = template
+        lastCardLabel = source?.label ?? ""
         bundles = []
         yearGroups = []
 
@@ -42,13 +46,22 @@ final class IngestPlanner {
 
             guard let self, !Task.isCancelled else { return }
             self.bundles = result
-            self.yearGroups = PathPlanner.plan(bundles: result, description: self.lastDescription)
+            self.replan()
             self.isScanning = false
         }
     }
 
     func updateDescription(_ description: String) {
         lastDescription = description
-        yearGroups = PathPlanner.plan(bundles: bundles, description: description)
+        replan()
+    }
+
+    func updateTemplate(_ template: NamingTemplate) {
+        lastTemplate = template
+        replan()
+    }
+
+    private func replan() {
+        yearGroups = PathPlanner.plan(bundles: bundles, description: lastDescription, template: lastTemplate, cardLabel: lastCardLabel)
     }
 }

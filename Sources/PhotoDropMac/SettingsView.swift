@@ -10,6 +10,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             IngestPreferences()
                 .tabItem { Label("Ingest", systemImage: "square.and.arrow.down") }
+            NamingPreferences()
+                .tabItem { Label("Naming", systemImage: "textformat.abc") }
             MenuBarPreferences()
                 .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
         }
@@ -71,6 +73,85 @@ struct IngestPreferences: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+struct NamingPreferences: View {
+    @AppStorage("photodrop.template.folder") private var folder = NamingTemplate.default.folder
+    @AppStorage("photodrop.template.filename") private var filename = NamingTemplate.default.filename
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Day folder").font(.caption).foregroundStyle(.secondary)
+                    TextField("Day folder", text: $folder, prompt: Text(NamingTemplate.default.folder))
+                        .labelsHidden()
+                        .font(.system(.body, design: .monospaced))
+                        .textFieldStyle(.roundedBorder)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("File name").font(.caption).foregroundStyle(.secondary)
+                    TextField("File name", text: $filename, prompt: Text(NamingTemplate.default.filename))
+                        .labelsHidden()
+                        .font(.system(.body, design: .monospaced))
+                        .textFieldStyle(.roundedBorder)
+                }
+                Button("Reset to defaults") {
+                    folder = NamingTemplate.default.folder
+                    filename = NamingTemplate.default.filename
+                }
+                .controlSize(.small)
+            } header: {
+                Text("Templates")
+            } footer: {
+                Text("The year is always the top folder. The original file extension is kept automatically.")
+            }
+
+            Section("Preview") {
+                Text(previewPath)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section("Tokens") {
+                ForEach(NamingTemplate.legend) { item in
+                    LabeledContent {
+                        Text(item.meaning).font(.caption).foregroundStyle(.secondary)
+                    } label: {
+                        Text(item.token).font(.system(.caption, design: .monospaced))
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // Renders the current templates against a fixed sample, exactly as the copy
+    // engine would (sanitize the rendered output into path components).
+    private var previewPath: String {
+        let context = TemplateContext(
+            date: sampleDate,
+            description: PathPlanner.sanitize("Iceland"),
+            originalName: "L1031253.DNG",
+            originalStem: "L1031253",
+            cardLabel: PathPlanner.sanitize("LEICA DLUX8")
+        )
+        let leaf = PathPlanner.sanitize(TemplateRenderer.render(folder, context))
+        let stem = PathPlanner.sanitize(TemplateRenderer.render(filename, context))
+        let year = Calendar.current.component(.year, from: sampleDate)
+        let safeLeaf = leaf.isEmpty ? "2026-05-28" : leaf
+        let safeStem = stem.isEmpty ? "20260528_195510_L1031253" : stem
+        return "…/\(year)/\(safeLeaf)/\(safeStem).DNG"
+    }
+
+    private var sampleDate: Date {
+        var c = DateComponents()
+        c.year = 2026; c.month = 5; c.day = 28
+        c.hour = 19; c.minute = 55; c.second = 10
+        return Calendar.current.date(from: c) ?? .now
     }
 }
 
