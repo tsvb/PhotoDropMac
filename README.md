@@ -40,7 +40,7 @@ It is a Swift/SwiftUI port of [PhotoDrop](https://github.com/tsvb/PhotoDrop), a 
 
 The app watches for removable cards, scans them into **asset bundles** (a primary photo plus its companions), groups those bundles by capture date into a `year / day` folder tree, and copies them to a destination you choose — verifying every file with a streaming [xxHash](https://github.com/Cyan4973/xxHash) as it goes. Files that already exist anywhere under the destination are detected by content and skipped. If anything in a bundle fails, that bundle is rolled back so a RAW never lands without its edits.
 
-The whole flow is built to be trustworthy and legible: it tells you what was preserved before what failed, surfaces the verification hash of every file in the log, and ends on a plain "safe to remove."
+The whole flow is built to be trustworthy and legible: it tells you what was preserved before what failed, surfaces the verification hash of every file in the log, leaves a manifest receipt you can re-verify later, and ends on a plain "safe to remove."
 
 ## Highlights
 
@@ -49,6 +49,8 @@ The whole flow is built to be trustworthy and legible: it tells you what was pre
 | **Date-organized library** | Groups every shot into `{year}/{day}/` folders by EXIF capture date, with fully configurable folder and filename templates. |
 | **RAW + companion bundles** | A RAW and its sidecars (`.xmp` / `.dop` / `.pp3`), JPEG pair, and camera audio note (`.wav`) move as one atomic unit — edits never get separated from their RAW. |
 | **Streaming verification** | Each file is read once and hashed in flight (tee-hashing); the copy is byte-verified against the source before it counts as done. |
+| **Verification receipts** | Every ingest writes a manifest (JSON + CSV) of each file and its xxHash into a `PhotoDrop Manifests/` folder beside the photos — an exportable, chain-of-custody record of exactly what landed. |
+| **Library re-verify** | Point at a library (or a single manifest) and re-hash every recorded file to surface silent corruption (bit-rot) or anything gone missing — long after the original ingest. |
 | **Content-based dedup** | A file already present anywhere under the destination — even renamed by an earlier import — is detected by size + hash and skipped. |
 | **Dual-destination archival** | Optionally write a second, independently verified copy to an archive location in the same pass. |
 | **Contact-sheet culling** | Preview thumbnails in a grid and deselect individual frames or whole days before ingesting. |
@@ -59,7 +61,7 @@ The whole flow is built to be trustworthy and legible: it tells you what was pre
 
 ## How it works
 
-Data flows through a chain of mostly-pure value-type transforms driven by three `@MainActor @Observable` controllers:
+Data flows through a chain of mostly-pure value-type transforms driven by a few `@MainActor @Observable` controllers:
 
 ```mermaid
 flowchart LR
@@ -70,16 +72,18 @@ flowchart LR
     E --> F["Copier<br/>copy · tee-hash · verify · dedup"]
     F --> G[("Library<br/>{yyyy}/{day}/{file}")]
     F -. optional .-> H[("Archive copy")]
-    F --> I["Eject · Notify · Log"]
+    F --> I["Eject · Notify · Log · Manifest"]
 ```
 
 1. **`DriveWatcher`** observes `NSWorkspace` mount/unmount events and surfaces the cards that are present.
 2. **`AssetDiscovery`** does a two-pass directory walk: RAW primaries and their same-directory companions first, then standalone JPEGs not already claimed as a RAW's JPEG pair. Companion matching is same-directory only, by design.
 3. **`ExifReader`** reads `DateTimeOriginal` (or `Digitized`) via ImageIO in the local time zone, falling back to file modification time. This date drives all folder grouping.
 4. **`PathPlanner`** groups bundles into the preview tree; **`CopyPlan`** computes the real destination path and filename for each bundle from your templates.
-5. **`Copier`** builds a per-destination dedup index, then for each file: dedup-check → copy + tee-hash → verify → record the hash. A verification mismatch halts the job; any other per-bundle error is logged and the job continues. On success it optionally ejects the card, writes a log, and persists the hash cache.
+5. **`Copier`** builds a per-destination dedup index, then for each file: dedup-check → copy + tee-hash → verify → record the hash. A verification mismatch halts the job; any other per-bundle error is logged and the job continues. On success it optionally ejects the card, writes a log and a **verification manifest** (the receipt of every file and its hash), and persists the hash cache.
 
 The unit that everything operates on is the **`AssetBundle`** — one primary photo plus its companions. Copy, verify, rollback, and dedup all act on whole bundles, because a RAW without its `.dop` has lost its edits.
+
+Separately from ingest, **Verify Library** (in the toolbar) re-hashes an existing library against the manifests it wrote and reports anything changed or missing — so you can re-check an archive for bit-rot long after the photos landed.
 
 ## Supported formats
 
@@ -120,7 +124,7 @@ There is a single application target and scheme, `PhotoDropMac`.
 1. **Insert a card.** PhotoDrop detects it and (optionally) opens the window automatically.
 2. **Review the preview.** The sidebar shows the years and days that will be created; switch the toolbar to the contact sheet to inspect thumbnails and deselect any frames or days you don't want.
 3. **Choose a destination** in the inspector — and optionally an archive folder for a verified second copy. PhotoDrop remembers your destinations for every future card.
-4. **Ingest.** Files copy with a live progress pane; the activity log streams each file with its verification signature as it lands.
+4. **Ingest.** If a destination looks too full for the selected shots, PhotoDrop warns first (you can still proceed). Files then copy with a live progress pane; the activity log streams each file with its verification signature as it lands.
 5. **Done.** On a clean run the completion summary reports what was copied, what was already present, throughput, and — if you enabled eject — that the card is safe to remove.
 
 ## Settings
@@ -175,7 +179,7 @@ The verification mark differs per theme too: Steady uses the mechanical **seal g
 
 Swift 6 strict concurrency is on, with a deliberate split:
 
-- **UI state** lives in `@MainActor @Observable` controllers — `DriveWatcher`, `IngestPlanner`, `Copier`.
+- **UI state** lives in `@MainActor @Observable` controllers — `DriveWatcher`, `IngestPlanner`, `Copier`, `Verifier`.
 - **Heavy work** (directory scans, hashing, copying, dedup-index builds) runs on detached tasks and hops results back to the main actor; progress is throttled to avoid flooding the UI.
 - **Shared mutable state** is confined to an `actor` (`HashCache`). Domain models are value types and therefore `Sendable`.
 
@@ -186,7 +190,7 @@ A few design choices worth knowing:
 - **Bundles are all-or-nothing.** A failure mid-bundle deletes that bundle's already-written files. A verification mismatch halts the whole job; other errors are logged and the run continues.
 - The `XxHash64` implementation is a pure-Swift, value-type streaming XXH64 — non-cryptographic, used only for copy verification and dedup equality.
 
-State is persisted in the user's Library: the hash cache at `~/Library/Application Support/PhotoDropMac/hash-cache.json`, and per-job logs at `~/Library/Logs/PhotoDrop/`.
+State is persisted in the user's Library: the hash cache at `~/Library/Application Support/PhotoDropMac/hash-cache.json`, and per-job logs at `~/Library/Logs/PhotoDrop/`. Each ingest also writes a verification manifest (JSON + CSV) into a `PhotoDrop Manifests/` folder at the destination root, so the receipt travels with the photos.
 
 ## Project layout
 
@@ -204,9 +208,10 @@ PhotoDropMac/
    ├─ PathPlanner.swift · CopyPlan.swift · NamingTemplate.swift     # path planning
    ├─ IngestPlanner.swift · PreflightCheck.swift        # orchestration & free-space check
    ├─ Copier.swift · FileCopier.swift · DestinationIndex.swift      # copy engine & dedup
-   ├─ Hasher.swift · HashCache.swift · JobLogger.swift  # xxHash, cache, logging
+   ├─ Hasher.swift · HashCache.swift · JobLogger.swift · Manifest.swift   # xxHash, cache, logs, receipts
    ├─ MainView.swift · PreviewTree.swift · ContactSheet.swift · ThumbnailLoader.swift
    ├─ InspectorPane.swift · ProgressPane.swift · CompletionSheet.swift · SettingsView.swift
+   ├─ Verifier.swift · VerifySheet.swift                # library re-verification
    ├─ VerificationStyle+Theme.swift                     # the three themes
    ├─ SealGrid.swift · StampMark.swift · ApertureMark.swift · VerifiedSignature.swift  # marks
    └─ Notifier.swift                                    # completion notifications
