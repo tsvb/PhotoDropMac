@@ -147,6 +147,15 @@ struct ThumbnailCell: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onToggle)
         .help(bundle.primary.url.lastPathComponent)
+        // VoiceOver: present each cell as a selectable button so the culling
+        // grid is operable without sighted tapping. The selection state is
+        // conveyed as the value, and "activate" toggles it.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(bundle.primary.url.lastPathComponent)
+        .accessibilityValue(isSelected ? "Selected" : "Deselected")
+        .accessibilityHint("Toggles whether this photo is included in the ingest")
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { onToggle() }
         .task(id: bundle.id) {
             if image == nil { image = await loader.image(for: bundle.primary.url) }
         }

@@ -7,6 +7,7 @@ struct CompletionSheet: View {
     let onDismiss: () -> Void
 
     @AppStorage("photodrop.verificationStyle") private var verificationStyle = VerificationStyle.steady
+    @State private var exportError: String?
 
     var body: some View {
         VStack(spacing: 20) {
@@ -63,6 +64,14 @@ struct CompletionSheet: View {
         .padding(32)
         .frame(minWidth: 440, idealWidth: 480)
         .tint(verificationStyle.accent)
+        .alert("Couldn’t export the manifest", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
     }
 
     private var hadIssues: Bool { result.filesFailed > 0 }
@@ -169,8 +178,15 @@ struct CompletionSheet: View {
         panel.title = "Export Verification Manifest"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         let fm = FileManager.default
-        try? fm.removeItem(at: destination)
-        try? fm.copyItem(at: manifestURL, to: destination)
+        do {
+            // The save panel already confirmed any overwrite; replace the target.
+            if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
+            try fm.copyItem(at: manifestURL, to: destination)
+        } catch {
+            // Surface the failure instead of swallowing it — the user thinks a
+            // receipt was saved otherwise.
+            exportError = error.localizedDescription
+        }
     }
 }
 
