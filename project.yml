@@ -14,6 +14,9 @@ settings:
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
+  configs:
+    Debug:
+      ENABLE_TESTABILITY: YES
 
 targets:
   PhotoDropMac:
@@ -32,3 +35,19 @@ targets:
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         CODE_SIGN_ENTITLEMENTS: PhotoDropMac.entitlements
+    scheme:
+      testTargets:
+        - PhotoDropMacTests
+      gatherCoverageData: true
+
+  PhotoDropMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/PhotoDropMacTests
+    dependencies:
+      - target: PhotoDropMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tsvb.PhotoDropMacTests
+        GENERATE_INFOPLIST_FILE: YES
