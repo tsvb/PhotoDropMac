@@ -19,32 +19,38 @@ struct ContactSheet: View {
     private let columns = [GridItem(.adaptive(minimum: 118, maximum: 168), spacing: 10)]
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
-                summaryBar
-                ForEach(yearGroups) { yearGroup in
-                    ForEach(yearGroup.folders) { folder in
-                        Section {
-                            LazyVGrid(columns: columns, spacing: 12) {
-                                ForEach(folder.bundles) { bundle in
-                                    ThumbnailCell(
-                                        bundle: bundle,
-                                        loader: loader,
-                                        accent: theme.resolvedAccent,
-                                        isSelected: isSelected(bundle.id),
-                                        onToggle: { toggle(bundle.id) }
-                                    )
+        VStack(spacing: 0) {
+            summaryBar
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
+                    ForEach(yearGroups) { yearGroup in
+                        ForEach(yearGroup.folders) { folder in
+                            Section {
+                                LazyVGrid(columns: columns, spacing: 12) {
+                                    ForEach(folder.bundles) { bundle in
+                                        ThumbnailCell(
+                                            bundle: bundle,
+                                            loader: loader,
+                                            accent: theme.resolvedAccent,
+                                            isSelected: isSelected(bundle.id),
+                                            onToggle: { toggle(bundle.id) }
+                                        )
+                                    }
                                 }
+                                .padding(.horizontal)
+                                .padding(.bottom, 6)
+                            } header: {
+                                dayHeader(folder)
                             }
-                            .padding(.horizontal)
-                            .padding(.bottom, 6)
-                        } header: {
-                            dayHeader(folder)
                         }
                     }
                 }
+                .padding(.vertical, 8)
             }
-            .padding(.vertical, 8)
         }
     }
 
@@ -64,8 +70,6 @@ struct ContactSheet: View {
             Button("Select None") { deselectedIDs = Set(all.map(\.id)) }
                 .disabled(selected.isEmpty)
         }
-        .padding(.horizontal)
-        .padding(.top, 4)
     }
 
     private func dayHeader(_ folder: DestinationFolder) -> some View {
@@ -113,16 +117,19 @@ struct ThumbnailCell: View {
                     .frame(height: 104)
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .grayscale(isSelected ? 0 : 1)      // culled → desaturated…
+                    .opacity(isSelected ? 1 : 0.5)      // …and dimmed
                     .overlay {
                         RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(isSelected ? accent : Color.clear, lineWidth: 2.5)
+                            .strokeBorder(isSelected ? accent : Color.primary.opacity(0.12),
+                                          lineWidth: isSelected ? 2.5 : 1)
                     }
-                    .opacity(isSelected ? 1 : 0.4)
 
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 16))
-                    .foregroundStyle(isSelected ? accent : Color.white.opacity(0.9))
-                    .background(Circle().fill(.black.opacity(0.28)).padding(1))
+                    .font(.system(size: 17))
+                    .foregroundStyle(isSelected ? accent : Color.white.opacity(0.85))
+                    .background(Circle().fill(.black.opacity(0.35)).padding(1))
+                    .shadow(color: .black.opacity(0.45), radius: 1.5, y: 0.5)
                     .padding(5)
             }
             HStack(spacing: 4) {
