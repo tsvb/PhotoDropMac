@@ -61,6 +61,7 @@ struct IngestPreferences: View {
     @AppStorage("photodrop.verifyCopies") private var verify: Bool = true
     @AppStorage("photodrop.ejectAfterIngest") private var ejectAfterIngest: Bool = false
     @AppStorage("photodrop.showCompletionSheet") private var showCompletionSheet: Bool = true
+    @AppStorage("photodrop.notifyOnCompletion") private var notifyOnCompletion: Bool = true
 
     var body: some View {
         Form {
@@ -68,6 +69,12 @@ struct IngestPreferences: View {
                 Toggle("Verify copies with xxHash", isOn: $verify)
                 Toggle("Eject card when finished", isOn: $ejectAfterIngest)
                 Toggle("Show completion summary", isOn: $showCompletionSheet)
+            }
+
+            Section {
+                Toggle("Notify when finished", isOn: $notifyOnCompletion)
+            } footer: {
+                Text("Posts a notification when an ingest completes while PhotoDrop is in the background.")
             }
         }
         .formStyle(.grouped)

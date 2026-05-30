@@ -18,6 +18,7 @@ struct MainView: View {
     @State private var previewMode: PreviewMode = .tree
     @State private var deselectedIDs: Set<AssetBundle.ID> = []
     @State private var thumbnailLoader = ThumbnailLoader()
+    @State private var preflightMessage: String?
 
     private var source: DetectedDrive? {
         guard let id = selectedSourceID else { return nil }
@@ -117,6 +118,22 @@ struct MainView: View {
         .onChange(of: planner.isScanning) { _, _ in
             tryAutoIngest()
         }
+        .alert(
+            "Not enough space",
+            isPresented: Binding(
+                get: { preflightMessage != nil },
+                set: { if !$0 { preflightMessage = nil } }
+            ),
+            presenting: preflightMessage
+        ) { _ in
+            Button("Ingest Anyway") {
+                preflightMessage = nil
+                launchIngest(selectedYearGroups())
+            }
+            Button("Cancel", role: .cancel) { preflightMessage = nil }
+        } message: { message in
+            Text(message)
+        }
     }
 
     private var canStartIngest: Bool {
@@ -136,17 +153,30 @@ struct MainView: View {
     }
 
     private func startIngest() {
-        guard let source else { return }
-        guard !primaryDest.isEmpty else { return }
+        guard source != nil, !primaryDest.isEmpty else { return }
         let groups = selectedYearGroups()
         guard !groups.isEmpty else { return }
         let primaryURL = URL(fileURLWithPath: primaryDest, isDirectory: true)
-        let archiveURL: URL? = archiveDest.isEmpty
-            ? nil
-            : URL(fileURLWithPath: archiveDest, isDirectory: true)
+        // Preflight on the *selected* bytes: warn (don't hard-block) if a
+        // destination volume looks too full. The user can still proceed —
+        // dedup may make it fit.
+        let plannedBytes = groups.reduce(Int64(0)) { $0 + $1.totalBytes }
+        if let warning = PreflightCheck.spaceWarning(
+            plannedBytes: plannedBytes,
+            primary: primaryURL,
+            archive: archiveURL
+        ) {
+            preflightMessage = warning
+            return
+        }
+        launchIngest(groups)
+    }
+
+    private func launchIngest(_ groups: [YearGroup]) {
+        guard let source, !primaryDest.isEmpty else { return }
         copier.start(
             yearGroups: groups,
-            primaryDestination: primaryURL,
+            primaryDestination: URL(fileURLWithPath: primaryDest, isDirectory: true),
             archiveDestination: archiveURL,
             description: descriptionText,
             verify: verifyCopies,
@@ -171,6 +201,10 @@ struct MainView: View {
             guard !folders.isEmpty else { return nil }
             return YearGroup(id: yearGroup.id, year: yearGroup.year, folders: folders)
         }
+    }
+
+    private var archiveURL: URL? {
+        archiveDest.isEmpty ? nil : URL(fileURLWithPath: archiveDest, isDirectory: true)
     }
 
     // Fulfils a one-click request from the menu bar: once the requested card

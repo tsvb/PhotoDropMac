@@ -83,6 +83,7 @@ Preferences are plain `@AppStorage` keys with **no central store** — the same 
 - `photodrop.verifyCopies` (Bool, default `true`)
 - `photodrop.ejectAfterIngest` (Bool, default `false`)
 - `photodrop.showCompletionSheet` (Bool, default `true`)
+- `photodrop.notifyOnCompletion` (Bool, default `true`) — posts a Notification Center banner on finish when the app isn't frontmost ([Notifier.swift](Sources/PhotoDropMac/Notifier.swift), read via `UserDefaults`; toggled in `SettingsView`)
 - `photodrop.verificationStyle` (`VerificationStyle` rawValue, default `.steady`) — the app **theme**, a committed identity per option (not just an accent):
   - `.steady` — the system look: your accent, your light/dark, SF Pro. The no-transformation default.
   - `.ledger` — editorial: forced **light**, **serif** type, **ultramarine** ink (`#120A8F`), wax-seal `StampMark`.
