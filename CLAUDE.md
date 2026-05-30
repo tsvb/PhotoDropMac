@@ -127,5 +127,6 @@ Preferences are plain `@AppStorage` keys with **no central store** — the same 
 - `photodrop.menuBar.visibility` (`MenuBarVisibility` rawValue, default `.always`)
 - `photodrop.menuBar.autoOpenWindow` (Bool, default `true`)
 - `photodrop.menuBar.oneClickIngest` (Bool, default `false`)
+- `photodrop.scheduledVerify.enabled` / `.schedule` (`VerifySchedule` rawValue: daily/weekly/monthly) / `.binaryPath` (path to the built `photodrop` CLI) / `.library` (override; defaults to the primary destination) — Settings → Maintenance. Toggling installs/removes a `launchd` user agent ([ScheduledVerification.swift](Sources/PhotoDropMac/Core/ScheduledVerification.swift)) that runs `photodrop verify --json` at 03:00 on the chosen cadence and posts a notification (via `osascript`) if it finds issues. Report-only; the unsandboxed app manages `~/Library/LaunchAgents` directly
 
 The enum-typed keys (`VerificationStyle`, `MenuBarVisibility`) get their `String`-backed type from [AppCoordinator.swift](Sources/PhotoDropMac/AppCoordinator.swift), which is the one definition site shared by every `@AppStorage` declaration.
