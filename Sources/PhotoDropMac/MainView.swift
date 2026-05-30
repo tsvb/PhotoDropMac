@@ -15,6 +15,7 @@ struct MainView: View {
     @State private var descriptionText: String = ""
     @State private var showInspector: Bool = true
     @State private var autoIngestPending = false
+    @State private var preflightMessage: String?
 
     private var source: DetectedDrive? {
         guard let id = selectedSourceID else { return nil }
@@ -103,6 +104,22 @@ struct MainView: View {
         .onChange(of: planner.isScanning) { _, _ in
             tryAutoIngest()
         }
+        .alert(
+            "Not enough space",
+            isPresented: Binding(
+                get: { preflightMessage != nil },
+                set: { if !$0 { preflightMessage = nil } }
+            ),
+            presenting: preflightMessage
+        ) { _ in
+            Button("Ingest Anyway") {
+                preflightMessage = nil
+                launchIngest()
+            }
+            Button("Cancel", role: .cancel) { preflightMessage = nil }
+        } message: { message in
+            Text(message)
+        }
     }
 
     private var canStartIngest: Bool {
@@ -114,15 +131,26 @@ struct MainView: View {
     }
 
     private func startIngest() {
-        guard let source else { return }
-        guard !primaryDest.isEmpty else { return }
+        guard source != nil, !primaryDest.isEmpty else { return }
         let primaryURL = URL(fileURLWithPath: primaryDest, isDirectory: true)
-        let archiveURL: URL? = archiveDest.isEmpty
-            ? nil
-            : URL(fileURLWithPath: archiveDest, isDirectory: true)
+        // Preflight: warn (don't hard-block) if a destination volume looks too
+        // full. The user can still proceed — dedup may make it fit.
+        if let warning = PreflightCheck.spaceWarning(
+            plannedBytes: planner.totalBytes,
+            primary: primaryURL,
+            archive: archiveURL
+        ) {
+            preflightMessage = warning
+            return
+        }
+        launchIngest()
+    }
+
+    private func launchIngest() {
+        guard let source, !primaryDest.isEmpty else { return }
         copier.start(
             yearGroups: planner.yearGroups,
-            primaryDestination: primaryURL,
+            primaryDestination: URL(fileURLWithPath: primaryDest, isDirectory: true),
             archiveDestination: archiveURL,
             description: descriptionText,
             verify: verifyCopies,
@@ -130,6 +158,10 @@ struct MainView: View {
             sourceMountPoint: source.mountPoint,
             sourceVolumeID: source.id
         )
+    }
+
+    private var archiveURL: URL? {
+        archiveDest.isEmpty ? nil : URL(fileURLWithPath: archiveDest, isDirectory: true)
     }
 
     // Fulfils a one-click request from the menu bar: once the requested card
