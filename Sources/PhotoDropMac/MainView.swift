@@ -10,6 +10,8 @@ struct MainView: View {
     @AppStorage("photodrop.archiveDestination") private var archiveDest: String = ""
     @AppStorage("photodrop.verifyCopies") private var verifyCopies: Bool = true
     @AppStorage("photodrop.ejectAfterIngest") private var ejectAfterIngest: Bool = false
+    @AppStorage("photodrop.template.folder") private var templateFolder = NamingTemplate.default.folder
+    @AppStorage("photodrop.template.filename") private var templateFilename = NamingTemplate.default.filename
 
     @State private var selectedSourceID: DetectedDrive.ID?
     @State private var descriptionText: String = ""
@@ -28,6 +30,10 @@ struct MainView: View {
     private var completionResult: CopyResult? {
         if case .completed(let result) = copier.state { return result }
         return nil
+    }
+
+    private var template: NamingTemplate {
+        NamingTemplate(folder: templateFolder, filename: templateFilename)
     }
 
     var body: some View {
@@ -55,7 +61,7 @@ struct MainView: View {
 
                     Button {
                         watcher.rescan()
-                        planner.setSource(source, description: descriptionText)
+                        planner.setSource(source, description: descriptionText, template: template)
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
@@ -93,7 +99,7 @@ struct MainView: View {
             if selectedSourceID == nil {
                 selectedSourceID = watcher.drives.first?.id
             }
-            planner.setSource(source, description: descriptionText)
+            planner.setSource(source, description: descriptionText, template: template)
         }
         .onChange(of: watcher.drives) { _, drives in
             if let id = selectedSourceID, !drives.contains(where: { $0.id == id }) {
@@ -104,11 +110,13 @@ struct MainView: View {
         }
         .onChange(of: selectedSourceID) { _, _ in
             deselectedIDs = []   // a different card → start with everything selected
-            planner.setSource(source, description: descriptionText)
+            planner.setSource(source, description: descriptionText, template: template)
         }
         .onChange(of: descriptionText) { _, new in
             planner.updateDescription(new)
         }
+        .onChange(of: templateFolder) { _, _ in planner.updateTemplate(template) }
+        .onChange(of: templateFilename) { _, _ in planner.updateTemplate(template) }
         .onChange(of: coordinator.pendingOneClickCardID) { _, id in
             guard let id else { return }
             selectedSourceID = id
@@ -182,7 +190,9 @@ struct MainView: View {
             verify: verifyCopies,
             ejectAfter: ejectAfterIngest,
             sourceMountPoint: source.mountPoint,
-            sourceVolumeID: source.id
+            sourceVolumeID: source.id,
+            template: template,
+            cardLabel: source.label
         )
     }
 

@@ -103,7 +103,9 @@ final class Copier {
         verify: Bool,
         ejectAfter: Bool,
         sourceMountPoint: String?,
-        sourceVolumeID: String
+        sourceVolumeID: String,
+        template: NamingTemplate,
+        cardLabel: String
     ) {
         task?.cancel()
         log.removeAll()
@@ -143,7 +145,9 @@ final class Copier {
                 verify: verify,
                 ejectAfter: ejectAfter,
                 sourceMountPoint: sourceMountPoint,
-                sourceVolumeID: sourceVolumeID
+                sourceVolumeID: sourceVolumeID,
+                template: template,
+                cardLabel: cardLabel
             )
         }
     }
@@ -156,7 +160,9 @@ final class Copier {
         verify: Bool,
         ejectAfter: Bool,
         sourceMountPoint: String?,
-        sourceVolumeID: String
+        sourceVolumeID: String,
+        template: NamingTemplate,
+        cardLabel: String
     ) async {
         appendLog(.info, "Indexing destinations for duplicate detection…")
         let primaryIndex = await Task.detached(priority: .userInitiated) {
@@ -180,19 +186,19 @@ final class Copier {
         // planBatch's own in-batch set handles same-run collisions.
         let primaryPlans = await Task.detached(priority: .userInitiated) {
             let targetDirs = Set(bundles.map {
-                CopyPlan.destinationDirectory(for: $0, destinationRoot: primaryRoot, description: description)
+                CopyPlan.destinationDirectory(for: $0, destinationRoot: primaryRoot, description: description, template: template, cardLabel: cardLabel)
             })
             let existing = DestinationIndex.existingFilePaths(in: targetDirs)
-            return CopyPlan.planBatch(bundles: bundles, destinationRoot: primaryRoot, description: description, existingPaths: existing)
+            return CopyPlan.planBatch(bundles: bundles, destinationRoot: primaryRoot, description: description, template: template, cardLabel: cardLabel, existingPaths: existing)
         }.value
         let archivePlans: [BundlePlan]
         if let archiveRoot {
             archivePlans = await Task.detached(priority: .userInitiated) {
                 let targetDirs = Set(bundles.map {
-                    CopyPlan.destinationDirectory(for: $0, destinationRoot: archiveRoot, description: description)
+                    CopyPlan.destinationDirectory(for: $0, destinationRoot: archiveRoot, description: description, template: template, cardLabel: cardLabel)
                 })
                 let existing = DestinationIndex.existingFilePaths(in: targetDirs)
-                return CopyPlan.planBatch(bundles: bundles, destinationRoot: archiveRoot, description: description, existingPaths: existing)
+                return CopyPlan.planBatch(bundles: bundles, destinationRoot: archiveRoot, description: description, template: template, cardLabel: cardLabel, existingPaths: existing)
             }.value
         } else {
             archivePlans = []

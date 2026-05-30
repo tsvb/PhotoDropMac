@@ -46,7 +46,7 @@ A bundle is one primary photo + its companions (`.xmp`/`.dop`/`.pp3` sidecars, J
 
 ### Destination layout
 
-`CopyPlan` writes to: `{root}/{yyyy}/{yyyy-MM-dd}[_{Description}]/{yyyyMMdd_HHmmss}_{OriginalName}`. Companions are renamed to track the primary's new name so the stem relationship survives (long-form `IMG.DNG.xmp` → `{newName}.xmp`; short-form shared-stem → `{newStem}.{ext}`). Folder/description sanitization is in `PathPlanner.sanitize`.
+`CopyPlan` writes to: `{root}/{yyyy}/{day-folder}/{filename}.{ext}`, where the **day-folder** and **filename** are user-configurable templates ([NamingTemplate.swift](Sources/PhotoDropMac/NamingTemplate.swift)). The year is always the fixed top level; the original extension is always re-appended. Defaults reproduce the historical Windows pattern `{yyyy-MM-dd}[_{Description}]` / `{yyyyMMdd_HHmmss}_{OriginalStem}`. Template syntax: `{…}` tokens (a named token — `Description`, `OriginalName`, `OriginalStem`, `CardLabel` — or otherwise a Unicode date-format pattern applied to the capture date) and `[…]` optional groups (dropped when a named token inside renders empty). `TemplateRenderer` is pure; **`PathPlanner.plan` groups the preview by the rendered day-folder leaf and `CopyPlan.destinationDirectory` renders the same leaf — they must agree.** Companions are renamed to track the primary's new name so the stem relationship survives (long-form `IMG.DNG.xmp` → `{newName}.xmp`; short-form shared-stem → `{newStem}.{ext}`). Folder/description/template-output sanitization is in `PathPlanner.sanitize`.
 
 ### The copy engine (`Copier`)
 
@@ -84,6 +84,8 @@ Preferences are plain `@AppStorage` keys with **no central store** — the same 
 - `photodrop.ejectAfterIngest` (Bool, default `false`)
 - `photodrop.showCompletionSheet` (Bool, default `true`)
 - `photodrop.notifyOnCompletion` (Bool, default `true`) — posts a Notification Center banner on finish when the app isn't frontmost ([Notifier.swift](Sources/PhotoDropMac/Notifier.swift), read via `UserDefaults`; toggled in `SettingsView`)
+- `photodrop.template.folder` (String, default `{yyyy-MM-dd}[_{Description}]`) — day-folder name template
+- `photodrop.template.filename` (String, default `{yyyyMMdd_HHmmss}_{OriginalStem}`) — primary file stem template (extension auto-appended). Both edited in Settings → Naming (`NamingPreferences`), read in `MainView` (threaded to `IngestPlanner`/`Copier`)
 - `photodrop.verificationStyle` (`VerificationStyle` rawValue, default `.steady`) — the app **theme**, a committed identity per option (not just an accent):
   - `.steady` — the system look: your accent, your light/dark, SF Pro. The no-transformation default.
   - `.ledger` — editorial: forced **light**, **serif** type, **ultramarine** ink (`#120A8F`), wax-seal `StampMark`.
