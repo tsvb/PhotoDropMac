@@ -76,6 +76,9 @@ final class Copier {
 
     @ObservationIgnored private let cache = HashCache(storeURL: HashCache.defaultURL)
     @ObservationIgnored private var task: Task<Void, Never>?
+    // Explicit cancellation signal for the detached per-file copy, which does
+    // not inherit Task cancellation. A fresh flag is installed per run.
+    @ObservationIgnored private var cancelFlag = CancellationFlag()
     @ObservationIgnored private var startedAt: Date = Date()
     @ObservationIgnored private var totalBytes: Int64 = 0
     @ObservationIgnored private var bytesCopied: Int64 = 0
@@ -92,6 +95,7 @@ final class Copier {
 
     func cancel() {
         task?.cancel()
+        cancelFlag.cancel()
     }
 
     func reset() {
@@ -113,6 +117,7 @@ final class Copier {
         cardLabel: String
     ) {
         task?.cancel()
+        cancelFlag = CancellationFlag()
         log.removeAll()
         startedAt = Date()
         bytesCopied = 0
@@ -407,10 +412,14 @@ final class Copier {
                 // only ever delete files this run actually created.
                 let source = file.source
                 let dest = file.destination
+                let cancelFlag = self.cancelFlag
                 let copyHash = try await Task.detached(priority: .userInitiated) { [weak self] in
                     var buffered: Int64 = 0
                     var lastFlush = Date()
-                    let hash = try FileCopier.copyAndHash(source: source, destination: dest) { chunkBytes in
+                    let hash = try FileCopier.copyAndHash(
+                        source: source, destination: dest,
+                        isCancelled: { cancelFlag.isCancelled }
+                    ) { chunkBytes in
                         buffered += chunkBytes
                         let now = Date()
                         if now.timeIntervalSince(lastFlush) > 0.1 {

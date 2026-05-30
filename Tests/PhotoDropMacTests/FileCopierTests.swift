@@ -100,6 +100,38 @@ final class FileCopierTests: XCTestCase {
                        "a failed copy must not leave a destination file behind")
     }
 
+    // MARK: - Mid-file cancellation (regression for the explicit cancel signal)
+
+    func testMidFileCancellationAbortsAndRemovesPartial() throws {
+        let source = tmp.appendingPathComponent("big.bin")
+        let dest = tmp.appendingPathComponent("dest.bin")
+        // Several 1 MiB chunks so cancellation lands mid-file, not at the start.
+        try Data(repeating: 0x5A, count: (1 << 20) * 4).write(to: source)
+
+        // Let the first chunk through, then report cancelled.
+        var checks = 0
+        XCTAssertThrowsError(
+            try FileCopier.copyAndHash(source: source, destination: dest,
+                                       isCancelled: { checks += 1; return checks > 1 },
+                                       onProgress: { _ in })
+        ) { error in
+            XCTAssertTrue(error is CancellationError, "expected CancellationError, got \(error)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path),
+                       "a cancelled copy must not leave a partial file behind")
+    }
+
+    func testAlwaysFalseCancellationFlagDoesNotInterfere() throws {
+        // A flag that never trips must leave a normal copy untouched.
+        let source = tmp.appendingPathComponent("s.bin")
+        let dest = tmp.appendingPathComponent("d.bin")
+        try Data(repeating: 0x11, count: (1 << 20) * 2).write(to: source)
+        let hash = try FileCopier.copyAndHash(source: source, destination: dest,
+                                              isCancelled: { false }, onProgress: { _ in })
+        XCTAssertEqual(hash, try XxHash64.hash(fileAt: source))
+        XCTAssertEqual(hash, try XxHash64.hash(fileAt: dest))
+    }
+
     // MARK: - Verification
 
     func testVerifyAcceptsMatchAndRejectsMismatch() throws {
