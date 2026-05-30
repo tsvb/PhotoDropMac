@@ -30,16 +30,20 @@ enum Notifier {
     }
 
     private static func post(title: String, body: String) {
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            guard granted else { return }
+        // Fire-and-forget. Build the non-Sendable UNUserNotificationCenter /
+        // content objects inside the Task so nothing non-Sendable is captured
+        // across an isolation boundary (Swift 6 strict concurrency).
+        Task {
+            let center = UNUserNotificationCenter.current()
+            guard let granted = try? await center.requestAuthorization(options: [.alert, .sound]),
+                  granted else { return }
             let content = UNMutableNotificationContent()
             content.title = title
             content.body = body
             content.sound = .default
             // nil trigger → deliver immediately.
             let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-            center.add(request)
+            try? await center.add(request)
         }
     }
 }
