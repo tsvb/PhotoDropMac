@@ -8,6 +8,7 @@ struct MainView: View {
     @State private var planner = IngestPlanner()
     @State private var copier = Copier()
     @State private var verifier = Verifier()
+    @State private var presetStore = PresetStore()
 
     @AppStorage("photodrop.primaryDestination") private var primaryDest: String = ""
     @AppStorage("photodrop.archiveDestination") private var archiveDest: String = ""
@@ -93,7 +94,8 @@ struct MainView: View {
                 InspectorPane(
                     description: $descriptionText,
                     canStart: canStartIngest,
-                    onIngest: startIngest
+                    onIngest: startIngest,
+                    presetStore: presetStore
                 )
                 .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
             }
