@@ -22,7 +22,17 @@ xcodebuild -project PhotoDropMac.xcodeproj -scheme PhotoDropMac \
 
 ### Tests
 
-There is **no XCTest target**. The only automated test is a DEBUG-only self-check of the hash implementation: `XxHash64Vectors.validated` (entry point `xxHash64SelfCheck()`) in [Hasher.swift](Sources/PhotoDropMac/Hasher.swift). It asserts XXH64 reference vectors and streaming-split correctness; assertions fire only in Debug builds. To exercise it, call `xxHash64SelfCheck()` early in launch, or build/run a Debug configuration.
+There is a `PhotoDropMacTests` XCTest target (declared in `project.yml`, sources in `Tests/PhotoDropMacTests/`, wired into the `PhotoDropMac` scheme). Run it with:
+
+```bash
+xcodegen generate
+xcodebuild -project PhotoDropMac.xcodeproj -scheme PhotoDropMac \
+           -configuration Debug -destination 'platform=macOS' test
+```
+
+The suites cover the data-safety paths and pure transforms: the copy engine's overwrite-refusal (`O_EXCL`) and mid-file cancellation (`FileCopierTests`); naming/sanitization incl. the `NAME_MAX` cap and traversal/hidden guards (`NamingTemplateTests`); collision-safe planning (`CopyPlanTests`); dedup semantics incl. the zero-byte exemption (`DestinationIndexTests`); discovery/companion matching (`AssetDiscoveryTests`); EXIF parsing (`ExifReaderTests`); manifest round-trip + CSV, the rollback-accuracy / unique-byte accounting, and re-verification (`ManifestTests`, `CopierManifestTests`, `VerifierTests`); the completion-summary gate (`CompletionSummaryGateTests`); and the thumbnail LRU (`LRUCacheTests`). `Copier` takes injectable cache/index store URLs so its integration tests stay hermetic. Tests are **hosted** (the bundle loads into the app), so a headless CI runner still needs a GUI session to launch the host.
+
+The DEBUG-only hash self-check also remains: `XxHash64Vectors.validated` (entry point `xxHash64SelfCheck()`) in [Hasher.swift](Sources/PhotoDropMac/Hasher.swift) asserts XXH64 reference vectors and streaming-split correctness in Debug builds.
 
 ### Signing / sandbox
 
