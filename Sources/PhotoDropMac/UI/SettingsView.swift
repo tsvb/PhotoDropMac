@@ -33,11 +33,18 @@ struct MaintenancePreferences: View {
     private var schedule: VerifySchedule { VerifySchedule(rawValue: scheduleRaw) ?? .weekly }
     private var libraryPath: String { libraryOverride.isEmpty ? primary : libraryOverride }
 
+    // A typed path wins; otherwise fall back to the photodrop bundled inside the
+    // app (Contents/MacOS/photodrop). So a distributed build schedules without
+    // the user locating or building the CLI.
+    private var effectiveBinaryPath: String {
+        binaryPath.isEmpty ? (EmbeddedCLI.path ?? "") : binaryPath
+    }
+
     var body: some View {
         Form {
             Section {
                 Toggle("Verify the library on a schedule", isOn: $enabled)
-                    .disabled(binaryPath.isEmpty || libraryPath.isEmpty)
+                    .disabled(effectiveBinaryPath.isEmpty || libraryPath.isEmpty)
                 Picker("How often", selection: $scheduleRaw) {
                     ForEach(VerifySchedule.allCases) { Text($0.label).tag($0.rawValue) }
                 }
@@ -51,15 +58,22 @@ struct MaintenancePreferences: View {
 
             Section {
                 TextField("photodrop CLI", text: $binaryPath,
-                          prompt: Text("Path to the built photodrop binary"))
+                          prompt: Text(EmbeddedCLI.path == nil
+                                       ? "Path to the photodrop binary"
+                                       : "Bundled photodrop — type a path to override"))
                     .lineLimit(1).truncationMode(.middle)
                 TextField("Library to verify", text: $libraryOverride,
                           prompt: Text(primary.isEmpty ? "Library folder" : "Defaults to the primary destination"))
                     .lineLimit(1).truncationMode(.middle)
             } footer: {
                 if binaryPath.isEmpty {
-                    Text("Build the photodrop tool (scheme `photodrop`) and point here to enable scheduling.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if EmbeddedCLI.path != nil {
+                        Text("Using the photodrop tool bundled inside the app. Type a path above to override.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Build the photodrop tool (scheme `photodrop`) and point here to enable scheduling.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -76,8 +90,8 @@ struct MaintenancePreferences: View {
     private func apply() {
         do {
             if enabled {
-                guard !binaryPath.isEmpty, !libraryPath.isEmpty else { enabled = false; return }
-                try ScheduledVerification.install(photodropPath: binaryPath, libraryPath: libraryPath, schedule: schedule)
+                guard !effectiveBinaryPath.isEmpty, !libraryPath.isEmpty else { enabled = false; return }
+                try ScheduledVerification.install(photodropPath: effectiveBinaryPath, libraryPath: libraryPath, schedule: schedule)
             } else {
                 try ScheduledVerification.uninstall()
             }

@@ -10,13 +10,24 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    ENABLE_HARDENED_RUNTIME: NO
     CODE_SIGN_STYLE: Manual
-    CODE_SIGN_IDENTITY: "-"
-    DEVELOPMENT_TEAM: ""
   configs:
+    # Local dev: ad-hoc signed, hardened runtime off — fast, no certificate
+    # needed. Matches the historical setup.
     Debug:
       ENABLE_TESTABILITY: YES
+      ENABLE_HARDENED_RUNTIME: NO
+      CODE_SIGN_IDENTITY: "-"
+    # Distribution: Developer ID + hardened runtime + secure timestamp, the
+    # combination Apple notarization requires. Needs a paid Apple Developer
+    # Program membership and a "Developer ID Application" certificate in the
+    # keychain (see RELEASING.md). Set DEVELOPMENT_TEAM to your 10-char Team ID
+    # once enrolled, or pass DEVELOPMENT_TEAM=XXXXXXXXXX to xcodebuild.
+    Release:
+      ENABLE_HARDENED_RUNTIME: YES
+      CODE_SIGN_IDENTITY: "Developer ID Application"
+      OTHER_CODE_SIGN_FLAGS: "--timestamp"
+      DEVELOPMENT_TEAM: ""
 
 packages:
   ArgumentParser:
@@ -29,6 +40,17 @@ targets:
     platform: macOS
     sources:
       - path: Sources/PhotoDropMac
+    dependencies:
+      # Ship the headless CLI inside the app at Contents/MacOS/photodrop so the
+      # scheduled-verification feature works with zero setup. link:false — the
+      # tool is a standalone executable, not linked into the app binary;
+      # embed copies it in and code-signs it on copy (covered by notarization).
+      - target: photodrop
+        link: false
+        embed: true
+        codeSign: true
+        copy:
+          destination: executables
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tsvb.PhotoDropMac
