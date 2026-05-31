@@ -23,7 +23,7 @@ enum CopyPlan {
     // Path: {root}/{yyyy}/{folder-template}/{filename-template}.{ext}. The
     // folder (day-folder leaf) and filename (primary stem) are user-configurable
     // via NamingTemplate; the year is always the fixed top level. The default
-    // templates reproduce the Windows PhotoDrop pattern:
+    // templates reproduce PhotoDrop's established pattern:
     //   {root}/{yyyy}/{yyyy-MM-dd}[_{Description}]/{yyyyMMdd_HHmmss}_{OriginalName}
     //
     // Companions travel with their primary — their new names are derived
@@ -148,7 +148,7 @@ enum CopyPlan {
         }
     }
 
-    // Default stem when a filename template renders empty: the Windows-style
+    // Default stem when a filename template renders empty: the canonical
     // {yyyyMMdd_HHmmss}_{OriginalStem}, so a blank template never strands files.
     private static func fallbackStem(date: Date, stem: String) -> String {
         var cal = Calendar(identifier: .gregorian)

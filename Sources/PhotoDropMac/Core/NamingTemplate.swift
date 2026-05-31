@@ -1,13 +1,13 @@
 import Foundation
 
-/// User-configurable destination naming, mirroring the Windows PhotoDrop
-/// pattern. Two templates: the **day-folder** name (the leaf under a fixed
-/// `{yyyy}/` year folder) and the primary **file** stem (the original
-/// extension is always re-appended, so the file type is preserved).
+/// User-configurable destination naming. Two templates: the **day-folder**
+/// name (the leaf under a fixed `{yyyy}/` year folder) and the primary **file**
+/// stem (the original extension is always re-appended, so the file type is
+/// preserved).
 ///
 /// Syntax:
 ///   • `{…}` — a token. A known *named* token (Description, OriginalName,
-///     OriginalStem, CardLabel) or, failing that, a Unicode/.NET date-format
+///     OriginalStem, CardLabel) or, failing that, a Unicode date-format
 ///     pattern applied to the capture date (e.g. `{yyyy-MM-dd}`,
 ///     `{yyyyMMdd_HHmmss}`).
 ///   • `[…]` — an optional group: dropped entirely if a *named* token inside

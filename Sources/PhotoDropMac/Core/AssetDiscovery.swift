@@ -13,8 +13,8 @@ struct ScannedPhoto: Identifiable, Hashable, Sendable {
     }
 }
 
-// RAW extensions PhotoDrop treats as first-class primaries. Matches the
-// Windows `AssetDiscoveryService.RawExtensions` set exactly.
+// RAW extensions PhotoDrop treats as first-class primaries. A fixed set —
+// extend it deliberately rather than inferring RAW-ness from a file's bytes.
 private let rawExtensions: Set<String> = [
     "dng", "raf", "arw", "cr2", "cr3", "nef", "nrw", "orf", "rw2",
     "pef", "srw", "3fr", "rwl", "x3f", "erf", "mrw", "mef",
@@ -30,7 +30,7 @@ private let jpegExtensions: Set<String> = ["jpg", "jpeg"]
 private let sidecarExtensions: Set<String> = ["dop", "xmp", "pp3", "wav"]
 
 // Accepted primary extensions (RAW + JPEG). Anything else is ignored at
-// the enumeration stage, matching the Windows reference.
+// the enumeration stage.
 private let primaryExtensions: Set<String> = rawExtensions.union(jpegExtensions)
 
 // Every extension the enumerator needs to surface. Filtering by this
@@ -51,7 +51,7 @@ private struct FileEntry {
 }
 
 enum AssetDiscovery {
-    // Two-pass discovery, per the Windows `AssetDiscoveryService`:
+    // Two-pass discovery:
     //   1. RAW primaries and their same-directory companions.
     //   2. Standalone JPEGs — JPEGs not already claimed as a JpegPair
     //      companion by a RAW in the same directory.
@@ -148,7 +148,7 @@ enum AssetDiscovery {
     }
 
     // Decide whether `neighbor` is a companion of the primary. Two
-    // shapes are accepted, matching the Windows `TryClassifyCompanion`:
+    // shapes are accepted:
     //
     //   A. `<primaryName>.<ext>` — neighbour starts with the primary's
     //      full filename and appends a sidecar extension. Covers the

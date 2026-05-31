@@ -16,8 +16,6 @@
 
 PhotoDrop is a native macOS app for the one moment that should never be lossy: pulling irreplaceable photos off a card. Insert a card, preview the year/day folder tree it will build, optionally cull frames on a contact sheet, then copy each shot with streaming hash verification, content-based deduplication, an optional second archival copy, and an optional eject. A warm hash cache makes re-ingesting the same card against the same library nearly instant.
 
-It is a Swift/SwiftUI port of [PhotoDrop](https://github.com/tsvb/PhotoDrop), a Windows (.NET/WPF) app. The Windows core stays the behavioral source of truth for discovery, deduplication, and path planning — much of the logic here deliberately mirrors it.
-
 ## Contents
 
 - [Overview](#overview)
@@ -186,7 +184,7 @@ Swift 6 strict concurrency is on, with a deliberate split:
 A few design choices worth knowing:
 
 - **Tee-hashing** streams source → destination in 1 MiB chunks while hashing in flight, so a multi-GB file is read exactly once for both the copy and its digest.
-- **Dedup is content-based**, matching the Windows reference: a file is a duplicate if its size and hash match anywhere under the destination root, not just at the same path.
+- **Dedup is content-based**: a file is a duplicate if its size and hash match anywhere under the destination root, not just at the same path.
 - **Bundles are all-or-nothing.** A failure mid-bundle deletes that bundle's already-written files. A verification mismatch halts the whole job; other errors are logged and the run continues.
 - The `XxHash64` implementation is a pure-Swift, value-type streaming XXH64 — non-cryptographic, used only for copy verification and dedup equality.
 
@@ -198,7 +196,6 @@ State is persisted in the user's Library: the hash cache at `~/Library/Applicati
 PhotoDropMac/
 ├─ project.yml                 # XcodeGen spec (the .xcodeproj is generated)
 ├─ CLAUDE.md                   # in-repo guide to the codebase
-├─ HANDOFF_FROM_WINDOWS.md     # context from the Windows → Mac port
 ├─ docs/
 │  └─ design_handoff_polish_pass/   # design spec, copy, and an HTML prototype
 └─ Sources/PhotoDropMac/
@@ -223,11 +220,19 @@ The app is intentionally **unsandboxed**, ad-hoc signed (`CODE_SIGN_IDENTITY = "
 
 ## Testing
 
-There is no XCTest target. The one automated check is a DEBUG-only self-test of the hash implementation — `XxHash64Vectors.validated` (entry point `xxHash64SelfCheck()` in `Hasher.swift`), which asserts XXH64 reference vectors and streaming-split correctness. Assertions fire only in Debug builds; run a Debug build or call `xxHash64SelfCheck()` early in launch to exercise it.
+A `PhotoDropMacTests` XCTest target covers the data-safety paths and pure transforms — copy overwrite-refusal and mid-file cancellation, naming/sanitization, collision-safe planning, dedup semantics, discovery/companion matching, EXIF parsing, manifest round-trip and re-verification, and more. Run it with:
+
+```bash
+xcodegen generate
+xcodebuild -project PhotoDropMac.xcodeproj -scheme PhotoDropMac \
+           -configuration Debug -destination 'platform=macOS' test
+```
+
+A DEBUG-only hash self-test (`xxHash64SelfCheck()` in `Hasher.swift`) additionally asserts XXH64 reference vectors and streaming-split correctness in Debug builds.
 
 ## Credits
 
-A native Swift/SwiftUI port of [tsvb/PhotoDrop](https://github.com/tsvb/PhotoDrop) (.NET/WPF, Windows), whose core logic remains the behavioral reference. Built with SwiftUI and ImageIO; project files are generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen). The xxHash algorithm is by [Yann Collet](https://github.com/Cyan4973/xxHash) (reimplemented here in pure Swift).
+PhotoDrop began as a Swift/SwiftUI reimagining of an [earlier app of the same name](https://github.com/tsvb/PhotoDrop) and has since grown into its own native macOS application. Built with SwiftUI and ImageIO; project files are generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen). The xxHash algorithm is by [Yann Collet](https://github.com/Cyan4973/xxHash) (reimplemented here in pure Swift).
 
 ## License
 

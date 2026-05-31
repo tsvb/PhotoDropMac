@@ -6,10 +6,10 @@ import Darwin
 // bucketing by file size. No hashing is done up front — hashes are computed
 // (or fetched from the cache) only when a size collision actually occurs.
 //
-// Matches the Windows PhotoDrop DuplicateDetectionService semantics:
-//   - "Dedup halts on size+hash match anywhere under the destination root,
-//     not just path collision." → if the user renamed a previously-ingested
-//     file, we still detect it.
+// Dedup is content-based, not path-based: a file counts as a duplicate when
+// its size and hash match anything anywhere under the destination root, not
+// just a same-path collision — so a previously-ingested file the user later
+// renamed is still detected.
 //
 // On APFS/HFS+ the walk is incremental across runs: a per-directory mtime
 // snapshot is persisted, and on the next run only directories whose mtime

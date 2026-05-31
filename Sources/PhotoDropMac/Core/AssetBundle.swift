@@ -1,10 +1,9 @@
 import Foundation
 
-// Companion-file classifications recognized by PhotoDrop. Mirrors the
-// Windows `CompanionKind` enum in PhotoDrop.Core. The set is deliberately
-// closed: anything outside these four kinds (xmp/dop/pp3 sidecars, JPEG
-// pair, camera audio note) is treated as an unrelated file, not a
-// companion.
+// Companion-file classifications recognized by PhotoDrop. The set is
+// deliberately closed: anything outside these four kinds (xmp/dop/pp3
+// sidecars, JPEG pair, camera audio note) is treated as an unrelated file,
+// not a companion.
 enum CompanionKind: Sendable, Hashable {
     case xmp       // Adobe-style XMP sidecar (both IMG_1234.xmp and IMG_1234.DNG.xmp variants)
     case dop       // DxO PhotoLab sidecar
