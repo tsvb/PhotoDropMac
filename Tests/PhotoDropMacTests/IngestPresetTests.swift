@@ -22,6 +22,7 @@ final class IngestPresetTests: XCTestCase {
 
     private func sample(_ name: String = "Wedding") -> IngestPreset {
         IngestPreset(name: name, primaryDestination: "/lib", archiveDestination: "/nas",
+                     extraArchiveDestinations: "/offsite\n/cloud",
                      folderTemplate: "{MM}/{yyyy-MM-dd}", fileTemplate: "{yyyyMMdd_HHmmss}_{OriginalStem}",
                      verifyCopies: true, ejectAfterIngest: true)
     }
@@ -31,6 +32,21 @@ final class IngestPresetTests: XCTestCase {
         let data = try JSONEncoder().encode(preset)
         let back = try JSONDecoder().decode(IngestPreset.self, from: data)
         XCTAssertEqual(back, preset)
+        XCTAssertEqual(back.extraArchiveDestinations, "/offsite\n/cloud")
+    }
+
+    // A preset saved before mirror destinations existed has no
+    // `extraArchiveDestinations` key; it must still decode (as "no extras")
+    // rather than failing and dropping every saved preset.
+    func testDecodesLegacyPresetWithoutExtras() throws {
+        let legacy = """
+        {"id":"\(UUID().uuidString)","name":"Old","primaryDestination":"/lib",
+         "archiveDestination":"/nas","folderTemplate":"{yyyy-MM-dd}",
+         "fileTemplate":"{OriginalStem}","verifyCopies":true,"ejectAfterIngest":false}
+        """
+        let preset = try JSONDecoder().decode(IngestPreset.self, from: Data(legacy.utf8))
+        XCTAssertEqual(preset.extraArchiveDestinations, "")
+        XCTAssertEqual(preset.archiveDestination, "/nas")
     }
 
     func testCaptureReadsCurrentSettings() {
@@ -48,6 +64,7 @@ final class IngestPresetTests: XCTestCase {
     func testCaptureUsesDefaultsWhenKeysAbsent() {
         let preset = IngestPreset.capture(name: "X", from: isolatedDefaults())
         XCTAssertEqual(preset.primaryDestination, "")
+        XCTAssertEqual(preset.extraArchiveDestinations, "")
         XCTAssertEqual(preset.folderTemplate, NamingTemplate.default.folder)
         XCTAssertEqual(preset.fileTemplate, NamingTemplate.default.filename)
         XCTAssertTrue(preset.verifyCopies)        // default on
@@ -63,6 +80,7 @@ final class IngestPresetTests: XCTestCase {
         XCTAssertEqual(captured.name, original.name)
         XCTAssertEqual(captured.primaryDestination, original.primaryDestination)
         XCTAssertEqual(captured.archiveDestination, original.archiveDestination)
+        XCTAssertEqual(captured.extraArchiveDestinations, original.extraArchiveDestinations)
         XCTAssertEqual(captured.folderTemplate, original.folderTemplate)
         XCTAssertEqual(captured.fileTemplate, original.fileTemplate)
         XCTAssertEqual(captured.verifyCopies, original.verifyCopies)

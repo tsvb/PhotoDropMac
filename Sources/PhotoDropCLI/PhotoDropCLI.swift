@@ -110,8 +110,10 @@ struct Ingest: AsyncParsableCommand {
         let archiveURLs: [URL]
         if !archive.isEmpty {
             archiveURLs = archive.map { URL(fileURLWithPath: $0, isDirectory: true) }
-        } else if let a = loadedPreset?.archiveDestination, !a.isEmpty {
-            archiveURLs = [URL(fileURLWithPath: a, isDirectory: true)]
+        } else if let preset = loadedPreset {
+            // Honour every mirror the preset carries: primary archive + extras.
+            archiveURLs = ArchiveDestinations.list(
+                archive: preset.archiveDestination, extra: preset.extraArchiveDestinations)
         } else {
             archiveURLs = []
         }

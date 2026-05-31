@@ -4,8 +4,11 @@ import AppKit
 struct InspectorPane: View {
     @AppStorage("photodrop.primaryDestination") private var primary: String = ""
     @AppStorage("photodrop.archiveDestination") private var archive: String = ""
+    @AppStorage("photodrop.extraArchiveDestinations") private var extraArchives: String = ""
     @AppStorage("photodrop.verifyCopies") private var verify: Bool = true
     @AppStorage("photodrop.ejectAfterIngest") private var ejectWhenDone: Bool = false
+    @AppStorage("photodrop.template.folder") private var folderTemplate = NamingTemplate.default.folder
+    @AppStorage("photodrop.template.filename") private var fileTemplate = NamingTemplate.default.filename
     @Binding var description: String
     let canStart: Bool
     let onIngest: () -> Void
@@ -41,18 +44,49 @@ struct InspectorPane: View {
                 }
             }
 
-            Section("Destinations") {
+            Section {
                 LabeledField(label: "Primary") {
                     PathField(path: $primary, prompt: "Choose folder…")
                 }
                 LabeledField(label: "Archive") {
                     PathField(path: $archive, prompt: "Second copy (optional)")
                 }
+                ExtraDestinationsEditor(serialized: $extraArchives)
+            } header: {
+                Text("Destinations")
+            } footer: {
+                Text(destinationSummary)
             }
 
             Section("Description") {
                 TextField("Description", text: $description, prompt: Text("e.g. Iceland"))
                     .labelsHidden()
+            }
+
+            Section("Naming") {
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 8) {
+                        templateField(label: "Day folder", text: $folderTemplate,
+                                      placeholder: NamingTemplate.default.folder)
+                        templateField(label: "File name", text: $fileTemplate,
+                                      placeholder: NamingTemplate.default.filename)
+                        Button("Reset to defaults") {
+                            folderTemplate = NamingTemplate.default.folder
+                            fileTemplate = NamingTemplate.default.filename
+                        }
+                        .controlSize(.small)
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Folder structure")
+                        Text(NamingTemplate.samplePath(folder: folderTemplate, filename: fileTemplate))
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
             }
 
             Section {
@@ -97,6 +131,97 @@ struct InspectorPane: View {
         } message: {
             Text("Saves the current destinations, naming templates, and verify/eject options.")
         }
+    }
+
+    // How many independent verified copies this configuration will write:
+    // the primary (if set) plus each distinct archive/mirror location.
+    private var destinationSummary: String {
+        let mirrors = ArchiveDestinations.list(archive: archive, extra: extraArchives).count
+        let total = (primary.isEmpty ? 0 : 1) + mirrors
+        switch total {
+        case 0:  return "Choose a primary destination to begin."
+        case 1:  return "Writes 1 verified copy. Add an archive for redundancy."
+        default: return "Writes \(total) independent verified copies — every file lands in all \(total)."
+        }
+    }
+
+    @ViewBuilder
+    private func templateField(label: String, text: Binding<String>, placeholder: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            TextField(label, text: text, prompt: Text(placeholder))
+                .labelsHidden()
+                .font(.system(.caption, design: .monospaced))
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+}
+
+// Inline editor for the additional mirror destinations (beyond Primary +
+// Archive). Backed by the single newline-separated `extraArchiveDestinations`
+// default, but presented as stable-identity rows so each path edits cleanly and
+// gets its own remove button. Rows own the truth while visible; the serialized
+// default is the durable store, re-derived only on a genuine external change.
+private struct ExtraDestinationsEditor: View {
+    @Binding var serialized: String
+    @State private var rows: [Row]
+    @State private var syncedFrom: String
+
+    struct Row: Identifiable, Equatable {
+        let id = UUID()
+        var path: String
+    }
+
+    init(serialized: Binding<String>) {
+        _serialized = serialized
+        let initial = serialized.wrappedValue
+        _rows = State(initialValue: Self.parse(initial))
+        _syncedFrom = State(initialValue: initial)
+    }
+
+    var body: some View {
+        ForEach($rows) { $row in
+            HStack(spacing: 8) {
+                PathField(path: $row.path, prompt: "Additional copy…")
+                Button(role: .destructive) {
+                    rows.removeAll { $0.id == row.id }
+                } label: {
+                    Image(systemName: "minus.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .help("Remove this copy")
+            }
+        }
+        Button {
+            rows.append(Row(path: ""))
+        } label: {
+            Label("Add a copy", systemImage: "plus.circle")
+        }
+        .controlSize(.small)
+        .onChange(of: rows) { _, _ in
+            let joined = serialize()
+            syncedFrom = joined
+            serialized = joined
+        }
+        .onChange(of: serialized) { _, new in
+            // Re-derive on an external change (e.g. an edit in Settings), but
+            // ignore the echo of our own write so an in-progress blank row
+            // isn't yanked away.
+            guard new != syncedFrom else { return }
+            rows = Self.parse(new)
+            syncedFrom = new
+        }
+    }
+
+    private func serialize() -> String {
+        rows.map { $0.path.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    static func parse(_ s: String) -> [Row] {
+        s.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { Row(path: $0.trimmingCharacters(in: .whitespaces)) }
     }
 }
 
