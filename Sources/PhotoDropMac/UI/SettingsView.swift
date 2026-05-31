@@ -256,28 +256,9 @@ struct NamingPreferences: View {
     }
 
     // Renders the current templates against a fixed sample, exactly as the copy
-    // engine would (sanitize the rendered output into path components).
+    // engine would. Shared with the inspector's naming preview.
     private var previewPath: String {
-        let context = TemplateContext(
-            date: sampleDate,
-            description: PathPlanner.sanitize("Iceland"),
-            originalName: "L1031253.DNG",
-            originalStem: "L1031253",
-            cardLabel: PathPlanner.sanitize("LEICA DLUX8")
-        )
-        let leaf = PathPlanner.sanitize(TemplateRenderer.render(folder, context))
-        let stem = PathPlanner.sanitize(TemplateRenderer.render(filename, context))
-        let year = Calendar.current.component(.year, from: sampleDate)
-        let safeLeaf = leaf.isEmpty ? "2026-05-28" : leaf
-        let safeStem = stem.isEmpty ? "20260528_195510_L1031253" : stem
-        return "…/\(year)/\(safeLeaf)/\(safeStem).DNG"
-    }
-
-    private var sampleDate: Date {
-        var c = DateComponents()
-        c.year = 2026; c.month = 5; c.day = 28
-        c.hour = 19; c.minute = 55; c.second = 10
-        return Calendar.current.date(from: c) ?? .now
+        NamingTemplate.samplePath(folder: folder, filename: filename)
     }
 }
 

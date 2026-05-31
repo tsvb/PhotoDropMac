@@ -39,6 +39,35 @@ struct NamingTemplate: Sendable, Equatable {
         TokenHelp(token: "{CardLabel}", meaning: "Memory-card volume name"),
         TokenHelp(token: "[…]", meaning: "Optional — dropped if a named token inside is empty"),
     ]
+
+    /// A fixed sample capture used to preview templates in the UI.
+    private static var sampleContext: TemplateContext {
+        var c = DateComponents()
+        c.year = 2026; c.month = 5; c.day = 28
+        c.hour = 19; c.minute = 55; c.second = 10
+        let date = Calendar.current.date(from: c) ?? Date(timeIntervalSince1970: 0)
+        return TemplateContext(
+            date: date,
+            description: PathPlanner.sanitize("Iceland"),
+            originalName: "L1031253.DNG",
+            originalStem: "L1031253",
+            cardLabel: PathPlanner.sanitize("LEICA DLUX8")
+        )
+    }
+
+    /// A representative destination path for the given templates, rendered
+    /// exactly as the copy engine would (render → sanitize). Shown live as the
+    /// user edits, in both Settings → Naming and the inspector, so the two can't
+    /// drift. Pure.
+    static func samplePath(folder: String, filename: String) -> String {
+        let context = sampleContext
+        let leaf = PathPlanner.sanitize(TemplateRenderer.render(folder, context))
+        let stem = PathPlanner.sanitize(TemplateRenderer.render(filename, context))
+        let year = Calendar.current.component(.year, from: context.date)
+        let safeLeaf = leaf.isEmpty ? "2026-05-28" : leaf
+        let safeStem = stem.isEmpty ? "20260528_195510_L1031253" : stem
+        return "…/\(year)/\(safeLeaf)/\(safeStem).DNG"
+    }
 }
 
 /// The per-bundle values a template renders against.
