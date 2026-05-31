@@ -12,3 +12,12 @@ Package.resolved
 
 ## macOS
 .DS_Store
+
+## Coverage artifacts
+*.profraw
+
+## Signing / notarization secrets — never commit (see RELEASING.md)
+*.p8
+*.p12
+*.cer
+*.mobileprovision

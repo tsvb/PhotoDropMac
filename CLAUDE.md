@@ -48,7 +48,11 @@ The DEBUG-only hash self-check also remains: `XxHash64Vectors.validated` (entry 
 
 ### Signing / sandbox
 
-Unsandboxed (`com.apple.security.app-sandbox = false`), ad-hoc signed (`CODE_SIGN_IDENTITY = "-"`), hardened runtime off. This is deliberate: the app needs unrestricted filesystem access (arbitrary card → arbitrary destination) and shells out to `/usr/sbin/diskutil` via `Process` to eject cards — no entitlements required because of the unsandboxed/ad-hoc setup. Don't add the sandbox entitlement without rethinking eject and folder access.
+Always **unsandboxed** (`com.apple.security.app-sandbox = false`): the app needs unrestricted filesystem access (arbitrary card → arbitrary destination) and shells out to `/usr/sbin/diskutil` via `Process` to eject cards. Don't add the sandbox entitlement without rethinking eject and folder access — and note it would also rule out the Mac App Store, so distribution is Developer ID + notarization instead.
+
+Signing is **per-config** ([project.yml](project.yml)): **Debug** is ad-hoc (`CODE_SIGN_IDENTITY = "-"`), hardened runtime off — fast local builds, no certificate. **Release** is **Developer ID Application**, hardened runtime **on**, `OTHER_CODE_SIGN_FLAGS = --timestamp` (what notarization requires). Hardened runtime is orthogonal to the sandbox: every runtime behavior (diskutil eject, the `launchctl` scheduled-verify agent, `PostIngestHook`, `UNUserNotificationCenter`, `setxattr`) works under it with **no extra entitlements** — `PhotoDropMac.entitlements` stays sandbox-false and unchanged.
+
+The `photodrop` CLI is **embedded in the app** at `Contents/MacOS/photodrop` (xcodegen `dependencies: [{target: photodrop, link: false, embed: true}]`), signed on copy as part of the app's signature and covered by the same notarization. `EmbeddedCLI` ([EmbeddedCLI.swift](Sources/PhotoDropMac/UI/EmbeddedCLI.swift)) locates it via `Bundle.main`, and `MaintenancePreferences` defaults the scheduled-verify `binaryPath` to it (typed path still overrides). Releases are cut by [scripts/release.sh](scripts/release.sh) (archive → DMG → `notarytool` → `stapler`); see [RELEASING.md](RELEASING.md) for prerequisites (paid Apple Developer Program + Developer ID cert + notarytool keychain profile).
 
 ## The ingest pipeline (big picture)
 

@@ -19,6 +19,7 @@ PhotoDrop is a native macOS app for the one moment that should never be lossy: p
 ## Contents
 
 - [Overview](#overview)
+- [Download and install](#download-and-install)
 - [Highlights](#highlights)
 - [How it works](#how-it-works)
 - [Supported formats](#supported-formats)
@@ -39,6 +40,12 @@ PhotoDrop is a native macOS app for the one moment that should never be lossy: p
 The app watches for removable cards, scans them into **asset bundles** (a primary photo plus its companions), groups those bundles by capture date into a `year / day` folder tree, and copies them to a destination you choose — verifying every file with a streaming [xxHash](https://github.com/Cyan4973/xxHash) as it goes. Files that already exist anywhere under the destination are detected by content and skipped. If anything in a bundle fails, that bundle is rolled back so a RAW never lands without its edits.
 
 The whole flow is built to be trustworthy and legible: it tells you what was preserved before what failed, surfaces the verification hash of every file in the log, leaves a manifest receipt you can re-verify later, and ends on a plain "safe to remove."
+
+## Download and install
+
+Grab the latest **`PhotoDropMac-<version>.dmg`** from the [Releases](https://github.com/tsvb/PhotoDropMac/releases) page, open it, and drag **PhotoDropMac** to your Applications folder. The build is signed with a Developer ID and notarized by Apple, so it opens with no "unidentified developer" warning. The first time you launch it, macOS may ask you to confirm — click **Open**.
+
+To build from source instead, see [Build and run](#build-and-run). Maintainers cutting a release: see [RELEASING.md](RELEASING.md).
 
 ## Highlights
 
@@ -216,7 +223,14 @@ PhotoDropMac/
 
 ## Signing and sandbox
 
-The app is intentionally **unsandboxed**, ad-hoc signed (`CODE_SIGN_IDENTITY = "-"`), with the hardened runtime off. It needs unrestricted filesystem access (any card → any destination) and shells out to `/usr/sbin/diskutil` to eject cards — which the unsandboxed/ad-hoc setup allows without entitlements. Adding the sandbox entitlement would require rethinking both eject and folder access.
+The app is intentionally **unsandboxed**. It needs unrestricted filesystem access (any card → any destination) and shells out to `/usr/sbin/diskutil` to eject cards — which the unsandboxed setup allows without entitlements. Adding the sandbox entitlement would require rethinking both eject and folder access, and rules out the Mac App Store; distribution is therefore via **Developer ID + notarization** instead.
+
+Signing is split per build configuration (`project.yml`):
+
+- **Debug** — ad-hoc signed (`CODE_SIGN_IDENTITY = "-"`), hardened runtime off. Fast local builds, no certificate needed.
+- **Release** — **Developer ID Application** signing, **hardened runtime on**, secure `--timestamp`. This is the combination Apple notarization requires. Unsandboxed apps notarize fine; the hardened runtime is independent of the sandbox, and every runtime behavior (diskutil eject, the `launchctl` scheduled-verify agent, the post-ingest hook, notifications, xattr checksums) works under it without extra entitlements.
+
+The `photodrop` CLI is **embedded in the app bundle** at `Contents/MacOS/photodrop`, signed as part of the app's signature and covered by the same notarization — so scheduled verification works out of the box with no separate install. See **[RELEASING.md](RELEASING.md)** for the full build → notarize → staple → DMG process and its prerequisites.
 
 ## Testing
 
