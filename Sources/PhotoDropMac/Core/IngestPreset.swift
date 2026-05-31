@@ -11,21 +11,42 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
     var name: String
     var primaryDestination: String
     var archiveDestination: String
+    /// Newline-separated additional mirror destinations (beyond the primary
+    /// archive). Same format as the `extraArchiveDestinations` default.
+    var extraArchiveDestinations: String
     var folderTemplate: String
     var fileTemplate: String
     var verifyCopies: Bool
     var ejectAfterIngest: Bool
 
     init(id: UUID = UUID(), name: String, primaryDestination: String, archiveDestination: String,
-         folderTemplate: String, fileTemplate: String, verifyCopies: Bool, ejectAfterIngest: Bool) {
+         extraArchiveDestinations: String = "", folderTemplate: String, fileTemplate: String,
+         verifyCopies: Bool, ejectAfterIngest: Bool) {
         self.id = id
         self.name = name
         self.primaryDestination = primaryDestination
         self.archiveDestination = archiveDestination
+        self.extraArchiveDestinations = extraArchiveDestinations
         self.folderTemplate = folderTemplate
         self.fileTemplate = fileTemplate
         self.verifyCopies = verifyCopies
         self.ejectAfterIngest = ejectAfterIngest
+    }
+
+    // Decode tolerantly: presets saved before mirror destinations existed have
+    // no `extraArchiveDestinations` key — treat that as "no extra mirrors"
+    // rather than failing the whole decode (which would drop every saved preset).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        primaryDestination = try c.decode(String.self, forKey: .primaryDestination)
+        archiveDestination = try c.decode(String.self, forKey: .archiveDestination)
+        extraArchiveDestinations = try c.decodeIfPresent(String.self, forKey: .extraArchiveDestinations) ?? ""
+        folderTemplate = try c.decode(String.self, forKey: .folderTemplate)
+        fileTemplate = try c.decode(String.self, forKey: .fileTemplate)
+        verifyCopies = try c.decode(Bool.self, forKey: .verifyCopies)
+        ejectAfterIngest = try c.decode(Bool.self, forKey: .ejectAfterIngest)
     }
 
     // The `@AppStorage` keys a preset mirrors (must match the declarations in
@@ -33,6 +54,7 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
     enum Keys {
         static let primary = "photodrop.primaryDestination"
         static let archive = "photodrop.archiveDestination"
+        static let extraArchives = ArchiveDestinations.extraDefaultsKey
         static let folder = "photodrop.template.folder"
         static let filename = "photodrop.template.filename"
         static let verify = "photodrop.verifyCopies"
@@ -46,6 +68,7 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
             name: name,
             primaryDestination: defaults.string(forKey: Keys.primary) ?? "",
             archiveDestination: defaults.string(forKey: Keys.archive) ?? "",
+            extraArchiveDestinations: defaults.string(forKey: Keys.extraArchives) ?? "",
             folderTemplate: defaults.string(forKey: Keys.folder) ?? NamingTemplate.default.folder,
             fileTemplate: defaults.string(forKey: Keys.filename) ?? NamingTemplate.default.filename,
             verifyCopies: defaults.object(forKey: Keys.verify) as? Bool ?? true,
@@ -65,6 +88,7 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
     func apply(to defaults: UserDefaults = .standard) {
         defaults.set(primaryDestination, forKey: Keys.primary)
         defaults.set(archiveDestination, forKey: Keys.archive)
+        defaults.set(extraArchiveDestinations, forKey: Keys.extraArchives)
         defaults.set(folderTemplate, forKey: Keys.folder)
         defaults.set(fileTemplate, forKey: Keys.filename)
         defaults.set(verifyCopies, forKey: Keys.verify)
