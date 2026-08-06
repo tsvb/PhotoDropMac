@@ -54,7 +54,7 @@ enum ManifestWriter {
             return nil
         }
 
-        let base = "ingest-\(fileStamp(stamp))"
+        let base = "ingest-\(JobStamp.fileStamp(stamp))"
         let jsonURL = dir.appendingPathComponent(base + ".json")
         let csvURL = dir.appendingPathComponent(base + ".csv")
 
@@ -212,12 +212,5 @@ enum ManifestWriter {
             return out
         }
         return "\"" + out.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-    }
-
-    private static func fileStamp(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return formatter.string(from: date)
     }
 }

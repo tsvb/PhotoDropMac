@@ -26,11 +26,8 @@ enum JobLogger {
             return nil
         }
 
-        let fileStampFormatter = DateFormatter()
-        fileStampFormatter.locale = Locale(identifier: "en_US_POSIX")
-        fileStampFormatter.dateFormat = "yyyyMMdd-HHmmss"
-        let fileStamp = fileStampFormatter.string(from: startedAt)
-        let logURL = logDir.appendingPathComponent("ingest-\(fileStamp).log")
+        // Same stamp source as the manifest, so the two pair up by filename.
+        let logURL = logDir.appendingPathComponent("ingest-\(JobStamp.fileStamp(startedAt)).log")
 
         let lineStampFormatter = DateFormatter()
         lineStampFormatter.locale = Locale(identifier: "en_US_POSIX")
