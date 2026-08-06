@@ -72,7 +72,7 @@ xcodebuild \
   -archivePath "$ARCHIVE" \
   MARKETING_VERSION="$VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD" \
-  "${TEAM_ARGS[@]}" \
+  "${TEAM_ARGS[@]+"${TEAM_ARGS[@]}"}" \
   archive
 
 [[ -d "$APP" ]] || { echo "✗ Archive did not produce $APP" >&2; exit 1; }
