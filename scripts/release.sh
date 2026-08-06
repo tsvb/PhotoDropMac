@@ -52,6 +52,13 @@ if ! security find-identity -v -p codesigning | grep -q "Developer ID Applicatio
   exit 1
 fi
 
+if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+  echo "✗ No usable notarytool credential profile named '$NOTARY_PROFILE'." >&2
+  echo "  Run 'xcrun notarytool store-credentials \"$NOTARY_PROFILE\" ...' first." >&2
+  echo "  See RELEASING.md → Prerequisites." >&2
+  exit 1
+fi
+
 TEAM_ARGS=()
 if [[ -n "${DEVELOPMENT_TEAM:-}" ]]; then
   TEAM_ARGS=(DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM")
