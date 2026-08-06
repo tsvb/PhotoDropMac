@@ -316,15 +316,23 @@ enum CLIOutput {
         guard !r.allGood else {
             return "✓ All \(scope) match their recorded checksums."
         }
-        var lines = ["✗ \(r.verified) of \(scope) verified — \(r.changed) changed, \(r.missing) missing, \(r.unreadable) unreadable:"]
+        var headline = "✗ \(r.verified) of \(scope) verified — \(r.changed) changed, \(r.missing) missing, \(r.unreadable) unreadable"
+        if r.conflicts > 0 { headline += ", \(r.conflicts) conflicting" }
+        var lines = [headline + ":"]
         for issue in r.issues {
             let tag: String
             switch issue.kind {
             case .changed:    tag = "CHANGED   "
             case .missing:    tag = "MISSING   "
             case .unreadable: tag = "UNREADABLE"
+            case .conflict:   tag = "CONFLICT  "
             }
             lines.append("  \(tag) \(safe(issue.path))")
+        }
+        if r.conflicts > 0 {
+            lines.append("")
+            lines.append("CONFLICT means two manifests record different checksums for the same file.")
+            lines.append("The library's own records disagree — treat those files as unverified.")
         }
         return lines.joined(separator: "\n")
     }
@@ -332,7 +340,7 @@ enum CLIOutput {
     static func verifyJSON(_ r: VerifyReport) -> String {
         struct IssueDTO: Encodable { let kind: String; let name: String; let path: String }
         struct ReportDTO: Encodable {
-            let verified: Int, changed: Int, missing: Int, unreadable: Int
+            let verified: Int, changed: Int, missing: Int, unreadable: Int, conflicts: Int
             let total: Int, manifestCount: Int, allGood: Bool
             let issues: [IssueDTO]
         }
@@ -341,10 +349,12 @@ enum CLIOutput {
             case .changed: return "changed"
             case .missing: return "missing"
             case .unreadable: return "unreadable"
+            case .conflict: return "conflict"
             }
         }
         let dto = ReportDTO(
             verified: r.verified, changed: r.changed, missing: r.missing, unreadable: r.unreadable,
+            conflicts: r.conflicts,
             total: r.total, manifestCount: r.manifestCount, allGood: r.allGood,
             issues: r.issues.map { IssueDTO(kind: kindString($0.kind), name: safe($0.name), path: safe($0.path)) }
         )

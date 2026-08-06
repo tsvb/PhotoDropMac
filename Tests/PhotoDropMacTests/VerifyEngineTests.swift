@@ -72,7 +72,11 @@ final class VerifyEngineTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(VerifyEngine.run(target: root)).missing, 1)
     }
 
-    func testNewestManifestWins() throws {
+    /// Replaces an earlier "newest manifest wins" rule: `createdAt` lives inside
+    /// an unauthenticated file, so letting it pick the expected digest let a
+    /// planted manifest launder a tampered file. Disagreement is now reported.
+    /// See `VerifierTests.testConflictingManifestHashesAreReported`.
+    func testManifestsDisagreeingOnAHashConflict() throws {
         let root = try freshTempDir()
         let real = try writeFile("p.bin", content: "current good", in: root)
         let stale = String(format: "%016llx", (UInt64(real, radix: 16) ?? 0) ^ 0xABCD)
@@ -82,6 +86,19 @@ final class VerifyEngineTests: XCTestCase {
                           [entry("p.bin", hash: real)])
         let report = try XCTUnwrap(VerifyEngine.run(target: root))
         XCTAssertEqual(report.manifestCount, 2)
+        XCTAssertEqual(report.total, 1)
+        XCTAssertFalse(report.allGood)
+        XCTAssertEqual(report.conflicts, 1)
+    }
+
+    func testManifestsAgreeingOnAHashDedupe() throws {
+        let root = try freshTempDir()
+        let real = try writeFile("p.bin", content: "current good", in: root)
+        try writeManifest(into: root, stamp: date(2026, 1, 1), createdAt: date(2026, 1, 1),
+                          [entry("p.bin", hash: real)])
+        try writeManifest(into: root, stamp: date(2026, 6, 1), createdAt: date(2026, 6, 1),
+                          [entry("p.bin", hash: real)])
+        let report = try XCTUnwrap(VerifyEngine.run(target: root))
         XCTAssertEqual(report.total, 1)
         XCTAssertTrue(report.allGood)
     }

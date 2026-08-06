@@ -101,24 +101,51 @@ final class VerifierTests: XCTestCase {
         XCTAssertEqual(report.missing, 1)
     }
 
-    /// §6 regression: a file recorded by two manifests with different hashes must
-    /// verify against the NEWEST manifest's hash, deterministically.
-    func testFileVerifiesAgainstNewestManifestHash() async throws {
+    /// Two manifests recording *different* hashes for one file is reported as a
+    /// conflict, not silently resolved in favour of either.
+    ///
+    /// This replaces an earlier "newest manifest wins" rule. That rule made the
+    /// expected digest a function of `createdAt`, a field inside an
+    /// unauthenticated file sitting in a folder that anyone who can write to the
+    /// library can add to — so dropping in one JSON dated 2099 relabelled a
+    /// tampered file as verified without touching the genuine manifest. Since
+    /// every available ordering signal (in-file `createdAt`, the `ingest-<stamp>`
+    /// filename, the file's mtime) is equally attacker-chosen, there is no
+    /// trustworthy way to arbitrate — so the disagreement itself is the finding.
+    func testConflictingManifestHashesAreReported() async throws {
         let root = try freshTempDir()
         let realHash = try writeFile("2026/photo.bin", content: "current good bytes", in: root)
         let staleHash = String(format: "%016llx", (UInt64(realHash, radix: 16) ?? 0) ^ 0xABCD)
 
-        // Older manifest records a stale (now-wrong) hash …
         try writeManifest(into: root, stamp: date(2026, 1, 1), createdAt: date(2026, 1, 1),
                           [entry("2026/photo.bin", hash: staleHash)])
-        // … newer manifest records the file's current, correct hash.
         try writeManifest(into: root, stamp: date(2026, 6, 1), createdAt: date(2026, 6, 1),
                           [entry("2026/photo.bin", hash: realHash)])
 
         let report = try await runVerifier(target: root)
         XCTAssertEqual(report.manifestCount, 2, "both manifests should be read")
-        XCTAssertEqual(report.total, 1, "the file is checked exactly once (deduped)")
-        XCTAssertTrue(report.allGood, "file should verify against the newest hash, not the stale one")
+        XCTAssertEqual(report.total, 1, "the file is accounted for exactly once")
+        XCTAssertFalse(report.allGood)
+        XCTAssertEqual(report.conflicts, 1)
+        XCTAssertEqual(report.verified, 0, "a file whose records disagree is not hashed at all")
+    }
+
+    /// The common case must stay quiet: a re-ingest re-records what it skipped,
+    /// so the same path appearing in several manifests with the *same* digest is
+    /// normal and dedupes silently.
+    func testAgreeingManifestsDoNotConflict() async throws {
+        let root = try freshTempDir()
+        let hash = try writeFile("2026/photo.bin", content: "current good bytes", in: root)
+
+        try writeManifest(into: root, stamp: date(2026, 1, 1), createdAt: date(2026, 1, 1),
+                          [entry("2026/photo.bin", hash: hash)])
+        try writeManifest(into: root, stamp: date(2026, 6, 1), createdAt: date(2026, 6, 1),
+                          [entry("2026/photo.bin", hash: hash)])
+
+        let report = try await runVerifier(target: root)
+        XCTAssertTrue(report.allGood)
+        XCTAssertEqual(report.conflicts, 0)
+        XCTAssertEqual(report.total, 1)
         XCTAssertEqual(report.verified, 1)
     }
 }

@@ -7,8 +7,8 @@ import XCTest
 /// and `verify`/`heal` accept a target the user did not necessarily produce — a
 /// shared library, a folder on the card, or a `.json` handed straight to the CLI
 /// (whose library root is then taken as two levels up from that file). Every
-/// test here encodes an attack that worked before path containment was added;
-/// they are security assertions, not behavioural preferences.
+/// test here encodes an attack that worked before the containment/conflict
+/// fixes; they are security assertions, not behavioural preferences.
 final class ManifestTrustTests: XCTestCase {
     private func freshTempDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
@@ -165,5 +165,49 @@ final class ManifestTrustTests: XCTestCase {
         XCTAssertTrue(script.contains("copied FROM these directories"))
         XCTAssertTrue(script.contains(mirror.appendingPathComponent("2026").path),
                       "the user must be shown where bytes are coming from")
+    }
+
+    // MARK: - Manifest disagreement
+
+    func testConflictingManifestsAreReportedNotSilentlyResolved() throws {
+        let tmp = try freshTempDir()
+        let library = tmp.appendingPathComponent("library", isDirectory: true)
+        let real = try writeFile("2026/a.bin", content: "original", in: library)
+
+        try writeManifest(into: library, destinations: [library],
+                          createdAt: Date(timeIntervalSince1970: 1_716_000_000),
+                          [entry("2026/a.bin", hash: real)])
+
+        // Tamper with the file, then plant a manifest dated far in the future
+        // recording the tampered digest. The genuine manifest is untouched.
+        let tampered = try writeFile("2026/a.bin", content: "tampered", in: library)
+        try writeManifest(into: library, destinations: [library],
+                          createdAt: Date(timeIntervalSince1970: 4_102_444_800),   // 2100
+                          [entry("2026/a.bin", hash: tampered)])
+
+        let report = try XCTUnwrap(VerifyEngine.run(target: library))
+        XCTAssertFalse(report.allGood, "a planted manifest must not launder a tampered file")
+        XCTAssertEqual(report.conflicts, 1)
+        XCTAssertEqual(report.verified, 0)
+    }
+
+    func testAgreeingManifestsDedupeQuietly() throws {
+        let tmp = try freshTempDir()
+        let library = tmp.appendingPathComponent("library", isDirectory: true)
+        let hash = try writeFile("2026/a.bin", content: "original", in: library)
+
+        // A re-ingest re-records what it skipped: same path, same digest. That is
+        // normal and must stay silent, or every repeat ingest would cry conflict.
+        try writeManifest(into: library, destinations: [library],
+                          createdAt: Date(timeIntervalSince1970: 1_716_000_000),
+                          [entry("2026/a.bin", hash: hash)])
+        try writeManifest(into: library, destinations: [library],
+                          createdAt: Date(timeIntervalSince1970: 1_717_000_000),
+                          [entry("2026/a.bin", hash: hash)])
+
+        let report = try XCTUnwrap(VerifyEngine.run(target: library))
+        XCTAssertTrue(report.allGood)
+        XCTAssertEqual(report.conflicts, 0)
+        XCTAssertEqual(report.total, 1, "the same file recorded twice is still one file")
     }
 }
