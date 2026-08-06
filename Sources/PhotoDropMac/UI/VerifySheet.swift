@@ -104,6 +104,7 @@ struct VerifySheet: View {
         if report.changed > 0 { parts.append("\(report.changed) changed") }
         if report.missing > 0 { parts.append("\(report.missing) missing") }
         if report.unreadable > 0 { parts.append("\(report.unreadable) unreadable") }
+        if report.conflicts > 0 { parts.append("\(report.conflicts) conflicting") }
         return parts.joined(separator: " · ")
     }
 
@@ -172,6 +173,7 @@ struct VerifySheet: View {
         case .changed:    return "exclamationmark.triangle.fill"
         case .missing:    return "xmark.circle.fill"
         case .unreadable: return "exclamationmark.octagon.fill"
+        case .conflict:   return "questionmark.diamond.fill"
         }
     }
 
@@ -180,6 +182,7 @@ struct VerifySheet: View {
         case .changed:    return .orange
         case .missing:    return .red
         case .unreadable: return .red
+        case .conflict:   return .red
         }
     }
 
@@ -188,6 +191,7 @@ struct VerifySheet: View {
         case .changed:    return "CHANGED"
         case .missing:    return "MISSING"
         case .unreadable: return "UNREADABLE"
+        case .conflict:   return "CONFLICT"
         }
     }
 }

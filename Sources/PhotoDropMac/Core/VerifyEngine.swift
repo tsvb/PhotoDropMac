@@ -12,7 +12,9 @@ struct VerifyProgress: Sendable, Equatable {
 }
 
 struct VerifyIssue: Sendable, Identifiable, Equatable, Hashable {
-    enum Kind: Sendable { case changed, missing, unreadable }
+    /// `conflict` means two manifests recorded *different* digests for the same
+    /// file — the library's own records disagree, so no verdict can be trusted.
+    enum Kind: Sendable { case changed, missing, unreadable, conflict }
     let id = UUID()
     let name: String
     let path: String
@@ -27,6 +29,7 @@ struct VerifyReport: Sendable, Equatable {
     var changed: Int { issues.lazy.filter { $0.kind == .changed }.count }
     var missing: Int { issues.lazy.filter { $0.kind == .missing }.count }
     var unreadable: Int { issues.lazy.filter { $0.kind == .unreadable }.count }
+    var conflicts: Int { issues.lazy.filter { $0.kind == .conflict }.count }
     var total: Int { verified + issues.count }
     var allGood: Bool { issues.isEmpty }
 }
@@ -51,9 +54,9 @@ enum VerifyEngine {
     static func run(target: URL,
                     isCancelled: () -> Bool = { false },
                     onProgress: (VerifyProgress) -> Void = { _ in }) -> VerifyReport? {
-        let (work, manifestCount) = build(target: target)
+        let (work, manifestCount, conflicts) = build(target: target)
         var verified = 0
-        var issues: [VerifyIssue] = []
+        var issues: [VerifyIssue] = conflicts
         let total = work.count
 
         for (i, item) in work.enumerated() {
@@ -76,14 +79,26 @@ enum VerifyEngine {
     /// `ManifestWriter.resolve(entryPath:under:)`, which drops any entry that
     /// escapes that root — see the security note there.
     ///
-    /// When several manifests record the same file (e.g. re-ingests), the most
-    /// recent one wins: manifests are applied oldest-first by `createdAt`, so a
-    /// file is verified against its latest known-good hash — deterministic
-    /// regardless of the order the manifest files happen to be listed in.
-    static func build(target: URL) -> (items: [WorkItem], manifestCount: Int) {
-        // Decode every manifest, then order oldest → newest. The manifest's path
-        // is a stable tiebreaker for the (practically impossible) case of two
-        // equal createdAt timestamps.
+    /// **Disagreement between manifests is reported, never resolved.** Manifests
+    /// are unauthenticated files sitting in a folder anyone who can write to the
+    /// library can add to, and every ordering signal available (the in-file
+    /// `createdAt`, the `ingest-<stamp>` filename, the file's mtime) is chosen by
+    /// whoever wrote the file. A "newest wins" rule therefore hands control of
+    /// the expected digest to the most recently *claimed* manifest: dropping in
+    /// one JSON dated 2099 silently overrides every real hash and turns a
+    /// tampered file green, without touching the genuine manifest at all.
+    ///
+    /// So: two manifests recording the same digest for a path is normal (a
+    /// re-ingest re-records what it skipped) and dedupes quietly, but two
+    /// recording *different* digests yields a `.conflict` issue. This can't
+    /// arise from honest use — `CopyPlan` is collision-safe and never rewrites an
+    /// existing path — so a conflict means either real corruption of a manifest
+    /// or a planted one. Either way the library can no longer vouch for that
+    /// file, which is exactly what the report should say.
+    static func build(target: URL) -> (items: [WorkItem], manifestCount: Int, conflicts: [VerifyIssue]) {
+        // Decode every manifest, then order oldest → newest. This ordering is
+        // only for deterministic output — it is explicitly *not* trusted to
+        // arbitrate between manifests (see above).
         var loaded: [(createdAt: Date, urlPath: String, root: URL, files: [ManifestEntry])] = []
         for manifestURL in ManifestWriter.manifestURLs(near: target) {
             guard let data = try? Data(contentsOf: manifestURL),
@@ -93,20 +108,30 @@ enum VerifyEngine {
         }
         loaded.sort { ($0.createdAt, $0.urlPath) < ($1.createdAt, $1.urlPath) }
 
-        // Newest-wins: iterating oldest → newest and overwriting by resolved path
-        // means a file recorded by a later ingest verifies against that later hash.
         var byPath: [String: WorkItem] = [:]
+        var conflicted: [String: VerifyIssue] = [:]
         for record in loaded {
             for entry in record.files {
                 guard let hex = entry.xxhash64, let expected = UInt64(hex, radix: 16) else { continue }
                 // Untrusted path: dropped outright if it escapes the library root.
                 guard let fileURL = ManifestWriter.resolve(entryPath: entry.path, under: record.root) else { continue }
-                byPath[fileURL.path] = WorkItem(url: fileURL, relPath: entry.path, name: entry.name, expected: expected)
+                let key = fileURL.path
+                if let existing = byPath[key], existing.expected != expected {
+                    conflicted[key] = VerifyIssue(name: entry.name, path: existing.relPath, kind: .conflict)
+                    continue
+                }
+                byPath[key] = WorkItem(url: fileURL, relPath: entry.path, name: entry.name, expected: expected)
             }
         }
+
+        // A file whose manifests disagree is never hashed — there is no expected
+        // value to hash it against. It is reported as a conflict instead.
+        for key in conflicted.keys { byPath.removeValue(forKey: key) }
+
         // Path-sorted output so progress and the report are deterministic.
         let items = byPath.values.sorted { $0.relPath < $1.relPath }
-        return (items, loaded.count)
+        let conflicts = conflicted.values.sorted { $0.path < $1.path }
+        return (items, loaded.count, conflicts)
     }
 
     /// Manifest-free verification: walk `folder`, and for every regular file
