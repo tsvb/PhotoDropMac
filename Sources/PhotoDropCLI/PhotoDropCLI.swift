@@ -6,7 +6,7 @@ struct PhotoDropCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "photodrop",
         abstract: "Verify and ingest photo libraries from the command line.",
-        version: "0.0.1",
+        version: "0.1.0",
         subcommands: [Verify.self, Ingest.self, Heal.self]
     )
 }
