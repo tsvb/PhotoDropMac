@@ -41,7 +41,7 @@ struct Heal: ParsableCommand {
         if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
 
         guard report.total > 0 else {
-            CLIOutput.error("No verification manifest found at \(url.path). Run an ingest first, or point at a folder containing a “\(ManifestWriter.folderName)” folder.")
+            CLIOutput.error(CLIOutput.nothingToCheck(at: url, manifestCount: report.manifestCount))
             throw ExitCode(2)
         }
 
@@ -196,7 +196,7 @@ struct Verify: ParsableCommand {
                 print("No checksummed (xattr) files found under \(url.path).")
                 return   // nothing stamped is not an error
             }
-            CLIOutput.error("No verification manifest found at \(url.path). Run an ingest first, or point at a folder containing a “\(ManifestWriter.folderName)” folder.")
+            CLIOutput.error(CLIOutput.nothingToCheck(at: url, manifestCount: report.manifestCount))
             throw ExitCode(2)
         }
 
@@ -212,6 +212,52 @@ enum CLIOutput {
         FileHandle.standardError.write(Data((message + "\n").utf8))
     }
 
+    /// Escapes C0 control characters and DEL so filename-derived text can't drive
+    /// the terminal.
+    ///
+    /// Filenames come off the card verbatim (`ManifestEntry.name`) and manifest
+    /// paths come out of an untrusted JSON, while this CLI writes its progress
+    /// line with `\r\u{1B}[K` — so the terminal is honouring escape sequences.
+    /// An unescaped `\r` or `\u{1B}[2K` in a path could blank or rewrite the very
+    /// summary line that is the tool's entire output, which for a verification
+    /// tool means forging its verdict. Everything printed below that can carry
+    /// card- or manifest-derived text goes through this.
+    static func safe(_ s: String) -> String {
+        var out = ""
+        for scalar in s.unicodeScalars {
+            switch scalar {
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:
+                if scalar.value < 0x20 || scalar.value == 0x7F {
+                    out += String(format: "\\x%02X", scalar.value)
+                } else {
+                    out.unicodeScalars.append(scalar)
+                }
+            }
+        }
+        return out
+    }
+
+    /// Why there was nothing to check.
+    ///
+    /// Distinguishes "no manifest here" from "manifests read, but every entry was
+    /// rejected". The second case means the recorded paths escaped the library
+    /// root, which is either a corrupt manifest or a crafted one — reporting it
+    /// as a plain "no manifest found" would hide exactly the situation the user
+    /// most needs to know about.
+    static func nothingToCheck(at url: URL, manifestCount: Int) -> String {
+        guard manifestCount > 0 else {
+            return "No verification manifest found at \(url.path). Run an ingest first, or point at a folder containing a “\(ManifestWriter.folderName)” folder."
+        }
+        return """
+        Read \(manifestCount) manifest\(manifestCount == 1 ? "" : "s") at \(url.path), but none recorded a usable file.
+        Entries whose recorded path resolves outside the library root are ignored — a manifest that \
+        contains only such entries is either damaged or was not written by PhotoDrop.
+        """
+    }
+
     static func healHuman(_ r: HealReport) -> String {
         guard !r.allHealthy else {
             return "✓ All \(r.total) file\(r.total == 1 ? "" : "s") healthy."
@@ -219,9 +265,9 @@ enum CLIOutput {
         var lines = ["⚠ \(r.candidates.count) of \(r.total) files damaged/missing — \(r.recoverable.count) recoverable, \(r.unrecoverable.count) unrecoverable:"]
         for c in r.candidates {
             let kind = c.kind == .changed ? "CHANGED" : "MISSING"
-            lines.append("  \(kind) \(c.relPath)")
+            lines.append("  \(kind) \(safe(c.relPath))")
             if let from = c.recoverableFrom {
-                lines.append("    ↳ recoverable from \(from)")
+                lines.append("    ↳ recoverable from \(safe(from))")
             } else {
                 lines.append("    ↳ UNRECOVERABLE — no healthy mirror copy")
             }
@@ -278,7 +324,7 @@ enum CLIOutput {
             case .missing:    tag = "MISSING   "
             case .unreadable: tag = "UNREADABLE"
             }
-            lines.append("  \(tag) \(issue.path)")
+            lines.append("  \(tag) \(safe(issue.path))")
         }
         return lines.joined(separator: "\n")
     }
@@ -291,12 +337,16 @@ enum CLIOutput {
             let issues: [IssueDTO]
         }
         func kindString(_ k: VerifyIssue.Kind) -> String {
-            switch k { case .changed: return "changed"; case .missing: return "missing"; case .unreadable: return "unreadable" }
+            switch k {
+            case .changed: return "changed"
+            case .missing: return "missing"
+            case .unreadable: return "unreadable"
+            }
         }
         let dto = ReportDTO(
             verified: r.verified, changed: r.changed, missing: r.missing, unreadable: r.unreadable,
             total: r.total, manifestCount: r.manifestCount, allGood: r.allGood,
-            issues: r.issues.map { IssueDTO(kind: kindString($0.kind), name: $0.name, path: $0.path) }
+            issues: r.issues.map { IssueDTO(kind: kindString($0.kind), name: safe($0.name), path: safe($0.path)) }
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

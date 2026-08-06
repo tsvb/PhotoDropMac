@@ -83,6 +83,67 @@ enum ManifestWriter {
         return try? decoder.decode(Manifest.self, from: data)
     }
 
+    /// Resolves a manifest entry's recorded `path` against the library root it
+    /// was found in, returning nil for anything that does not land strictly
+    /// inside that root.
+    ///
+    /// **This is a security boundary, not a tidiness check.** A manifest is
+    /// unauthenticated data that sits beside the photos it attests to, and
+    /// `verify`/`heal` accept a target the user did not necessarily produce — a
+    /// shared or downloaded library, a folder on the card itself, or a `.json`
+    /// handed straight to the CLI, whose root is then taken as two levels up
+    /// from that file. A recorded path is therefore untrusted input. Without
+    /// this check a `../../../..` entry makes the engines hash arbitrary files
+    /// outside the library (an existence/content oracle) and makes the heal
+    /// restore script emit a `cp` that overwrites them.
+    ///
+    /// Escaping entries are **dropped, not clamped**: a manifest that lies about
+    /// where a file lives has no correct interpretation, and silently rewriting
+    /// the path would verify some other file under its name. An *absolute*
+    /// `path` is harmless — `appendingPathComponent` re-roots it under the
+    /// library rather than honoring it — so it needs no special case.
+    ///
+    /// Normalizing also collapses `.` and redundant separators, which keeps
+    /// callers that key a dictionary on the result from counting `a/b.jpg`,
+    /// `a/./b.jpg`, and `x/../a/b.jpg` as three distinct files.
+    ///
+    /// The comparison is deliberately **lexical**, via `lexicallyNormalized`
+    /// rather than `standardizedFileURL`. `standardizedFileURL` consults the
+    /// filesystem — it resolves symlinks and strips a leading `/private`, but
+    /// *only when the resulting path exists*. That makes it existence-dependent:
+    /// a root that exists standardizes to a different shape than a file under it
+    /// that doesn't, the prefix comparison then fails, and every missing file
+    /// gets silently dropped — precisely the files `heal` exists to find.
+    /// Avoiding the filesystem also sidesteps a TOCTOU race on the check.
+    static func resolve(entryPath: String, under root: URL) -> URL? {
+        guard !entryPath.isEmpty else { return nil }
+        guard let rootComponents = lexicallyNormalized(root),
+              let resolved = lexicallyNormalized(root.appendingPathComponent(entryPath)),
+              rootComponents.first == "/",
+              resolved.count > rootComponents.count,
+              Array(resolved.prefix(rootComponents.count)) == rootComponents
+        else { return nil }
+        return URL(fileURLWithPath: "/" + resolved.dropFirst().joined(separator: "/"))
+    }
+
+    /// Path components with `.` and `..` resolved textually, without touching the
+    /// filesystem. Returns nil if `..` would climb above the filesystem root.
+    private static func lexicallyNormalized(_ url: URL) -> [String]? {
+        var out: [String] = []
+        for component in url.pathComponents {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                guard let last = out.last, last != "/" else { return nil }
+                out.removeLast()
+            default:
+                out.append(component)
+            }
+        }
+        return out
+    }
+
     /// Manifest JSON files reachable from `target`, for re-verification:
     /// - a `.json` file → just that one;
     /// - a library root → every `.json` in its `PhotoDrop Manifests/` folder;
