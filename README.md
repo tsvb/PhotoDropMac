@@ -8,7 +8,7 @@
   <img alt="Platform: macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-111111?logo=apple&logoColor=white">
   <img alt="Swift 6.0" src="https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white">
   <img alt="UI: SwiftUI" src="https://img.shields.io/badge/UI-SwiftUI-0A84FF">
-  <img alt="Status: early (0.0.1)" src="https://img.shields.io/badge/status-early%20(0.0.1)-blue">
+  <img alt="Status: early (0.1.3)" src="https://img.shields.io/badge/status-early%20(0.1.3)-blue">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
@@ -246,7 +246,7 @@ A DEBUG-only hash self-test (`xxHash64SelfCheck()` in `Hasher.swift`) additional
 
 ## Credits
 
-PhotoDrop began as a Swift/SwiftUI reimagining of an [earlier app of the same name](https://github.com/tsvb/PhotoDrop) and has since grown into its own native macOS application. Built with SwiftUI and ImageIO; project files are generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen). The xxHash algorithm is by [Yann Collet](https://github.com/Cyan4973/xxHash) (reimplemented here in pure Swift).
+Built with SwiftUI and ImageIO; project files are generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen). The xxHash algorithm is by [Yann Collet](https://github.com/Cyan4973/xxHash), reimplemented here in pure Swift.
 
 ## License
 

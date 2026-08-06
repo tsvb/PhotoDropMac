@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A native macOS (SwiftUI, Swift 6) app that ingests photos from removable memory cards into a date-organized library. It scans a card, previews a year/day folder tree, then copies each photo bundle with streaming hash verification, content-based deduplication, optional multi-destination archival (primary + any number of mirror copies), and optional card eject.
 
-The discovery, dedup, companion-classification, and path-planning rules are **deliberate and load-bearing** — data safety depends on them, and several encode non-obvious decisions (same-directory-only companion matching, content-based dedup across the whole destination root, all-or-nothing bundles). Each such rule is documented at its definition; change those behaviors carefully and on purpose, not as a drive-by "fix." (PhotoDrop began as a Swift reimagining of an earlier app of the same name; it is now its own thing, and these rules stand on their own merits rather than mirroring any other implementation.)
+The discovery, dedup, companion-classification, and path-planning rules are **deliberate and load-bearing** — data safety depends on them, and several encode non-obvious decisions (same-directory-only companion matching, content-based dedup across the whole destination root, all-or-nothing bundles). Each such rule is documented at its definition; change those behaviors carefully and on purpose, not as a drive-by "fix." They stand on their own merits — judge a proposed change against what it does to data safety here, not against how any other tool behaves.
 
 ## Build & run
 
