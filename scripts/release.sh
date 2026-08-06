@@ -84,7 +84,32 @@ xcodebuild \
 
 [[ -d "$APP" ]] || { echo "✗ Archive did not produce $APP" >&2; exit 1; }
 
-# ── 3. Package into a DMG ────────────────────────────────────────────────────
+# ── 3. Notarize and staple the .app itself ───────────────────────────────────
+# Order matters: the app is stapled BEFORE it goes into the DMG, so the copy the
+# user drags to /Applications carries its own ticket.
+#
+# Stapling only the DMG is not enough. A ticket is bound to a specific cdhash,
+# and the DMG's ticket covers the DMG — once the user copies the app out and
+# discards the disk image, nothing on disk proves the app was notarized.
+# Gatekeeper then has to ask Apple at first launch, which fails closed when the
+# machine is offline: "PhotoDropMac cannot be opened because Apple cannot check
+# it for malicious software." Stapling the app first makes that check work
+# offline, which is the whole point of stapling.
+#
+# notarytool only accepts .zip/.dmg/.pkg, so the app ships to Apple as a zip
+# built with ditto (preserves symlinks and extended attributes; `zip` does not).
+echo "▸ notarytool submit — app (profile: $NOTARY_PROFILE)"
+APP_ZIP="$BUILD_DIR/$APP_NAME-app.zip"
+rm -f "$APP_ZIP"
+/usr/bin/ditto -c -k --keepParent "$APP" "$APP_ZIP"
+xcrun notarytool submit "$APP_ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+rm -f "$APP_ZIP"
+
+echo "▸ stapler staple — app"
+xcrun stapler staple "$APP"
+xcrun stapler validate "$APP"   # fail the release if the app didn't get a ticket
+
+# ── 4. Package the stapled app into a DMG ────────────────────────────────────
 echo "▸ Building DMG"
 rm -f "$DMG"
 if command -v create-dmg >/dev/null 2>&1; then
@@ -102,19 +127,20 @@ else
   rm -rf "$STAGE"
 fi
 
-# ── 4. Notarize the DMG and wait for the verdict ────────────────────────────
-echo "▸ notarytool submit (profile: $NOTARY_PROFILE)"
+# ── 5. Notarize the DMG and wait for the verdict ────────────────────────────
+echo "▸ notarytool submit — dmg (profile: $NOTARY_PROFILE)"
 xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
 
-# ── 5. Staple the ticket so it validates offline ────────────────────────────
-echo "▸ stapler staple"
+# ── 6. Staple the DMG too, so the disk image itself validates offline ───────
+echo "▸ stapler staple — dmg"
 xcrun stapler staple "$DMG"
 
-# ── 6. Verify ────────────────────────────────────────────────────────────────
+# ── 7. Verify ────────────────────────────────────────────────────────────────
 echo "▸ Verifying"
 codesign --verify --deep --strict --verbose=2 "$APP"
 spctl -a -t exec -vvv "$APP" || true          # informational
-xcrun stapler validate "$DMG"
+xcrun stapler validate "$APP"                 # the copy the user keeps
+xcrun stapler validate "$DMG"                 # the download itself
 
 echo ""
 echo "✓ Done: $DMG"
