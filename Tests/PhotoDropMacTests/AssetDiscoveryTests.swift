@@ -92,4 +92,38 @@ final class AssetDiscoveryTests: XCTestCase {
 
         XCTAssertEqual(kinds(bundle(named: "CLIP.NEF", in: AssetDiscovery.scan(root: root))), [.audioNote])
     }
+
+    /// A card is attacker-controlled media: whoever wrote it chooses every
+    /// directory entry, including symlinks pointing off the card. Discovery must
+    /// ingest neither the link nor its target, or a card could pull arbitrary
+    /// readable files into the user's library. This rests on `isRegularFile`
+    /// having lstat semantics and on `FileManager.enumerator` not descending
+    /// symlinked directories — both are relied upon at AssetDiscovery.swift's
+    /// `isRegularFile` guard, so pin them here.
+    func testSymlinksAreNeverIngested() throws {
+        let tmp = try freshTempDir()
+        let card = tmp.appendingPathComponent("card", isDirectory: true)
+        let offCard = tmp.appendingPathComponent("elsewhere", isDirectory: true)
+        let fm = FileManager.default
+        try fm.createDirectory(at: card.appendingPathComponent("DCIM"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: offCard, withIntermediateDirectories: true)
+
+        // A real photo off the card, and a real photo on it as a control.
+        try Data("secret".utf8).write(to: offCard.appendingPathComponent("PRIVATE.DNG"))
+        try Data("ok".utf8).write(to: card.appendingPathComponent("DCIM/REAL.DNG"))
+
+        // A symlink to that off-card file, and a symlink to its directory.
+        try fm.createSymbolicLink(at: card.appendingPathComponent("DCIM/LINK.DNG"),
+                                  withDestinationURL: offCard.appendingPathComponent("PRIVATE.DNG"))
+        try fm.createSymbolicLink(at: card.appendingPathComponent("LINKDIR"),
+                                  withDestinationURL: offCard)
+
+        let bundles = AssetDiscovery.scan(root: card)
+        XCTAssertEqual(bundles.count, 1, "only the one real on-card file should be discovered")
+        XCTAssertEqual(bundles.first?.primary.url.lastPathComponent, "REAL.DNG")
+        XCTAssertFalse(bundles.contains { $0.primary.url.path.contains("PRIVATE") },
+                       "a symlinked target must never be ingested")
+        XCTAssertFalse(bundles.contains { $0.primary.url.lastPathComponent == "LINK.DNG" },
+                       "the symlink itself must not be ingested either")
+    }
 }

