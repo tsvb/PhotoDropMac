@@ -1,18 +1,66 @@
 import Foundation
 
+// Everything `stat(2)` tells us about a file's identity, short of reading it.
+// Nanosecond timestamps come straight from the kernel — `URLResourceValues`
+// rounds them into a `Date`, which is what made the old validator so loose.
+struct FileIdentity: Sendable, Hashable {
+    let size: Int64
+    let mtimeNanos: Int64   // full-precision modification time
+    let birthNanos: Int64   // creation time; 0 where the filesystem has none
+    var mtimeSeconds: Double { Double(mtimeNanos) / 1_000_000_000 }
+}
+
 // One hash entry — what we think the content digest of a given file is,
-// along with the size and mtime we last saw it at. A re-check with the
-// same (size, mtime) is trusted without a re-read.
+// along with the identity we last saw it at. A re-check against a matching
+// identity is trusted without a re-read.
 struct HashCacheEntry: Codable, Sendable, Hashable {
     let hash: UInt64
     let size: Int64
-    let mtime: Double  // seconds since 1970
+    let mtime: Double        // seconds since 1970 (retained for readability/compat)
+    let mtimeNanos: Int64?   // nil in caches written before this field existed
+    let birthNanos: Int64?
 
-    func matches(size: Int64, mtime: Date) -> Bool {
-        // mtime can drift by sub-second on some filesystems; allow a
-        // one-second slop. Size is compared strictly.
-        self.size == size
-            && abs(self.mtime - mtime.timeIntervalSince1970) < 1.0
+    /// Whether this cached digest may be reused for a file with `identity`.
+    ///
+    /// **A stale hit here silently drops a photo.** The source-side cache key is
+    /// `<volumeUUID>|<path>`, and on a camera card every part of it is chosen by
+    /// whoever formatted and wrote the card: `volumeUUID` degrades to the 32-bit
+    /// FAT/exFAT volume serial (and, failing that, to the mount path, i.e. the
+    /// volume label), while the path, size, and timestamps are just card
+    /// contents. A false hit hands `DestinationIndex.findDuplicate` some other
+    /// file's digest, the bundle is skipped as a duplicate, and — because
+    /// skipped entries are recorded with `xxhash64: nil` and `VerifyEngine`
+    /// ignores null-hash entries — the file that never arrived is invisible to
+    /// every later verify. Cheap cards ship with duplicate volume serials and
+    /// cameras reuse `DCIM/…/DSC00001.JPG`, so this is reachable by accident,
+    /// not just by an attacker.
+    ///
+    /// So the match is now exact on full-precision mtime plus creation time,
+    /// where the old rule allowed a full second of mtime slop. Two distinct
+    /// files agreeing on size *and* nanosecond mtime *and* birth time by chance
+    /// is not a realistic collision, and forging it requires authoring the
+    /// filesystem image while already knowing the victim's earlier card's
+    /// timestamps to the nanosecond.
+    ///
+    /// Entries from an older cache (no `mtimeNanos`) fail closed — the digest is
+    /// recomputed. That costs one re-hash per file, once.
+    ///
+    /// Inode is deliberately *not* part of this: exFAT inode numbers are
+    /// synthesized by the kernel and are not stable across mounts, so requiring
+    /// one would miss on every card and defeat the cache entirely.
+    func matches(_ identity: FileIdentity) -> Bool {
+        guard let mtimeNanos, let birthNanos else { return false }
+        return size == identity.size
+            && mtimeNanos == identity.mtimeNanos
+            && birthNanos == identity.birthNanos
+    }
+
+    init(hash: UInt64, identity: FileIdentity) {
+        self.hash = hash
+        self.size = identity.size
+        self.mtime = identity.mtimeSeconds
+        self.mtimeNanos = identity.mtimeNanos
+        self.birthNanos = identity.birthNanos
     }
 }
 
@@ -49,26 +97,26 @@ actor HashCache {
     // can't be stat'd or hashed (a permissions/IO error); callers treat
     // nil as "not a dedup candidate".
     func sourceHash(volumeUUID: String, url: URL) async -> UInt64? {
-        guard let (size, mtime) = statAttrs(url) else { return nil }
+        guard let identity = statAttrs(url) else { return nil }
         let key = "\(volumeUUID)|\(url.path)"
-        if let entry = source[key], entry.matches(size: size, mtime: mtime) {
+        if let entry = source[key], entry.matches(identity) {
             return entry.hash
         }
         guard let computed = await computeHash(url: url) else { return nil }
-        source[key] = HashCacheEntry(hash: computed, size: size, mtime: mtime.timeIntervalSince1970)
+        source[key] = HashCacheEntry(hash: computed, identity: identity)
         isDirty = true
         return computed
     }
 
     // Lookup-or-compute for a destination file.
     func destinationHash(url: URL) async -> UInt64? {
-        guard let (size, mtime) = statAttrs(url) else { return nil }
+        guard let identity = statAttrs(url) else { return nil }
         let key = url.path
-        if let entry = dest[key], entry.matches(size: size, mtime: mtime) {
+        if let entry = dest[key], entry.matches(identity) {
             return entry.hash
         }
         guard let computed = await computeHash(url: url) else { return nil }
-        dest[key] = HashCacheEntry(hash: computed, size: size, mtime: mtime.timeIntervalSince1970)
+        dest[key] = HashCacheEntry(hash: computed, identity: identity)
         isDirty = true
         return computed
     }
@@ -77,8 +125,8 @@ actor HashCache {
     // typically right after a tee-hash copy + verification passes. Saves
     // re-hashing that file on the next dedup run.
     func recordDestination(url: URL, hash: UInt64) {
-        guard let (size, mtime) = statAttrs(url) else { return }
-        dest[url.path] = HashCacheEntry(hash: hash, size: size, mtime: mtime.timeIntervalSince1970)
+        guard let identity = statAttrs(url) else { return }
+        dest[url.path] = HashCacheEntry(hash: hash, identity: identity)
         isDirty = true
     }
 
@@ -94,14 +142,20 @@ actor HashCache {
 
     // MARK: - Helpers
 
-    private func statAttrs(_ url: URL) -> (Int64, Date)? {
-        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
-              let size = values.fileSize,
-              let mtime = values.contentModificationDate
-        else {
-            return nil
-        }
-        return (Int64(size), mtime)
+    /// Reads the file's identity via `stat(2)` rather than `URLResourceValues`,
+    /// which rounds timestamps into a `Date` and so cannot express the
+    /// nanosecond precision `HashCacheEntry.matches` depends on.
+    private func statAttrs(_ url: URL) -> FileIdentity? {
+        var st = stat()
+        guard url.withUnsafeFileSystemRepresentation({ path -> Bool in
+            guard let path else { return false }
+            return stat(path, &st) == 0
+        }) else { return nil }
+
+        func nanos(_ ts: timespec) -> Int64 { Int64(ts.tv_sec) * 1_000_000_000 + Int64(ts.tv_nsec) }
+        return FileIdentity(size: Int64(st.st_size),
+                            mtimeNanos: nanos(st.st_mtimespec),
+                            birthNanos: nanos(st.st_birthtimespec))
     }
 
     private func computeHash(url: URL) async -> UInt64? {

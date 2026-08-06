@@ -79,6 +79,14 @@ enum AssetDiscovery {
 
         for case let url as URL in enumerator {
             guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+            // Load-bearing security check, not just a "skip directories" filter.
+            // `isRegularFile` has lstat semantics — a symlink reports false — so
+            // this is what stops a card from pointing at files outside itself.
+            // Without it, a card containing `DCIM/ETC -> /etc` (or a link to
+            // ~/.ssh) would have its *targets* read, hashed, and copied into the
+            // library. `FileManager.enumerator` separately declines to descend
+            // into symlinked directories. Covered by
+            // AssetDiscoveryTests.testSymlinksAreNeverIngested.
             guard values.isRegularFile == true else { continue }
             let ext = url.pathExtension.lowercased()
             guard recognisedExtensions.contains(ext) else { continue }

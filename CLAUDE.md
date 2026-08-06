@@ -93,11 +93,13 @@ Every ingest writes a receipt of what landed and its checksums, as JSON + CSV, i
 
 ### The manifest is untrusted input
 
-A manifest is unauthenticated data sitting inside the tree it attests to, and `verify`/`heal` accept a target the user did not necessarily produce — a shared or downloaded library, a folder on the card, or a `.json` handed straight to the CLI (whose library root is then taken as two levels up from that file). The rules that follow are each load-bearing:
+A manifest is unauthenticated data sitting inside the tree it attests to, and `verify`/`heal` accept a target the user did not necessarily produce — a shared or downloaded library, a folder on the card, or a `.json` handed straight to the CLI (whose library root is then taken as two levels up from that file). Three rules follow, and each is load-bearing:
 
 - **Every manifest-derived path goes through `ManifestWriter.resolve(entryPath:under:)`**, which drops anything resolving outside the library root. Without it a `../../..` entry makes verify hash arbitrary files (an existence/content oracle) and makes `heal --script` emit a `cp` that overwrites them. The check is **lexical** on purpose: `standardizedFileURL` consults the filesystem and so returns a different shape for paths that exist than for ones that don't, which would silently drop every missing file — exactly what `heal` looks for.
 - **Manifests that disagree are reported, never reconciled.** Two manifests recording the same digest for a path dedupe quietly (a re-ingest re-records what it skipped); two recording *different* digests produce a `.conflict` issue. There is no trustworthy tiebreak — `createdAt`, the `ingest-<stamp>` filename, and the file's mtime are all chosen by whoever wrote the file, so a "newest wins" rule let a planted manifest relabel a tampered file as verified.
 - **`heal` stays report-only, and the script it emits must stay reviewable.** `restoreScript` lists the source roots it will copy *from* (they come from the manifest's `destinations`, which can name anywhere) and refuses to emit an executable line for a path containing control characters — such a path is quoted correctly but renders across several lines, so an embedded `rm -rf $HOME` reads like a command to whoever is reviewing. Interior control characters survive `PathPlanner.sanitize`, which trims only the ends, so they are reachable from a card filename.
+
+Relatedly, `AssetDiscovery`'s `isRegularFile` guard is a security boundary, not a directory filter: it has lstat semantics, so it is what stops a symlink on the card from pulling `/etc` or `~/.ssh` into the library. `HashCacheEntry.matches` is likewise strict (exact nanosecond mtime + birth time) because a false cache *hit* silently skips a photo as a duplicate, and skipped entries carry no digest for a later verify to catch.
 
 State is exposed as a `CopierState` enum (`idle`/`running`/`completed`/`cancelled`/`failed`) that the UI switches on.
 
