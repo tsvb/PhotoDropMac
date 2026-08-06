@@ -259,7 +259,10 @@ final class IngestEngine {
             startedAt: startedAt,
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
-            archiveDestinations: archiveRoots
+            archiveDestinations: archiveRoots,
+            // The manifest's *resolved* stem, so the log keeps its name even if
+            // the manifest had to take a collision suffix.
+            baseName: manifestURL?.deletingPathExtension().lastPathComponent
         )
 
         // Persist the hash cache — misses populated during this run stay hot.

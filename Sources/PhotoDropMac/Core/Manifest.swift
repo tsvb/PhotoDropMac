@@ -54,20 +54,33 @@ enum ManifestWriter {
             return nil
         }
 
-        let base = "ingest-\(JobStamp.fileStamp(stamp))"
-        let jsonURL = dir.appendingPathComponent(base + ".json")
-        let csvURL = dir.appendingPathComponent(base + ".csv")
-
         guard let json = encodeJSON(manifest) else { return nil }
+
+        // Claim the name before writing. `.atomic` *replaces*, so without an
+        // O_EXCL claim a second job landing on the same stamp would silently
+        // destroy this manifest — and a lost manifest doesn't fail loudly, it
+        // makes `verify` report success over the records that remain.
+        guard let jsonURL = JobStamp.claimUniqueName(in: dir,
+                                                     base: "ingest-\(JobStamp.fileStamp(stamp))",
+                                                     pathExtension: "json") else { return nil }
         do {
             try json.write(to: jsonURL, options: .atomic)
-            if let csvData = csv(manifest).data(using: .utf8) {
-                try csvData.write(to: csvURL, options: .atomic)
-            }
-            return jsonURL
         } catch {
+            try? FileManager.default.removeItem(at: jsonURL)   // don't leave the empty claim behind
             return nil
         }
+
+        // The CSV takes the JSON's resolved base so the pair always matches. It
+        // is a spreadsheet convenience, not the record of truth, so a failure
+        // here doesn't fail the manifest.
+        let base = jsonURL.deletingPathExtension().lastPathComponent
+        if let csvData = csv(manifest).data(using: .utf8),
+           let csvURL = JobStamp.claimUniqueName(in: dir, base: base, pathExtension: "csv") {
+            if (try? csvData.write(to: csvURL, options: .atomic)) == nil {
+                try? FileManager.default.removeItem(at: csvURL)
+            }
+        }
+        return jsonURL
     }
 
     static func encodeJSON(_ manifest: Manifest) -> Data? {

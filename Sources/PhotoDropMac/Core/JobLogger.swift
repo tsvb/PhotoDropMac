@@ -5,12 +5,23 @@ enum JobLogger {
     // Filename: ingest-<sortable-timestamp>.log. Returns the log URL on
     // success, nil on failure (unwritable directory, etc.). Non-fatal —
     // the copy result itself is not blocked on logging.
+    /// `baseName` is the manifest's *resolved* filename stem, so the log lands
+    /// beside it under the same name even when the manifest had to take a
+    /// collision suffix. Pass nil (no manifest was written) and the log derives
+    /// its own stem from `startedAt`.
+    ///
+    /// Pairing is best-effort by design: manifests live per-destination while
+    /// logs share one global folder, so two concurrent jobs to *different*
+    /// libraries can collide here and not there, leaving one log with a suffix
+    /// its manifest doesn't have. The manifest name is the authoritative one; a
+    /// cosmetic mismatch beats overwriting somebody's log.
     static func write(
         entries: [LogEntry],
         startedAt: Date,
         elapsedSeconds: Double,
         primaryDestination: URL,
-        archiveDestinations: [URL]
+        archiveDestinations: [URL],
+        baseName: String? = nil
     ) -> URL? {
         let fm = FileManager.default
         guard let libraryDir = fm.urls(for: .libraryDirectory, in: .userDomainMask).first else {
@@ -26,8 +37,12 @@ enum JobLogger {
             return nil
         }
 
-        // Same stamp source as the manifest, so the two pair up by filename.
-        let logURL = logDir.appendingPathComponent("ingest-\(JobStamp.fileStamp(startedAt)).log")
+        // Same stamp source as the manifest, so the two pair up by filename, and
+        // claimed with O_EXCL so a concurrent job can't overwrite this log.
+        let base = baseName ?? "ingest-\(JobStamp.fileStamp(startedAt))"
+        guard let logURL = JobStamp.claimUniqueName(in: logDir, base: base, pathExtension: "log") else {
+            return nil
+        }
 
         let lineStampFormatter = DateFormatter()
         lineStampFormatter.locale = Locale(identifier: "en_US_POSIX")
@@ -59,6 +74,7 @@ enum JobLogger {
             try content.write(to: logURL, atomically: true, encoding: .utf8)
             return logURL
         } catch {
+            try? FileManager.default.removeItem(at: logURL)   // don't leave the empty claim behind
             return nil
         }
     }
