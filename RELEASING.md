@@ -91,9 +91,10 @@ spctl -a -t exec -vvv "$APP"          # → accepted, source=Notarized Developer
 xcrun stapler validate build/PhotoDropMac-*.dmg
 
 # The real test — simulate a downloaded, quarantined copy. Should open with no dialog:
-cp -R "$APP" /tmp/PhotoDropMac.app
-xattr -w com.apple.quarantine "0081;0;Safari;" /tmp/PhotoDropMac.app
-open /tmp/PhotoDropMac.app
+SPOT="$(mktemp -d)"
+cp -R "$APP" "$SPOT/"
+xattr -w com.apple.quarantine "0081;0;Safari;" "$SPOT/PhotoDropMac.app"
+open "$SPOT/PhotoDropMac.app"
 ```
 
 ## Troubleshooting
