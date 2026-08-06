@@ -66,12 +66,27 @@ The script runs, in order:
    secure timestamp. (Xcode signs the nested CLI before sealing the app wrapper,
    so the signing order is correct automatically — do **not** hand-sign with
    `codesign --deep`.)
-3. Package the `.app` into `build/PhotoDropMac-<version>.dmg`.
-4. `xcrun notarytool submit … --wait` — upload to Apple and block until the
+3. `xcrun notarytool submit` the `.app` (zipped with `ditto`) and `stapler
+   staple` it. This happens **before** the DMG is built, so the copy the user
+   drags to /Applications carries its own ticket — see "Why the app is stapled
+   too" below.
+4. Package the stapled `.app` into `build/PhotoDropMac-<version>.dmg`.
+5. `xcrun notarytool submit … --wait` — upload the DMG and block until the
    verdict.
-5. `xcrun stapler staple` — attach the notarization ticket so the DMG validates
-   offline.
-6. Verify (`codesign --verify`, `spctl`, `stapler validate`).
+6. `xcrun stapler staple` — attach the ticket so the DMG validates offline too.
+7. Verify (`codesign --verify`, `spctl`, `stapler validate` on **both** the app
+   and the DMG).
+
+### Why the app is stapled too
+
+A notarization ticket is bound to a specific cdhash, so a ticket stapled to the
+DMG covers *the DMG*. Once the user copies the app out and throws the disk image
+away, nothing on disk proves the app was notarized — Gatekeeper has to ask Apple
+at first launch, and that check fails closed when the machine is offline:
+*"PhotoDropMac cannot be opened because Apple cannot check it for malicious
+software."* Stapling the app before it is packaged makes first launch work with
+no network, which is the entire point of stapling. The two `stapler validate`
+calls in step 7 are what stop this regressing.
 
 Then upload the DMG to a **GitHub Release**.
 
@@ -88,6 +103,10 @@ codesign -dvvv "$APP/Contents/MacOS/photodrop" 2>&1 | grep -E 'Authority|flags'
 
 # Gatekeeper accepts it as notarized:
 spctl -a -t exec -vvv "$APP"          # → accepted, source=Notarized Developer ID
+
+# Both must report "The validate action worked!" — the app's own ticket is what
+# makes an offline first launch succeed after the DMG is discarded:
+xcrun stapler validate "$APP"
 xcrun stapler validate build/PhotoDropMac-*.dmg
 
 # The real test — simulate a downloaded, quarantined copy. Should open with no dialog:
