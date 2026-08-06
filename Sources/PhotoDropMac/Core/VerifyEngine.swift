@@ -72,7 +72,9 @@ enum VerifyEngine {
 
     /// Reads every manifest near `target` and flattens it into a deduped list of
     /// files to re-hash. Each entry's file is resolved relative to its manifest's
-    /// library root (two levels up from the JSON).
+    /// library root (two levels up from the JSON) via
+    /// `ManifestWriter.resolve(entryPath:under:)`, which drops any entry that
+    /// escapes that root — see the security note there.
     ///
     /// When several manifests record the same file (e.g. re-ingests), the most
     /// recent one wins: manifests are applied oldest-first by `createdAt`, so a
@@ -97,7 +99,8 @@ enum VerifyEngine {
         for record in loaded {
             for entry in record.files {
                 guard let hex = entry.xxhash64, let expected = UInt64(hex, radix: 16) else { continue }
-                let fileURL = record.root.appendingPathComponent(entry.path)
+                // Untrusted path: dropped outright if it escapes the library root.
+                guard let fileURL = ManifestWriter.resolve(entryPath: entry.path, under: record.root) else { continue }
                 byPath[fileURL.path] = WorkItem(url: fileURL, relPath: entry.path, name: entry.name, expected: expected)
             }
         }
