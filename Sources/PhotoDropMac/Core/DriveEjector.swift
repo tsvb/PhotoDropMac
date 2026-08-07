@@ -37,47 +37,22 @@ enum DriveEjector {
     }
 
     private static func run(arguments: [String]) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-            process.arguments = arguments
+        // stdout is captured and discarded rather than left unredirected, so
+        // diskutil's success chatter never leaks to the app's stdout.
+        // `ChildProcess` drains both streams while the child runs; diskutil is
+        // quiet enough that it never filled a pipe buffer, but the deadlock that
+        // shape produces is real (it bit the post-ingest hook), so the pattern
+        // lives in one place now.
+        let output = try await ChildProcess.run(
+            executable: URL(fileURLWithPath: "/usr/sbin/diskutil"),
+            arguments: arguments)
 
-            let stderrPipe = Pipe()
-            process.standardError = stderrPipe
-            // Discard stdout — diskutil's success chatter is not useful here
-            // and leaving it unredirected would let it leak to the app's
-            // stdout.
-            process.standardOutput = Pipe()
-
-            // The termination handler fires on an internal queue once the
-            // child exits. Reading to EOF here is safe because the child has
-            // closed its end of the pipe.
-            process.terminationHandler = { @Sendable finished in
-                let stderrData = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
-                let stderrText = String(data: stderrData, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-                if finished.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    let message = stderrText.isEmpty
-                        ? "diskutil exited with status \(finished.terminationStatus)"
-                        : stderrText
-                    continuation.resume(throwing: EjectError(
-                        exitCode: finished.terminationStatus,
-                        message: message
-                    ))
-                }
-            }
-
-            do {
-                try process.run()
-            } catch {
-                // `run()` can fail synchronously if the executable is missing
-                // or the arguments can't be encoded. In that case the
-                // terminationHandler never fires, so we must resume here.
-                continuation.resume(throwing: error)
-            }
+        guard output.isSuccess else {
+            let text = output.stderrText
+            throw EjectError(
+                exitCode: output.status,
+                message: text.isEmpty ? "diskutil exited with status \(output.status)" : text
+            )
         }
     }
 }

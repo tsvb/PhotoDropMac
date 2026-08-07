@@ -44,7 +44,10 @@ struct MaintenancePreferences: View {
         Form {
             Section {
                 Toggle("Verify the library on a schedule", isOn: $enabled)
-                    .disabled(effectiveBinaryPath.isEmpty || libraryPath.isEmpty)
+                    // Only block *turning it on*. Disabling outright stranded the
+                    // toggle greyed-on whenever the primary destination was later
+                    // cleared, leaving an installed agent with no way to remove it.
+                    .disabled(!enabled && (effectiveBinaryPath.isEmpty || libraryPath.isEmpty))
                 Picker("How often", selection: $scheduleRaw) {
                     ForEach(VerifySchedule.allCases) { Text($0.label).tag($0.rawValue) }
                 }
@@ -80,6 +83,13 @@ struct MaintenancePreferences: View {
         .formStyle(.grouped)
         .onChange(of: enabled) { _, _ in apply() }
         .onChange(of: scheduleRaw) { _, _ in if enabled { apply() } }
+        // The installed agent bakes in the binary and library paths, so editing
+        // either while scheduling is on has to reinstall it. Without these, the
+        // agent kept verifying the *old* library while Settings displayed the new
+        // one — the UI and the job silently disagreeing.
+        .onChange(of: binaryPath) { _, _ in if enabled { apply() } }
+        .onChange(of: libraryOverride) { _, _ in if enabled { apply() } }
+        .onChange(of: primary) { _, _ in if enabled, libraryOverride.isEmpty { apply() } }
         .alert("Scheduling failed", isPresented: Binding(
             get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
         )) {
@@ -87,17 +97,29 @@ struct MaintenancePreferences: View {
         } message: { Text(errorMessage ?? "") }
     }
 
+    // launchctl is a subprocess, so this is async — it used to block the main
+    // thread on two `waitUntilExit()` calls.
     private func apply() {
-        do {
-            if enabled {
-                guard !effectiveBinaryPath.isEmpty, !libraryPath.isEmpty else { enabled = false; return }
-                try ScheduledVerification.install(photodropPath: effectiveBinaryPath, libraryPath: libraryPath, schedule: schedule)
-            } else {
-                try ScheduledVerification.uninstall()
+        let binary = effectiveBinaryPath
+        let library = libraryPath
+        let wanted = enabled
+        let cadence = schedule
+        Task {
+            do {
+                if wanted {
+                    guard !binary.isEmpty, !library.isEmpty else { enabled = false; return }
+                    try await ScheduledVerification.install(photodropPath: binary,
+                                                            libraryPath: library, schedule: cadence)
+                } else {
+                    try await ScheduledVerification.uninstall()
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+                // `install` removes the plist again when bootstrap fails, so
+                // reverting the toggle here leaves nothing installed — the
+                // setting and the system now agree.
+                if enabled { enabled = false }
             }
-        } catch {
-            errorMessage = error.localizedDescription
-            if enabled { enabled = false }   // revert on failure
         }
     }
 }

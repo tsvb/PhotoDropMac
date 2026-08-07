@@ -144,4 +144,48 @@ final class CopyPlanTests: XCTestCase {
         let relUnderYear = dir.pathComponents.drop(while: { $0 != "2026" }).dropFirst().joined(separator: "/")
         XCTAssertEqual(relUnderYear, folder?.dayName, "preview folder must equal the copy's path below the year")
     }
+
+    // MARK: - NAME_MAX applies to the whole filename, not just the stem
+
+    /// Regression: `PathPlanner.sanitize` capped the *stem* at 255 bytes and
+    /// `CopyPlan` then appended `.CR2`, producing a 259-byte name that `open()`
+    /// rejects with ENAMETOOLONG — failing the copy and rolling back the whole
+    /// bundle over a name. Reachable from a card with a ~250-character filename.
+    func testPlannedFilenameFitsNameMaxWithItsExtension() {
+        let longStem = String(repeating: "A", count: 400)
+        let plan = CopyPlan.plan(bundle: bundle(dir: "100", name: "\(longStem).CR2",
+                                                date: localDate(2026, 5, 28)),
+                                 destinationRoot: root,
+                                 description: "", template: .default, cardLabel: "")
+        let name = plan.files[0].destination.lastPathComponent
+        XCTAssertLessThanOrEqual(name.utf8.count, PathPlanner.maxComponentBytes)
+        XCTAssertTrue(name.hasSuffix(".CR2"), "the extension is never what gets truncated")
+    }
+
+    /// The `_1` disambiguator has to fit inside the limit too — it is appended
+    /// after the stem was already capped.
+    func testDisambiguatedLongFilenameStillFitsNameMax() {
+        let longStem = String(repeating: "B", count: 400)
+        let b = bundle(dir: "100", name: "\(longStem).CR2", date: localDate(2026, 5, 28))
+        let first = CopyPlan.plan(bundle: b, destinationRoot: root,
+                                  description: "", template: .default, cardLabel: "")
+        let taken = Set(first.files.map { $0.destination.path })
+        let second = CopyPlan.plan(bundle: b, destinationRoot: root,
+                                   description: "", template: .default, cardLabel: "") { taken.contains($0.path) }
+        let name = second.files[0].destination.lastPathComponent
+        XCTAssertLessThanOrEqual(name.utf8.count, PathPlanner.maxComponentBytes)
+        XCTAssertNotEqual(name, first.files[0].destination.lastPathComponent, "it really did disambiguate")
+    }
+
+    func testFileNameHelperReservesRoomForTheExtension() {
+        let capped = PathPlanner.fileName(stem: String(repeating: "x", count: 400), extension: "JPEG")
+        XCTAssertEqual(capped.utf8.count, PathPlanner.maxComponentBytes)
+        XCTAssertTrue(capped.hasSuffix(".JPEG"))
+    }
+
+    func testFileNameHelperHandlesAnEmptyExtension() {
+        let capped = PathPlanner.fileName(stem: String(repeating: "x", count: 400), extension: "")
+        XCTAssertEqual(capped.utf8.count, PathPlanner.maxComponentBytes)
+        XCTAssertFalse(capped.hasSuffix("."))
+    }
 }

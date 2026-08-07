@@ -97,10 +97,19 @@ enum ManifestWriter {
         return try? encoder.encode(manifest)
     }
 
+    /// Decodes a manifest, rejecting anything that isn't the schema this build
+    /// understands. `schema` was written and never read, so any JSON that
+    /// happened to decode structurally was accepted as a PhotoDrop manifest —
+    /// versioning that existed only as decoration. Checking it means a future
+    /// `photodrop.manifest/2` is ignored by an old build rather than
+    /// misinterpreted, which is the safe direction for a file that tells `verify`
+    /// what the right bytes are.
     static func decode(_ data: Data) -> Manifest? {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(Manifest.self, from: data)
+        guard let manifest = try? decoder.decode(Manifest.self, from: data),
+              manifest.schema == Manifest.schemaID else { return nil }
+        return manifest
     }
 
     /// Resolves a manifest entry's recorded `path` against the library root it

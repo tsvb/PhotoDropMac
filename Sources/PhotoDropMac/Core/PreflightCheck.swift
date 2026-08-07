@@ -19,8 +19,19 @@ enum PreflightCheck {
             nameByVolume[volume] = volumeName(of: dest) ?? volume.lastPathComponent
         }
 
-        for (volume, required) in requiredByVolume {
-            guard let free = availableCapacity(at: volume), free < required else { continue }
+        // Report the volume that is furthest short, and break ties by path.
+        // Iterating the dictionary directly and returning on the first hit made
+        // the warning nondeterministic when two destinations were both too full:
+        // the same configuration named a different volume from run to run.
+        let shortfalls = requiredByVolume.compactMap { volume, required -> (URL, Int64, Int64)? in
+            guard let free = availableCapacity(at: volume), free < required else { return nil }
+            return (volume, free, required)
+        }
+        let worst = shortfalls.max { a, b in
+            (a.2 - a.1, b.0.path) < (b.2 - b.1, a.0.path)
+        }
+
+        if let (volume, free, required) = worst {
             let name = nameByVolume[volume] ?? "The destination"
             return """
             “\(name)” has \(free.formatted(.byteCount(style: .file))) free, but this ingest needs about \(required.formatted(.byteCount(style: .file))).

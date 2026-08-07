@@ -34,7 +34,11 @@ final class DestinationIndexTests: XCTestCase {
 
         let dup = await index.findDuplicate(sourceSize: Int64(content.count),
                                             sourceVolumeID: "vol", sourceURL: source, using: cache(in: dir))
-        XCTAssertEqual(dup, existing)
+        XCTAssertEqual(dup?.url, existing)
+        // The digest the match was made on comes back with it: the manifest entry
+        // for a skipped file needs it, and recomputing it later would mean
+        // re-reading a file we have already hashed.
+        XCTAssertEqual(dup?.hash, try XxHash64.hash(fileAt: existing))
     }
 
     func testDifferentContentSameSizeIsNotDuplicate() async throws {

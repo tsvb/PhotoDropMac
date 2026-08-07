@@ -217,6 +217,91 @@ final class IngestEngineFailureTests: XCTestCase {
         XCTAssertFalse(result.wasEjected, "a half-ingested card must stay mounted")
     }
 
+    // MARK: - A mirror is a mirror, down to the filename
+
+    /// Regression: `existingPaths` and `planBatch` were computed per root, so the
+    /// `_1` disambiguator was chosen independently at each destination. With a
+    /// colliding name present in the primary only, the same photo landed as
+    /// `…_IMG_0001_1.JPG` in the primary and `…_IMG_0001.JPG` in the mirror —
+    /// and since only the primary's path is recorded, `heal` then looked for the
+    /// primary's name under the mirror root and declared the file unrecoverable
+    /// with a perfect copy sitting right there.
+    func testMirrorUsesTheSameFilenameAsThePrimary() async throws {
+        let tmp = try freshTempDir()
+        let primary = try dir("primary", in: tmp)
+        let mirror = try dir("mirror", in: tmp)
+
+        // A different-content file already occupying the name this job will plan,
+        // in the primary only.
+        let dayDir = primary.appendingPathComponent("2026/2026-05-28", isDirectory: true)
+        try FileManager.default.createDirectory(at: dayDir, withIntermediateDirectories: true)
+        try Data(repeating: 0x11, count: 128)
+            .write(to: dayDir.appendingPathComponent("20260528_120000_IMG_0001.JPG"))
+
+        let bundles = [try makeBundle("IMG_0001.JPG", bytes: 4096, in: tmp)]
+        _ = await ingest(bundles, primary: primary, archives: [mirror], tmp: tmp)
+
+        XCTAssertTrue(photoNames(in: primary).contains("20260528_120000_IMG_0001_1.JPG"),
+                      "the primary disambiguates around the pre-existing file")
+        XCTAssertTrue(photoNames(in: mirror).contains("20260528_120000_IMG_0001_1.JPG"),
+                      "and the mirror must use that same name, not its own")
+    }
+
+    /// The manifest records one relative path, so `heal` must find the mirror
+    /// copy at that path. This is the failure the divergence actually caused.
+    func testHealFindsTheMirrorCopyAfterACollision() async throws {
+        let tmp = try freshTempDir()
+        let primary = try dir("primary", in: tmp)
+        let mirror = try dir("mirror", in: tmp)
+        let dayDir = primary.appendingPathComponent("2026/2026-05-28", isDirectory: true)
+        try FileManager.default.createDirectory(at: dayDir, withIntermediateDirectories: true)
+        try Data(repeating: 0x11, count: 128)
+            .write(to: dayDir.appendingPathComponent("20260528_120000_IMG_0001.JPG"))
+
+        let bundles = [try makeBundle("IMG_0001.JPG", bytes: 4096, in: tmp)]
+        let (result, _) = await ingest(bundles, primary: primary, archives: [mirror], tmp: tmp)
+
+        // Lose the primary copy of the photo we just ingested.
+        let manifestURL = try XCTUnwrap(result.manifestURL)
+        let manifest = try XCTUnwrap(ManifestWriter.decode(try Data(contentsOf: manifestURL)))
+        let rel = try XCTUnwrap(manifest.files.first?.path)
+        try FileManager.default.removeItem(at: XCTUnwrap(ManifestWriter.resolve(entryPath: rel, under: primary)))
+
+        let heal = try XCTUnwrap(HealEngine.run(target: primary))
+        XCTAssertEqual(heal.recoverable.count, 1,
+                       "the mirror holds this file at the recorded path and heal must see it")
+        XCTAssertEqual(heal.unrecoverable.count, 0)
+    }
+
+    // MARK: - A re-ingest still attests to something
+
+    /// Regression: dedup-skipped entries recorded `xxhash64: nil`, which
+    /// `VerifyEngine` skips — so re-ingesting an already-complete card wrote a
+    /// manifest covering nothing and `verify` printed success over zero files.
+    /// The digest was already computed to make the dedup match and then thrown
+    /// away.
+    func testSkippedFilesRecordTheDigestTheDedupMatchedOn() async throws {
+        let tmp = try freshTempDir()
+        let primary = try dir("lib", in: tmp)
+        let bundles = try (1...3).map { try makeBundle("IMG_80\($0).JPG", bytes: 4096, byte: UInt8($0), in: tmp) }
+
+        _ = await ingest(bundles, primary: primary, tmp: tmp)
+        for url in manifests(in: primary) { try FileManager.default.removeItem(at: url) }
+
+        let (second, _) = await ingest(bundles, primary: primary, tmp: tmp)
+        XCTAssertEqual(second.filesSkipped, 3, "the second run is an all-duplicate re-ingest")
+
+        let manifestURL = try XCTUnwrap(second.manifestURL)
+        let manifest = try XCTUnwrap(ManifestWriter.decode(try Data(contentsOf: manifestURL)))
+        XCTAssertEqual(manifest.files.count, 3)
+        XCTAssertTrue(manifest.files.allSatisfy { $0.xxhash64 != nil },
+                      "every skipped entry carries the digest it was matched on")
+
+        let report = try XCTUnwrap(VerifyEngine.run(target: primary))
+        XCTAssertEqual(report.verified, 3, "a re-ingest manifest must be verifiable")
+        XCTAssertTrue(report.allGood)
+    }
+
     // MARK: - "Verified" means verified
 
     /// Regression: `verifiedBundles` incremented unconditionally, and the

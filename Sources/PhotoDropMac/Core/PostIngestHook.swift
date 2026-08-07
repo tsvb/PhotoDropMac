@@ -41,38 +41,25 @@ enum PostIngestHook {
     /// isn't an executable that can be launched, or if it exits non-zero. The
     /// blocking wait is bridged through a continuation, mirroring `DriveEjector`.
     static func run(scriptPath: String, result: CopyResult) async throws {
-        let env = environment(for: result)
-        let primaryPath = result.primaryDestination.path(percentEncoded: false)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: scriptPath)
-            process.arguments = [primaryPath]
-            process.environment = env
-            process.standardOutput = Pipe()   // don't leak hook chatter to our stdout
-            let stderrPipe = Pipe()
-            process.standardError = stderrPipe
+        let output: ChildProcess.Output
+        do {
+            // Both streams are drained while the hook runs — a hook that prints
+            // more than a pipe buffer (`rsync -v`, `exiftool`) used to wedge here
+            // forever. See ChildProcess.
+            output = try await ChildProcess.run(
+                executable: URL(fileURLWithPath: scriptPath),
+                arguments: [result.primaryDestination.path(percentEncoded: false)],
+                environment: environment(for: result))
+        } catch {
+            // Launch failed outright — the path isn't an executable file.
+            throw PostIngestHookError(message: error.localizedDescription)
+        }
 
-            process.terminationHandler = { @Sendable finished in
-                if finished.terminationStatus == 0 {
-                    continuation.resume()
-                } else {
-                    let data = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
-                    let text = String(data: data, encoding: .utf8)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    let message = text.isEmpty
-                        ? "Post-ingest hook exited with status \(finished.terminationStatus)."
-                        : text
-                    continuation.resume(throwing: PostIngestHookError(message: message))
-                }
-            }
-
-            do {
-                try process.run()
-            } catch {
-                // run() fails synchronously if the path isn't an executable file;
-                // the termination handler never fires, so resume here.
-                continuation.resume(throwing: PostIngestHookError(message: error.localizedDescription))
-            }
+        guard output.isSuccess else {
+            let text = output.stderrText
+            throw PostIngestHookError(message: text.isEmpty
+                ? "Post-ingest hook exited with status \(output.status)."
+                : text)
         }
     }
 }

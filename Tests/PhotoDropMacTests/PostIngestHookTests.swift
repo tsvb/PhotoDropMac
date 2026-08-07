@@ -84,4 +84,60 @@ final class PostIngestHookTests: XCTestCase {
             XCTFail("a missing executable must throw")
         } catch is PostIngestHookError { /* expected */ }
     }
+
+    /// Regression: stdout was piped and never drained. A pipe holds ~64 KiB, so a
+    /// hook that printed more than that blocked in `write()`, never exited, and
+    /// the continuation never resumed — a task leaked on every ingest. Measured
+    /// before the fix: ~1 MiB of stdout never returned within 10s.
+    func testHookProducingMoreThanAPipeBufferDoesNotDeadlock() async throws {
+        let dir = try freshTempDir()
+        try writeScript(Self.chattyScript(stream: "stdout", exit: 0), in: dir)
+        let outcome = await Self.race(scriptPath: dir.appendingPathComponent("hook.sh").path,
+                                      result: result(primary: dir))
+        XCTAssertEqual(outcome, .succeeded, "a hook that fills the pipe buffer must still complete")
+    }
+
+    /// Same for stderr, which was only read inside `terminationHandler` — i.e.
+    /// strictly after the exit it was preventing.
+    func testHookProducingLotsOfStderrDoesNotDeadlock() async throws {
+        let dir = try freshTempDir()
+        try writeScript(Self.chattyScript(stream: "stderr", exit: 1), in: dir)
+        let outcome = await Self.race(scriptPath: dir.appendingPathComponent("hook.sh").path,
+                                      result: result(primary: dir))
+        XCTAssertEqual(outcome, .failed, "it should surface the non-zero exit, not hang")
+    }
+
+    /// A hook that writes ~1 MiB to the chosen stream, far past the buffer.
+    private static func chattyScript(stream: String, exit code: Int) -> String {
+        let redirect = stream == "stderr" ? " 1>&2" : ""
+        return """
+        #!/bin/sh
+        i=0
+        while [ $i -lt 16384 ]; do
+          printf '%064d\\n' $i\(redirect)
+          i=$((i+1))
+        done
+        exit \(code)
+        """
+    }
+
+    private enum HookOutcome: Sendable, Equatable { case succeeded, failed, timedOut }
+
+    /// Runs the hook against a wall-clock deadline. Static and taking only
+    /// Sendable values so nothing captures the test case itself.
+    private static func race(scriptPath: String, result: CopyResult) async -> HookOutcome {
+        await withTaskGroup(of: HookOutcome.self) { group in
+            group.addTask {
+                do { try await PostIngestHook.run(scriptPath: scriptPath, result: result); return .succeeded }
+                catch { return .failed }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                return .timedOut
+            }
+            let first = await group.next() ?? .timedOut
+            group.cancelAll()
+            return first
+        }
+    }
 }

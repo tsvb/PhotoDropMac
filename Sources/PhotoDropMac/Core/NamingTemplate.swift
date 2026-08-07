@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// User-configurable destination naming. Two templates: the **day-folder**
 /// name (the leaf under a fixed `{yyyy}/` year folder) and the primary **file**
@@ -133,11 +134,42 @@ enum TemplateRenderer {
         case "CardLabel":    return (context.cardLabel, context.cardLabel.isEmpty)
         default:
             // Anything else is treated as a date-format pattern.
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = .current
-            formatter.dateFormat = token
-            return (formatter.string(from: context.date), false)
+            return (Self.format(context.date, pattern: token), false)
+        }
+    }
+
+    /// Formats `date` with a cached `DateFormatter` for `pattern`.
+    ///
+    /// There are only ever a handful of distinct patterns in a job — the folder
+    /// and filename templates — but `resolve` runs per token, per bundle, per
+    /// destination root, and `PathPlanner`/`CopyPlan` each render again. A
+    /// thousand-shot card across three destinations was constructing thousands
+    /// of the single most expensive object in Foundation for this purpose.
+    ///
+    /// `DateFormatter` is not thread-safe, so the formatting happens *inside*
+    /// the lock rather than the instance being handed back out — the format call
+    /// is microseconds, far cheaper than the allocation it replaces. The cache
+    /// is unbounded, which is fine: the key space is the set of patterns the user
+    /// has typed. The current time zone is part of the key so a formatter built
+    /// before the system zone changed is never reused after it.
+    private static let formatters =
+        OSAllocatedUnfairLock(initialState: [String: DateFormatter]())
+
+    private static func format(_ date: Date, pattern: String) -> String {
+        let zone = TimeZone.current
+        let key = "\(zone.identifier)\u{0}\(pattern)"
+        return formatters.withLock { cache in
+            let formatter: DateFormatter
+            if let existing = cache[key] {
+                formatter = existing
+            } else {
+                formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = zone
+                formatter.dateFormat = pattern
+                cache[key] = formatter
+            }
+            return formatter.string(from: date)
         }
     }
 }

@@ -39,9 +39,4 @@ struct AssetBundle: Sendable, Hashable, Identifiable {
     // Total file count including the primary and its companions. The UI
     // "X files" label reflects what will actually be copied.
     var fileCount: Int { 1 + companions.count }
-
-    // How many primaries this bundle represents. Always 1 — exposed as
-    // a computed property so callers that care about "photos vs total
-    // files" can sum this distinctly from `fileCount`.
-    var photoCount: Int { 1 }
 }

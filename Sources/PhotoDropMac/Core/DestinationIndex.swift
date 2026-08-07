@@ -32,12 +32,22 @@ struct DestinationIndex: Sendable {
     // Both source and destination hashes route through the cache. Cold cache:
     // reads the file, hashes it, stores. Warm cache (same file, same
     // mtime/size): stat-only — no file read.
+    /// A matched duplicate: where the existing copy lives, and the digest both
+    /// files share. The digest is returned rather than discarded because the
+    /// manifest entry for a skipped file needs it — without it the entry records
+    /// `xxhash64: nil`, `VerifyEngine` skips the entry, and an all-duplicate
+    /// re-ingest produces a manifest that attests to nothing at all.
+    struct Duplicate: Sendable {
+        let url: URL
+        let hash: UInt64
+    }
+
     func findDuplicate(
         sourceSize: Int64,
         sourceVolumeID: String,
         sourceURL: URL,
         using cache: HashCache
-    ) async -> URL? {
+    ) async -> Duplicate? {
         // Never dedup zero-byte files: every empty file shares size 0 and the
         // same (constant) empty-input hash, so treating them as duplicates would
         // skip a distinct empty companion as a "duplicate" of an unrelated empty
@@ -50,7 +60,7 @@ struct DestinationIndex: Sendable {
         for candidate in candidates {
             if let candidateHash = await cache.destinationHash(url: candidate),
                candidateHash == sourceHash {
-                return candidate
+                return Duplicate(url: candidate, hash: sourceHash)
             }
         }
         return nil

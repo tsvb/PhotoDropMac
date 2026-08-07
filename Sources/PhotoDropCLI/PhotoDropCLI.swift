@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import os
 
 @main
 struct PhotoDropCommand: AsyncParsableCommand {
@@ -48,8 +49,22 @@ struct Heal: ParsableCommand {
         print(json ? CLIOutput.healJSON(report) : CLIOutput.healHuman(report))
 
         if let script, !report.recoverable.isEmpty {
-            try HealEngine.restoreScript(report).write(toFile: script, atomically: true, encoding: .utf8)
-            CLIOutput.error("Wrote restore script to \(script) — review it, then run it yourself.")
+            // Create with O_EXCL rather than `write(toFile:atomically:)`, which
+            // replaces whatever is already at the path — the one destructive act
+            // in an otherwise strictly report-only command. The path is the
+            // user's explicit choice, so silently writing somewhere else would be
+            // worse than refusing; say so and let them decide.
+            let fd = open(script, O_WRONLY | O_CREAT | O_EXCL, 0o755)
+            guard fd >= 0 else {
+                CLIOutput.error(errno == EEXIST
+                    ? "Refused to overwrite \(CLIOutput.safe(script)) — remove it or choose another path."
+                    : "Could not write \(CLIOutput.safe(script)): \(String(cString: strerror(errno)))")
+                throw ExitCode(2)
+            }
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            try handle.write(contentsOf: Data(HealEngine.restoreScript(report).utf8))
+            try handle.close()
+            CLIOutput.error("Wrote restore script to \(CLIOutput.safe(script)) — review it, then run it yourself.")
         }
 
         if !report.allHealthy { throw ExitCode(1) }   // 0 = healthy, 1 = damage found
@@ -89,6 +104,9 @@ struct Ingest: AsyncParsableCommand {
 
     @Option(name: .long, help: "File-name stem template.")
     var fileTemplate: String?
+
+    @Option(name: .long, help: "Executable to run after a clean ingest (the app's post-ingest hook, for headless runs).")
+    var postIngestHook: String?
 
     func run() async throws {
         let cardURL = URL(fileURLWithPath: from, isDirectory: true)
@@ -139,6 +157,21 @@ struct Ingest: AsyncParsableCommand {
         let cardLabel = (try? cardURL.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? cardURL.lastPathComponent
         let showProgress = isatty(FileHandle.standardError.fileDescriptor) != 0
 
+        // Ctrl-C asks the engine to stop at the next file boundary instead of
+        // killing the process mid-write. Without this the copy was terminated
+        // partway through a file, leaving a partial in the library with no
+        // manifest entry and no checksum xattr — invisible to both verify modes.
+        // SIGINT is ignored at the POSIX level so the dispatch source sees it.
+        let interrupted = InterruptFlag()
+        signal(SIGINT, SIG_IGN)
+        let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        sigintSource.setEventHandler {
+            interrupted.trip()
+            FileHandle.standardError.write(Data("\nInterrupted — finishing the current file, then writing the manifest…\n".utf8))
+        }
+        sigintSource.resume()
+        defer { sigintSource.cancel() }
+
         let engine = IngestEngine(
             bundles: bundles, description: descriptionText, primaryRoot: primaryURL,
             archiveRoots: archiveURLs, verify: doVerify, ejectAfter: doEject,
@@ -146,6 +179,7 @@ struct Ingest: AsyncParsableCommand {
             template: template, cardLabel: cardLabel,
             cache: HashCache(storeURL: HashCache.defaultURL),
             indexStoreURL: DestinationIndex.defaultStoreURL,
+            isCancelled: { interrupted.isTripped },
             onProgress: { progress in
                 guard showProgress else { return }
                 let size = ByteCountFormatter.string(fromByteCount: progress.bytesCopied, countStyle: .file)
@@ -157,9 +191,32 @@ struct Ingest: AsyncParsableCommand {
 
         if result.cancelled { CLIOutput.error("Ingest cancelled — a manifest was written for what already landed.") }
         print(CLIOutput.ingestSummary(result))
+
+        // The app runs the user's post-ingest hook on a clean finish; a headless
+        // run silently skipped it. Taken as an explicit option rather than read
+        // from the app's defaults, because a command-line tool's UserDefaults
+        // domain isn't the app's.
+        if let postIngestHook, !postIngestHook.isEmpty,
+           !result.halted, !result.cancelled, result.primaryFailures == 0 {
+            do {
+                try await PostIngestHook.run(scriptPath: postIngestHook, result: result)
+            } catch let error as PostIngestHookError {
+                CLIOutput.error("Post-ingest hook failed: \(CLIOutput.safe(error.message))")
+            }
+        }
+
         if result.halted { throw ExitCode(2) }
+        if result.cancelled { throw ExitCode(2) }
         if result.filesFailed > 0 { throw ExitCode(1) }
     }
+}
+
+/// Set from a signal-handling dispatch queue, read by the engine's cancellation
+/// check on its own task — hence the lock.
+private final class InterruptFlag: Sendable {
+    private let tripped = OSAllocatedUnfairLock(initialState: false)
+    var isTripped: Bool { tripped.withLock { $0 } }
+    func trip() { tripped.withLock { $0 = true } }
 }
 
 // MARK: - verify
@@ -186,9 +243,26 @@ struct Verify: ParsableCommand {
             FileHandle.standardError.write(Data("\r  verifying \(progress.checked)/\(progress.total)…".utf8))
         }
 
-        let report = xattr
-            ? VerifyEngine.runXattr(folder: url, onProgress: onProgress)
-            : VerifyEngine.run(target: url, onProgress: onProgress)
+        let report: VerifyReport?
+        if xattr {
+            switch VerifyEngine.runXattr(folder: url, onProgress: onProgress) {
+            case .report(let r):
+                report = r
+            case .unreadableTarget:
+                if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
+                // Exit 2, never 0. A target we could not read is the one case
+                // where "no checksummed files found" would be a lie — and a
+                // verification tool that exits 0 on a path it never opened turns
+                // a typo in a script into a permanent green check.
+                CLIOutput.error("Cannot read \(CLIOutput.safe(url.path)) — no such folder, "
+                              + "not a folder, or permission denied.")
+                throw ExitCode(2)
+            case .cancelled:
+                report = nil
+            }
+        } else {
+            report = VerifyEngine.run(target: url, onProgress: onProgress)
+        }
         if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }   // clear progress line
 
         guard let report else {
@@ -197,8 +271,10 @@ struct Verify: ParsableCommand {
         }
         guard report.total > 0 else {
             if xattr {
-                print("No checksummed (xattr) files found under \(url.path).")
-                return   // nothing stamped is not an error
+                // The folder was readable and simply holds nothing stamped —
+                // genuinely not an error.
+                print("No checksummed (xattr) files found under \(CLIOutput.safe(url.path)).")
+                return
             }
             CLIOutput.error(CLIOutput.nothingToCheck(at: url, manifestCount: report.manifestCount))
             throw ExitCode(2)
@@ -318,10 +394,26 @@ enum CLIOutput {
         if r.filesSkipped > 0 { parts.append("\(r.filesSkipped) skipped") }
         if r.filesFailed > 0 { parts.append("\(r.filesFailed) failed") }
         let size = ByteCountFormatter.string(fromByteCount: r.totalBytes, countStyle: .file)
-        let lead = r.halted ? "✗ Halted (\(r.haltReason ?? "error")): "
-            : (r.filesFailed > 0 ? "⚠ Completed with errors: " : "✓ Ingest complete: ")
+        // "Ingest complete" is a claim about the *card*, not about the files that
+        // landed — a cancelled run copied everything it reports and still left
+        // the rest behind, so it must not be ticked off as complete.
+        let lead: String
+        if r.halted {
+            lead = "✗ Halted (\(r.haltReason ?? "error")): "
+        } else if r.cancelled {
+            lead = "⚠ Cancelled — partial ingest: "
+        } else if r.primaryFailures > 0 {
+            lead = "⚠ Completed with errors: "
+        } else if !r.failedMirrors.isEmpty {
+            lead = "⚠ Library complete, mirror incomplete: "
+        } else {
+            lead = "✓ Ingest complete: "
+        }
         var s = lead + parts.joined(separator: ", ") + " · " + size
         if let manifestURL = r.manifestURL { s += "\n  manifest: \(manifestURL.path)" }
+        for mirror in r.failedMirrors {
+            s += "\n  could not write mirror: \(safe(mirror))"
+        }
         if r.wasEjected { s += "\n  card ejected" }
         return s
     }

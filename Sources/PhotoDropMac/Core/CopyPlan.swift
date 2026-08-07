@@ -132,8 +132,14 @@ enum CopyPlan {
         var n = 0
         while true {
             let disambiguator = n == 0 ? "" : "_\(n)"
-            let primaryNewStem = baseStem + disambiguator
-            let primaryNewName = primaryExt.isEmpty ? primaryNewStem : "\(primaryNewStem).\(primaryExt)"
+            // The disambiguator and the extension both have to fit inside
+            // NAME_MAX alongside the stem, so the stem is trimmed against what
+            // they need rather than capped on its own — see PathPlanner.fileName.
+            let stemRoom = PathPlanner.maxComponentBytes
+                - disambiguator.utf8.count
+                - (primaryExt.isEmpty ? 0 : primaryExt.utf8.count + 1)
+            let primaryNewStem = PathPlanner.truncatedToByteLimit(baseStem, max(1, stemRoom)) + disambiguator
+            let primaryNewName = PathPlanner.fileName(stem: primaryNewStem, extension: primaryExt)
             let files = buildFiles(
                 bundle: bundle,
                 primaryOldName: primaryOldName,
@@ -182,14 +188,19 @@ enum CopyPlan {
             let companionExt = (companionOldName as NSString).pathExtension
             let longPrefix = (primaryOldName + ".").lowercased()
 
+            // Both forms go through `PathPlanner.fileName`, so a companion can't
+            // push past NAME_MAX and fail the bundle either. In the pathological
+            // case of a near-maximum primary name the companion's stem is trimmed
+            // a little further than the primary's; a copy that lands with a
+            // slightly shorter stem beats a bundle that fails to copy at all.
             let newName: String
             if companionOldName.lowercased().hasPrefix(longPrefix) {
                 // Long form: {primaryOldName}.{suffix} → {primaryNewName}.{suffix}
                 let suffix = String(companionOldName.dropFirst(longPrefix.count))
-                newName = "\(primaryNewName).\(suffix)"
+                newName = PathPlanner.fileName(stem: primaryNewName, extension: suffix)
             } else {
                 // Short form: shared stem, different extension
-                newName = "\(primaryNewStem).\(companionExt)"
+                newName = PathPlanner.fileName(stem: primaryNewStem, extension: companionExt)
             }
 
             files.append(PlannedFile(

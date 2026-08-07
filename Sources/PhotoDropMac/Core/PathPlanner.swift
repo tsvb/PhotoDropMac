@@ -125,6 +125,23 @@ enum PathPlanner {
             .filter { !$0.isEmpty }
     }
 
+    /// Composes `stem` + `.` + `ext` so the **whole filename** fits in
+    /// `maxComponentBytes`, truncating the stem as needed.
+    ///
+    /// `sanitize` caps the stem alone, which is the wrong boundary for a
+    /// filename: a 255-byte stem plus `.CR2` is 259 bytes, and `open()` answers
+    /// that with `ENAMETOOLONG` — failing the copy and rolling back the whole
+    /// bundle over a name. A ~250-character name on a card is enough to reach it.
+    /// The extension is never truncated; it is what makes the file openable.
+    static func fileName(stem: String, extension ext: String) -> String {
+        guard !ext.isEmpty else { return truncatedToByteLimit(stem, maxComponentBytes) }
+        let room = maxComponentBytes - (ext.utf8.count + 1)   // +1 for the dot
+        // A pathological extension leaves no room for a stem; keep at least the
+        // extension so the result is still a usable name.
+        guard room > 0 else { return truncatedToByteLimit(ext, maxComponentBytes) }
+        return "\(truncatedToByteLimit(stem, room)).\(ext)"
+    }
+
     /// Longest prefix of `s` that fits within `limit` UTF-8 bytes, truncated on a
     /// Character (grapheme) boundary so a multi-byte character is never split.
     static func truncatedToByteLimit(_ s: String, _ limit: Int) -> String {

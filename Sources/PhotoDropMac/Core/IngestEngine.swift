@@ -177,16 +177,40 @@ final class IngestEngine {
         // same-run collisions.
         log(.info, "Indexing destinations for duplicate detection…")
         var indexes: [DestinationIndex] = []
-        var plansPerRoot: [[BundlePlan]] = []
         for root in allRoots {
-            let index = DestinationIndex.build(at: root, storeURL: indexStoreURL)
+            indexes.append(DestinationIndex.build(at: root, storeURL: indexStoreURL))
+        }
+
+        // Plan **once**, then rebase the same relative paths onto every mirror.
+        //
+        // Planning per root let the `_1` disambiguator be chosen independently at
+        // each destination, so the same photo could land as `…_IMG_0001_1.JPG` in
+        // the primary and `…_IMG_0001.JPG` in the mirror. Only the primary's path
+        // is recorded in the manifest, so `heal` would then look for the primary's
+        // name under the mirror root, not find it, and report the file
+        // unrecoverable with a perfect copy sitting right there.
+        //
+        // To keep one name valid everywhere, collision avoidance considers the
+        // day-folders of *every* destination: a name is only free if it is free at
+        // all of them.
+        var existingRelative = Set<String>()
+        for root in allRoots {
             let targetDirs = Set(bundles.map {
                 CopyPlan.destinationDirectory(for: $0, destinationRoot: root, description: description, template: template, cardLabel: cardLabel)
             })
-            let existing = DestinationIndex.existingFilePaths(in: targetDirs)
-            let plans = CopyPlan.planBatch(bundles: bundles, destinationRoot: root, description: description, template: template, cardLabel: cardLabel, existingPaths: existing)
-            indexes.append(index)
-            plansPerRoot.append(plans)
+            for absolute in DestinationIndex.existingFilePaths(in: targetDirs) {
+                if let rel = Self.relative(absolute, under: root) { existingRelative.insert(rel) }
+            }
+        }
+        let primaryRootPath = allRoots[0].path(percentEncoded: false)
+        let existingForPlanning = Set(existingRelative.map {
+            (primaryRootPath as NSString).appendingPathComponent($0)
+        })
+        let basePlans = CopyPlan.planBatch(bundles: bundles, destinationRoot: allRoots[0],
+                                           description: description, template: template,
+                                           cardLabel: cardLabel, existingPaths: existingForPlanning)
+        let plansPerRoot: [[BundlePlan]] = allRoots.enumerated().map { d, root in
+            d == 0 ? basePlans : basePlans.map { Self.rebase($0, from: allRoots[0], to: root) }
         }
 
         var haltReason: String?
@@ -352,6 +376,34 @@ final class IngestEngine {
         )
     }
 
+    /// `absolute` expressed relative to `root`, or nil if it isn't under it.
+    /// Purely lexical: both strings are built from the same root spelling by
+    /// `destinationDirectory` / `existingFilePaths`, and consulting the
+    /// filesystem here would reintroduce the `/var` → `/private/var` mismatch
+    /// those two go out of their way to avoid.
+    static func relative(_ absolute: String, under root: URL) -> String? {
+        let base = root.path(percentEncoded: false)
+        let prefix = base.hasSuffix("/") ? base : base + "/"
+        guard absolute.hasPrefix(prefix) else { return nil }
+        return String(absolute.dropFirst(prefix.count))
+    }
+
+    /// The same bundle plan pointed at another destination root — identical
+    /// relative paths, so every mirror is a true mirror and `heal` can find a
+    /// file under any recorded root using the one path in the manifest.
+    static func rebase(_ plan: BundlePlan, from oldRoot: URL, to newRoot: URL) -> BundlePlan {
+        let files = plan.files.map { file -> PlannedFile in
+            guard let rel = relative(file.destination.path(percentEncoded: false), under: oldRoot) else {
+                return file
+            }
+            return PlannedFile(source: file.source,
+                               destination: newRoot.appendingPathComponent(rel),
+                               size: file.size,
+                               role: file.role)
+        }
+        return BundlePlan(bundle: plan.bundle, files: files)
+    }
+
     /// Prefixes a log line with the destination it concerns, but only when there
     /// is more than one — a single-destination job reads better unadorned.
     private func rootLabel(_ d: Int, of roots: [URL]) -> String {
@@ -387,14 +439,19 @@ final class IngestEngine {
                 )
 
                 if let existingDuplicate {
-                    log(.skipped, "\(file.source.lastPathComponent) — already present as \(existingDuplicate.lastPathComponent)")
+                    log(.skipped, "\(file.source.lastPathComponent) — already present as \(existingDuplicate.url.lastPathComponent)")
                     skippedInBundle += 1
                     if recordManifest {
                         bundleManifest.append(ManifestEntry(
                             name: file.source.lastPathComponent,
-                            path: relativePath(of: existingDuplicate, under: root),
+                            path: relativePath(of: existingDuplicate.url, under: root),
                             bytes: file.size,
-                            xxhash64: nil,
+                            // The digest the dedup match was *made* on, so a
+                            // re-ingest of an already-complete card still writes
+                            // a manifest that can be verified. Recording nil here
+                            // meant `verify` skipped the entry entirely and
+                            // reported success over zero files.
+                            xxhash64: String(format: "%016llx", existingDuplicate.hash),
                             status: "skipped"
                         ))
                     }

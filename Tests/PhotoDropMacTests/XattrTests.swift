@@ -48,11 +48,21 @@ final class VerifyEngineXattrTests: XCTestCase {
         return url
     }
 
+    /// Unwraps the `.report` case, failing the test on any other outcome.
+    private func report(_ outcome: VerifyEngine.XattrOutcome,
+                        file: StaticString = #filePath, line: UInt = #line) throws -> VerifyReport {
+        guard case .report(let r) = outcome else {
+            XCTFail("expected a report, got \(outcome)", file: file, line: line)
+            throw XCTSkip("no report")
+        }
+        return r
+    }
+
     func testVerifiesStampedFiles() throws {
         let root = try freshTempDir()
         try writeStamped("2026/a.bin", content: "one", in: root)
         try writeStamped("2026/b.bin", content: "two", in: root)
-        let report = try XCTUnwrap(VerifyEngine.runXattr(folder: root))
+        let report = try report(VerifyEngine.runXattr(folder: root))
         XCTAssertTrue(report.allGood)
         XCTAssertEqual(report.verified, 2)
     }
@@ -61,7 +71,7 @@ final class VerifyEngineXattrTests: XCTestCase {
         let root = try freshTempDir()
         let a = try writeStamped("a.bin", content: "one", in: root)
         try Data("CHANGED".utf8).write(to: a)   // content edited; stamped digest now stale
-        let report = try XCTUnwrap(VerifyEngine.runXattr(folder: root))
+        let report = try report(VerifyEngine.runXattr(folder: root))
         XCTAssertEqual(report.changed, 1)
         XCTAssertEqual(report.verified, 0)
     }
@@ -70,7 +80,7 @@ final class VerifyEngineXattrTests: XCTestCase {
         let root = try freshTempDir()
         try writeStamped("a.bin", content: "one", in: root)
         try Data("plain".utf8).write(to: root.appendingPathComponent("b.bin"))   // no xattr
-        let report = try XCTUnwrap(VerifyEngine.runXattr(folder: root))
+        let report = try report(VerifyEngine.runXattr(folder: root))
         XCTAssertEqual(report.total, 1, "only the stamped file is checked")
         XCTAssertTrue(report.allGood)
     }
@@ -78,6 +88,56 @@ final class VerifyEngineXattrTests: XCTestCase {
     func testEmptyWhenNothingStamped() throws {
         let root = try freshTempDir()
         try Data("plain".utf8).write(to: root.appendingPathComponent("b.bin"))
-        XCTAssertEqual(try XCTUnwrap(VerifyEngine.runXattr(folder: root)).total, 0)
+        XCTAssertEqual(try report(VerifyEngine.runXattr(folder: root)).total, 0)
+    }
+
+    // MARK: - An unreadable target is not "nothing stamped"
+
+    /// Regression: both cases returned an empty report, so `photodrop verify
+    /// --xattr` printed "No checksummed files found" and **exited 0** for a path
+    /// it had never opened. A typo in a script got a permanent green check.
+    func testMissingFolderIsAnUnreadableTarget() throws {
+        let root = try freshTempDir()
+        let outcome = VerifyEngine.runXattr(folder: root.appendingPathComponent("nope", isDirectory: true))
+        guard case .unreadableTarget = outcome else {
+            return XCTFail("a nonexistent folder must not report success, got \(outcome)")
+        }
+    }
+
+    func testFileTargetIsAnUnreadableTarget() throws {
+        let root = try freshTempDir()
+        let file = root.appendingPathComponent("a.bin")
+        try Data("x".utf8).write(to: file)
+        guard case .unreadableTarget = VerifyEngine.runXattr(folder: file) else {
+            return XCTFail("a file is not a folder to walk")
+        }
+    }
+
+    func testUnreadableFolderIsAnUnreadableTarget() throws {
+        let root = try freshTempDir()
+        let locked = root.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try writeStamped("locked/a.bin", content: "one", in: root)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+        }
+
+        // Running as root defeats permission checks entirely; skip rather than
+        // assert something the environment can't produce.
+        try XCTSkipIf(getuid() == 0, "permissions do not constrain root")
+
+        guard case .unreadableTarget = VerifyEngine.runXattr(folder: locked) else {
+            return XCTFail("a folder we cannot read must never report success")
+        }
+    }
+
+    func testReadableFolderWithNothingStampedIsStillAReport() throws {
+        let root = try freshTempDir()
+        try Data("plain".utf8).write(to: root.appendingPathComponent("b.bin"))
+        guard case .report(let r) = VerifyEngine.runXattr(folder: root) else {
+            return XCTFail("a readable folder holding nothing stamped is not an error")
+        }
+        XCTAssertEqual(r.total, 0)
     }
 }

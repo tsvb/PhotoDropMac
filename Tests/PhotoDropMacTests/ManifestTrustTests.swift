@@ -240,4 +240,33 @@ final class ManifestTrustTests: XCTestCase {
         XCTAssertEqual(ManifestWriter.csvField("a,b"), "\"a,b\"")
         XCTAssertEqual(ManifestWriter.csvField("say \"hi\""), "\"say \"\"hi\"\"\"")
     }
+
+    // MARK: - The schema field is checked, not just written
+
+    /// Regression: `schema` was written and never read, so any JSON that decoded
+    /// structurally was accepted as a PhotoDrop manifest — versioning that
+    /// existed only as decoration. Rejecting an unknown schema means a future
+    /// format is ignored by an old build rather than misinterpreted, which is
+    /// the safe direction for a file that tells `verify` what the right bytes are.
+    func testManifestWithAnUnknownSchemaIsRejected() throws {
+        let json = """
+        {"schema":"something.else/9","app":"PhotoDropMac","createdAt":"2026-05-28T12:00:00Z",
+         "primaryDestination":"/lib","destinations":["/lib"],"verified":true,
+         "filesCopied":1,"filesSkipped":0,"filesFailed":0,"totalBytes":1,"elapsedSeconds":1,
+         "files":[{"name":"a.bin","path":"2026/a.bin","bytes":1,"xxhash64":"0000000000000001","status":"verified"}]}
+        """
+        XCTAssertNil(ManifestWriter.decode(Data(json.utf8)))
+    }
+
+    func testManifestWithTheKnownSchemaStillDecodes() throws {
+        let json = """
+        {"schema":"\(Manifest.schemaID)","app":"PhotoDropMac","createdAt":"2026-05-28T12:00:00Z",
+         "primaryDestination":"/lib","destinations":["/lib"],"verified":true,
+         "filesCopied":1,"filesSkipped":0,"filesFailed":0,"totalBytes":1,"elapsedSeconds":1,
+         "files":[{"name":"a.bin","path":"2026/a.bin","bytes":1,"xxhash64":"0000000000000001","status":"verified"}]}
+        """
+        let decoded = try XCTUnwrap(ManifestWriter.decode(Data(json.utf8)))
+        XCTAssertEqual(decoded.files.count, 1)
+        XCTAssertNil(decoded.partial, "a manifest written before `partial` existed still decodes")
+    }
 }

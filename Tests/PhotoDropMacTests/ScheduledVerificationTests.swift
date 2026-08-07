@@ -51,4 +51,40 @@ final class ScheduledVerificationTests: XCTestCase {
         let command = (plist["ProgramArguments"] as? [String])?.last ?? ""
         XCTAssertTrue(command.contains("'/Volumes/My Photos'"), command)
     }
+
+    // MARK: - Exit 1 and exit 2 are different events
+
+    /// Regression: the command was `verify … || osascript "Verification found
+    /// issues"`, which fired the same alarm for exit 2 — "no manifest found".
+    /// Pointed at a library that had never been ingested into, the agent cried
+    /// wolf every night, which is how a user learns to ignore the one
+    /// notification that matters.
+    func testCommandDistinguishesIssuesFromCouldNotVerify() throws {
+        let plist = ScheduledVerification.jobPlist(
+            photodropPath: "/usr/local/bin/photodrop", libraryPath: "/lib",
+            schedule: .daily, logPath: "/tmp/v.log")
+        let args = try XCTUnwrap(plist["ProgramArguments"] as? [String])
+        let command = try XCTUnwrap(args.last)
+
+        XCTAssertTrue(command.contains("RC=$?"), "the exit code has to be captured to branch on it")
+        XCTAssertTrue(command.contains("[ $RC -eq 0 ]"), "a clean run exits quietly")
+        XCTAssertTrue(command.contains("[ $RC -eq 1 ]"), "exit 1 is the corruption case")
+        XCTAssertTrue(command.contains("Verification found issues"))
+        XCTAssertTrue(command.contains("no manifest found"),
+                      "exit 2 must say it could not verify, not that it found damage")
+        XCTAssertFalse(command.contains("--json ||"),
+                       "the old unconditional `|| notify` must be gone")
+    }
+
+    /// Output is echoed only on failure, so the agent log accumulates
+    /// diagnostics for problems rather than a JSON report every night forever.
+    func testCleanRunWritesNothingToTheLog() throws {
+        let plist = ScheduledVerification.jobPlist(
+            photodropPath: "/usr/local/bin/photodrop", libraryPath: "/lib",
+            schedule: .weekly, logPath: "/tmp/v.log")
+        let command = try XCTUnwrap((plist["ProgramArguments"] as? [String])?.last)
+        let exitLine = try XCTUnwrap(command.split(separator: "\n")
+            .first { $0.contains("[ $RC -eq 0 ]") })
+        XCTAssertTrue(exitLine.contains("exit 0"), "clean runs return before printing anything")
+    }
 }

@@ -154,6 +154,20 @@ enum VerifyEngine {
         return (items, loaded.count, conflicts)
     }
 
+    /// What an xattr verification run concluded.
+    ///
+    /// "Couldn't read the target" is a distinct outcome from "read it, nothing
+    /// was stamped", and collapsing the two is how a verification tool ends up
+    /// reporting success on a folder it never opened: a typo'd path, or one whose
+    /// permissions changed, printed "No checksummed files found" and exited 0
+    /// forever. `FileManager`'s enumerator is lazy and swallows its errors, so
+    /// the difference has to be established up front.
+    enum XattrOutcome: Sendable {
+        case report(VerifyReport)
+        case unreadableTarget
+        case cancelled
+    }
+
     /// Manifest-free verification: walk `folder`, and for every regular file
     /// that carries a `FileChecksumXattr` digest, re-hash it (past the page
     /// cache) and compare. Files without the xattr are skipped (unstamped, not an
@@ -161,12 +175,18 @@ enum VerifyEngine {
     /// or the manifest is gone. `manifestCount` is 0 (this path doesn't use one).
     static func runXattr(folder: URL,
                          isCancelled: () -> Bool = { false },
-                         onProgress: (VerifyProgress) -> Void = { _ in }) -> VerifyReport? {
+                         onProgress: (VerifyProgress) -> Void = { _ in }) -> XattrOutcome {
         let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue,
+              fm.isReadableFile(atPath: folder.path) else {
+            return .unreadableTarget
+        }
+
         let keys: [URLResourceKey] = [.isRegularFileKey]
         guard let enumerator = fm.enumerator(at: folder, includingPropertiesForKeys: keys,
                                              options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
-            return VerifyReport(verified: 0, issues: [], manifestCount: 0)
+            return .unreadableTarget
         }
 
         var items: [(url: URL, rel: String, expected: UInt64)] = []
@@ -180,7 +200,7 @@ enum VerifyEngine {
         var verified = 0
         var issues: [VerifyIssue] = []
         for (i, item) in items.enumerated() {
-            if isCancelled() { return nil }
+            if isCancelled() { return .cancelled }
             if let actual = try? XxHash64.hash(fileAt: item.url, bypassCache: true) {
                 if actual == item.expected { verified += 1 }
                 else { issues.append(VerifyIssue(name: item.url.lastPathComponent, path: item.rel, kind: .changed)) }
@@ -189,7 +209,7 @@ enum VerifyEngine {
             }
             onProgress(VerifyProgress(total: items.count, checked: i + 1, currentFile: item.url.lastPathComponent))
         }
-        return VerifyReport(verified: verified, issues: issues, manifestCount: 0)
+        return .report(VerifyReport(verified: verified, issues: issues, manifestCount: 0))
     }
 
     private static func relativePath(of url: URL, under root: URL) -> String {
