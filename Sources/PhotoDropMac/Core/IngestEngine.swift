@@ -30,7 +30,14 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     let bundleCount: Int
     let filesCopied: Int
     let filesSkipped: Int
+    /// Total (bundle × destination) copy failures. With mirrors configured one
+    /// bundle can fail at more than one destination, so this can exceed
+    /// `bundleCount`; `failuresByDestination` breaks it down.
     let filesFailed: Int
+    /// Failures per destination root path, primary included. A non-empty entry
+    /// for a mirror with `primaryFailures == 0` is the "one mirror was offline,
+    /// your library is fine" case, which must not be reported as a failed job.
+    let failuresByDestination: [String: Int]
     let totalBytes: Int64
     let elapsedSeconds: Double
     let primaryDestination: URL
@@ -39,6 +46,23 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     let wasEjected: Bool
     let halted: Bool
     let haltReason: String?
+    /// The user cancelled before every bundle was processed. The result is still
+    /// a full record of what landed — including the manifest and log — rather
+    /// than the absence of one.
+    let cancelled: Bool
+
+    /// Failures at the primary destination: what determines whether the
+    /// *library* is incomplete, as opposed to one of its mirrors.
+    var primaryFailures: Int {
+        failuresByDestination[primaryDestination.path(percentEncoded: false)] ?? 0
+    }
+
+    /// Destinations other than the primary that had at least one failure.
+    var failedMirrors: [String] {
+        failuresByDestination
+            .filter { $0.key != primaryDestination.path(percentEncoded: false) && $0.value > 0 }
+            .keys.sorted()
+    }
 }
 
 struct LogEntry: Sendable, Hashable, Identifiable {
@@ -60,8 +84,9 @@ struct LogEntry: Sendable, Hashable, Identifiable {
 ///
 /// Nonisolated and single-task: callers run it off the main actor (the `Copier`
 /// controller via a detached `Task`; the CLI directly) and supply progress/log
-/// callbacks plus a cancellation check. Returns the `CopyResult`, or `nil` if it
-/// was cancelled before completion (no manifest/log written in that case).
+/// callbacks plus a cancellation check. Always returns a `CopyResult` — a
+/// cancelled run reports `cancelled == true` and still carries its manifest and
+/// log, because the bundles it already copied are on disk and need a record.
 /// Notifications and the post-ingest hook are the caller's responsibility.
 final class IngestEngine {
     private let bundles: [AssetBundle]
@@ -127,11 +152,18 @@ final class IngestEngine {
         self.lastProgressTick = startedAt
     }
 
-    func run() async -> CopyResult? {
+    func run() async -> CopyResult {
         totalBundles = bundles.count
         let perDestinationBytes = bundles.reduce(Int64(0)) { $0 + $1.totalSize }
-        // Primary at index 0, then each archive mirror.
-        let allRoots = [primaryRoot] + archiveRoots
+        // Primary at index 0, then each archive mirror. Deduped by filesystem
+        // identity: writing one folder twice makes pass 2 collide with pass 1's
+        // own file, and `O_EXCL` correctly refuses — reporting every bundle
+        // failed for an ingest that in fact succeeded.
+        let allRoots = ArchiveDestinations.dedupedRoots([primaryRoot] + archiveRoots)
+        if allRoots.count < 1 + archiveRoots.count {
+            log(.info, "Ignoring \(1 + archiveRoots.count - allRoots.count) duplicate destination(s) — "
+                     + "the same folder was listed more than once.")
+        }
         totalBytes = perDestinationBytes * Int64(allRoots.count)
 
         log(.info, "Starting ingest: \(bundles.count) bundles, \(totalBytes.formatted(.byteCount(style: .file)))\(allRoots.count > 1 ? " × \(allRoots.count) destinations" : "")")
@@ -158,50 +190,76 @@ final class IngestEngine {
         }
 
         var haltReason: String?
+        var wasCancelled = false
+        // Failures per destination, so "the NAS was offline" reads as one bad
+        // mirror instead of a failed job.
+        var failuresByRoot = [Int](repeating: 0, count: allRoots.count)
         let bundleCount = plansPerRoot.first?.count ?? 0
+
         outer: for i in 0..<bundleCount {
-            if isCancelled() { haltReason = "cancelled"; break }
-            do {
-                // Copy the bundle to every destination; only the primary (index 0)
-                // records the manifest — the mirrors are byte-identical. Each
-                // copyBundle rolls back its own destination on failure.
-                for d in allRoots.indices {
+            if isCancelled() { wasCancelled = true; break }
+            var primaryOK = true
+
+            // Each destination gets its own error handling. A mirror failing must
+            // not skip the mirrors *after* it and must not void the primary copy
+            // that already landed: with one `do` around the whole loop, a NAS
+            // dropping offline mid-job meant the third destination — a healthy
+            // local SSD — received nothing at all, and every bundle was counted
+            // failed even though the primary was complete and verified.
+            // `copyBundle` rolls back only its own root, so partial state is
+            // already contained per destination.
+            for d in allRoots.indices {
+                do {
+                    // Only the primary (index 0) records the manifest — the
+                    // mirrors are byte-identical.
                     try await copyBundle(plansPerRoot[d][i], index: indexes[d], recordManifest: d == 0, root: allRoots[d])
-                }
-                completedBundles += 1
-                verifiedBundles += 1
-                emitProgress(force: true)
-            } catch is CancellationError {
-                haltReason = "cancelled"
-                break outer
-            } catch let err as FileCopierError {
-                switch err {
-                case .verificationMismatch:
-                    log(.error, err.description)
-                    log(.error, "Halting job on verification mismatch.")
-                    haltReason = "verification mismatch"
+                } catch is CancellationError {
+                    wasCancelled = true
                     break outer
-                default:
-                    log(.error, err.description)
+                } catch let err as FileCopierError {
+                    log(.error, rootLabel(d, of: allRoots) + err.description)
+                    if d == 0 { primaryOK = false }
+                    // A mismatch means the bytes on disk are not the bytes we
+                    // read: stop the whole job, at every destination.
+                    if case .verificationMismatch = err {
+                        log(.error, "Halting job on verification mismatch.")
+                        haltReason = "verification mismatch"
+                        break outer
+                    }
+                    failuresByRoot[d] += 1
                     filesFailed += 1
-                    completedBundles += 1
-                    emitProgress(force: true)
+                    continue
+                } catch {
+                    log(.error, rootLabel(d, of: allRoots) + "Bundle failed: \(error.localizedDescription)")
+                    if d == 0 { primaryOK = false }
+                    failuresByRoot[d] += 1
+                    filesFailed += 1
                     continue
                 }
-            } catch {
-                log(.error, "Bundle failed: \(error.localizedDescription)")
-                filesFailed += 1
-                completedBundles += 1
-                emitProgress(force: true)
-                continue
             }
+
+            completedBundles += 1
+            // Only count what was actually hash-checked after the write, at the
+            // destination the manifest attests to. The UI reports this number as
+            // "already-verified … safe on disk", so incrementing it with
+            // verification off — or after the primary copy failed — would make
+            // the app vouch for bytes nothing ever read back.
+            if verify && primaryOK { verifiedBundles += 1 }
+            emitProgress(force: true)
         }
 
         let elapsed = Date().timeIntervalSince(startedAt)
 
-        if haltReason == "cancelled" || isCancelled() {
-            log(.info, "Ingest cancelled after \(String(format: "%.1fs", elapsed)).")
-            return nil
+        // A cancelled job still writes its manifest and log, below. The bundles
+        // that completed are on disk and are *not* rolled back, so returning
+        // early here left them with no integrity record at all — and a later
+        // re-ingest dedup-skips them without a digest, so `verify` would report
+        // success over zero files forever. Cancelling is routine; losing the
+        // receipt for it is not acceptable.
+        if wasCancelled || isCancelled() {
+            wasCancelled = true
+            log(.info, "Ingest cancelled after \(String(format: "%.1fs", elapsed)) — "
+                     + "writing a manifest for the \(completedBundles) bundle\(completedBundles == 1 ? "" : "s") already copied.")
         }
 
         // One F_FULLFSYNC per destination volume now that every file is fsync'd —
@@ -217,7 +275,7 @@ final class IngestEngine {
         }
 
         var didEject = false
-        if haltReason == nil, ejectAfter, let mountPoint = sourceMountPoint {
+        if haltReason == nil, !wasCancelled, ejectAfter, let mountPoint = sourceMountPoint {
             log(.info, "Ejecting card…")
             do {
                 try await DriveEjector.eject(mountPoint: mountPoint)
@@ -242,6 +300,7 @@ final class IngestEngine {
             archiveDestination: archiveRoots.first?.path(percentEncoded: false),
             destinations: allRoots.map { $0.path(percentEncoded: false) },
             verified: verify,
+            partial: wasCancelled || haltReason != nil,
             filesCopied: filesCopied,
             filesSkipped: filesSkipped,
             filesFailed: filesFailed,
@@ -270,11 +329,17 @@ final class IngestEngine {
 
         log(.info, "Complete: \(filesCopied) copied, \(filesSkipped) skipped, \(filesFailed) failed.")
 
+        var failuresByDestination: [String: Int] = [:]
+        for (d, root) in allRoots.enumerated() where failuresByRoot[d] > 0 {
+            failuresByDestination[root.path(percentEncoded: false)] = failuresByRoot[d]
+        }
+
         return CopyResult(
             bundleCount: totalBundles,
             filesCopied: filesCopied,
             filesSkipped: filesSkipped,
             filesFailed: filesFailed,
+            failuresByDestination: failuresByDestination,
             totalBytes: landedBytes,
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
@@ -282,8 +347,16 @@ final class IngestEngine {
             manifestURL: manifestURL,
             wasEjected: didEject,
             halted: haltReason != nil,
-            haltReason: haltReason
+            haltReason: haltReason,
+            cancelled: wasCancelled
         )
+    }
+
+    /// Prefixes a log line with the destination it concerns, but only when there
+    /// is more than one — a single-destination job reads better unadorned.
+    private func rootLabel(_ d: Int, of roots: [URL]) -> String {
+        guard roots.count > 1 else { return "" }
+        return d == 0 ? "[primary] " : "[mirror \(d): \(roots[d].lastPathComponent)] "
     }
 
     // MARK: - Per-bundle copy (all-or-nothing, with rollback)

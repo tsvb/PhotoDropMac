@@ -35,7 +35,7 @@ final class VerifierTests: XCTestCase {
         let manifest = Manifest(
             schema: Manifest.schemaID, app: Manifest.appName, createdAt: createdAt,
             source: nil, primaryDestination: root.path(percentEncoded: false),
-            archiveDestination: nil, destinations: nil, verified: true,
+            archiveDestination: nil, destinations: nil, verified: true, partial: false,
             filesCopied: entries.count, filesSkipped: 0, filesFailed: 0,
             totalBytes: 0, elapsedSeconds: 0, files: entries)
         XCTAssertNotNil(ManifestWriter.write(manifest, intoRoot: root, stamp: stamp),

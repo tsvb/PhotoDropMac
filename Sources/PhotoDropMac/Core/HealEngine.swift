@@ -1,7 +1,11 @@
 import Foundation
 
 struct HealCandidate: Sendable, Equatable {
-    enum Kind: Sendable { case changed, missing }
+    /// `conflicted` means the library's own manifests record different digests
+    /// for this file, so there is no expected value to heal *towards*. It is
+    /// never recoverable — offering a restore would mean picking a winner among
+    /// the disagreeing records, which is exactly the judgement no one can make.
+    enum Kind: Sendable { case changed, missing, conflicted }
     let relPath: String
     let kind: Kind
     let badPath: String            // where the damaged/absent primary copy belongs
@@ -27,47 +31,35 @@ struct HealReport: Sendable {
 /// the user reviews and runs themselves; nothing here touches their files. (This
 /// is the deliberately conservative posture chosen for the tool: diagnose
 /// recoverability, never auto-overwrite — a "changed" file might be a real edit.)
+///
+/// **What to expect of a file comes from `VerifyEngine.build` and nowhere else.**
+/// Both engines read the same unauthenticated manifests out of a folder anyone
+/// who can write to the library can add to, so they must apply the same trust
+/// rule — and `build` is where that rule is stated and argued. This engine
+/// previously kept its own oldest→newest merge that let the newest manifest win,
+/// which is precisely the rule `build` documents as unsafe: planting one JSON
+/// dated 2099 recording a tampered file's *current* digest made `heal` call the
+/// corrupted library healthy while `verify` correctly flagged the conflict. Do
+/// not reintroduce a second merge here; extend `build` if this needs more.
 enum HealEngine {
-    private struct Item { let rel: String; let expected: UInt64; let primaryRoot: URL; let mirrors: [URL] }
-
     static func run(target: URL,
                     isCancelled: () -> Bool = { false },
                     onProgress: (VerifyProgress) -> Void = { _ in }) -> HealReport? {
-        // Load manifests oldest→newest; newest-wins per resolved file path.
-        var loaded: [(createdAt: Date, urlPath: String, root: URL, mirrors: [URL], files: [ManifestEntry])] = []
-        for manifestURL in ManifestWriter.manifestURLs(near: target) {
-            guard let data = try? Data(contentsOf: manifestURL), let m = ManifestWriter.decode(data) else { continue }
-            let root = manifestURL.deletingLastPathComponent().deletingLastPathComponent()
-            // Recorded destinations (primary at 0, then mirrors); fall back for
-            // manifests written before the `destinations` field.
-            let recorded = m.destinations ?? ([m.primaryDestination] + (m.archiveDestination.map { [$0] } ?? []))
-            let mirrors = recorded.dropFirst().map { URL(fileURLWithPath: $0, isDirectory: true) }
-            loaded.append((m.createdAt, manifestURL.path, root, mirrors, m.files))
-        }
-        loaded.sort { ($0.createdAt, $0.urlPath) < ($1.createdAt, $1.urlPath) }
+        let (items, manifestCount, conflicts) = VerifyEngine.build(target: target)
 
-        var byPath: [String: Item] = [:]
-        for record in loaded {
-            for entry in record.files {
-                guard let hex = entry.xxhash64, let expected = UInt64(hex, radix: 16) else { continue }
-                // Untrusted path: dropped outright if it escapes the library root.
-                // Without this, a manifest `path` of `../../..` makes the restore
-                // script below emit a `cp` that overwrites a file outside the
-                // library entirely. See `ManifestWriter.resolve`.
-                guard let fileURL = ManifestWriter.resolve(entryPath: entry.path, under: record.root) else { continue }
-                byPath[fileURL.path] = Item(rel: entry.path, expected: expected,
-                                            primaryRoot: record.root, mirrors: record.mirrors)
-            }
+        // Files whose manifests disagree are reported, never healed: with two
+        // rival digests on record there is no expected value to restore towards.
+        var candidates: [HealCandidate] = conflicts.map {
+            HealCandidate(relPath: $0.path, kind: .conflicted,
+                          badPath: $0.path, recoverableFrom: nil)
         }
-        let items = byPath.values.sorted { $0.rel < $1.rel }
 
         var healthy = 0
-        var candidates: [HealCandidate] = []
+        let total = items.count + conflicts.count
         for (i, item) in items.enumerated() {
             if isCancelled() { return nil }
-            guard let primaryURL = ManifestWriter.resolve(entryPath: item.rel, under: item.primaryRoot) else { continue }
-            let exists = FileManager.default.fileExists(atPath: primaryURL.path)
-            let primaryOK = exists && hash(primaryURL) == item.expected
+            let exists = FileManager.default.fileExists(atPath: item.url.path)
+            let primaryOK = exists && hash(item.url) == item.expected
 
             if primaryOK {
                 healthy += 1
@@ -75,22 +67,26 @@ enum HealEngine {
                 // The mirror side is untrusted twice over: the mirror *root* comes
                 // from the manifest's `destinations`, and the relative path from
                 // its `path`. Containment keeps the recorded path from escaping
-                // the recorded root; `restoreScript` additionally refuses to copy
-                // from a root the user has not vouched for.
+                // the recorded root; the hash check below means a root can only
+                // ever be *offered* if it actually holds the expected bytes; and
+                // `restoreScript` lists every source root so the user can refuse
+                // one they don't recognize.
                 let source = item.mirrors
-                    .compactMap { ManifestWriter.resolve(entryPath: item.rel, under: $0) }
+                    .compactMap { ManifestWriter.resolve(entryPath: item.relPath, under: $0) }
                     .first { FileManager.default.fileExists(atPath: $0.path) && hash($0) == item.expected }
                 candidates.append(HealCandidate(
-                    relPath: item.rel,
+                    relPath: item.relPath,
                     kind: exists ? .changed : .missing,
-                    badPath: primaryURL.path(percentEncoded: false),
+                    badPath: item.url.path(percentEncoded: false),
                     recoverableFrom: source?.path(percentEncoded: false)
                 ))
             }
-            onProgress(VerifyProgress(total: items.count, checked: i + 1,
-                                     currentFile: (item.rel as NSString).lastPathComponent))
+            onProgress(VerifyProgress(total: total, checked: i + 1,
+                                     currentFile: (item.relPath as NSString).lastPathComponent))
         }
-        return HealReport(healthy: healthy, candidates: candidates, manifestCount: loaded.count)
+        return HealReport(healthy: healthy,
+                          candidates: candidates.sorted { $0.relPath < $1.relPath },
+                          manifestCount: manifestCount)
     }
 
     /// A reviewable restore script for the recoverable candidates. PhotoDrop never

@@ -19,7 +19,7 @@ final class JobStampTests: XCTestCase {
     private func manifest(_ createdAt: Date, root: URL) -> Manifest {
         Manifest(schema: Manifest.schemaID, app: Manifest.appName, createdAt: createdAt,
                  source: nil, primaryDestination: root.path(percentEncoded: false),
-                 archiveDestination: nil, destinations: nil, verified: true,
+                 archiveDestination: nil, destinations: nil, verified: true, partial: false,
                  filesCopied: 1, filesSkipped: 0, filesFailed: 0,
                  totalBytes: 0, elapsedSeconds: 0, files: [])
     }

@@ -136,7 +136,7 @@ struct InspectorPane: View {
     // How many independent verified copies this configuration will write:
     // the primary (if set) plus each distinct archive/mirror location.
     private var destinationSummary: String {
-        let mirrors = ArchiveDestinations.list(archive: archive, extra: extraArchives).count
+        let mirrors = ArchiveDestinations.list(primary: primary, archive: archive, extra: extraArchives).count
         let total = (primary.isEmpty ? 0 : 1) + mirrors
         switch total {
         case 0:  return "Choose a primary destination to begin."

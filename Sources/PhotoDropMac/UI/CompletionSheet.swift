@@ -74,7 +74,11 @@ struct CompletionSheet: View {
         }
     }
 
-    private var hadIssues: Bool { result.filesFailed > 0 }
+    /// The alarm hero is for the *library* being incomplete. A mirror that
+    /// failed while the primary landed cleanly is a real problem worth telling
+    /// the user about — see `subtitle` — but it is not the same event, and
+    /// showing the same red octagon for both taught the user to distrust it.
+    private var hadIssues: Bool { result.primaryFailures > 0 }
 
     // Ledger swaps the SF Pro semibold headline for a regular-weight system
     // serif (New York) — the "single moment of typographic warmth".
@@ -90,15 +94,25 @@ struct CompletionSheet: View {
         if hadIssues {
             return "Ingest completed with errors"
         }
+        if !result.failedMirrors.isEmpty {
+            return "Library complete — a mirror fell behind"
+        }
         return "Ingest complete"
     }
 
     private var subtitle: String {
         // Failure leads with the failed count and omits the eject line — the
         // user needs to retry from the card.
-        if result.filesFailed > 0 {
-            let n = result.filesFailed
-            return "\(n) file\(n == 1 ? "" : "s") failed — see log for details."
+        if result.primaryFailures > 0 {
+            let n = result.primaryFailures
+            var s = "\(n) file\(n == 1 ? "" : "s") failed — see log for details."
+            if !result.failedMirrors.isEmpty { s += " \(mirrorFailureSentence)" }
+            return s
+        }
+        // The primary is complete; say so plainly before naming the mirror, so
+        // the user knows their photos are safe.
+        if !result.failedMirrors.isEmpty {
+            return "Every file landed in your primary library. \(mirrorFailureSentence)"
         }
 
         var base: String
@@ -152,6 +166,12 @@ struct CompletionSheet: View {
         return parts.joined(separator: ", ")
     }
 
+    private var mirrorFailureSentence: String {
+        let names = result.failedMirrors.map { ($0 as NSString).lastPathComponent }
+        let list = names.count == 1 ? "“\(names[0])”" : names.map { "“\($0)”" }.joined(separator: ", ")
+        return "Could not write to \(list) — re-run the ingest to bring \(names.count == 1 ? "it" : "them") up to date."
+    }
+
     private var elapsedText: String {
         let total = Int(result.elapsedSeconds)
         let mins = total / 60
@@ -194,11 +214,12 @@ private func previewResult(copied: Int, skipped: Int, failed: Int, ejected: Bool
     CopyResult(
         bundleCount: copied + skipped + failed,
         filesCopied: copied, filesSkipped: skipped, filesFailed: failed,
+        failuresByDestination: failed > 0 ? ["/Users/you/Pictures/Library": failed] : [:],
         totalBytes: 26_400_000_000, elapsedSeconds: 642,
         primaryDestination: URL(fileURLWithPath: "/Users/you/Pictures/Library"),
         logURL: log ? URL(fileURLWithPath: "/tmp/ingest.log") : nil,
         manifestURL: log ? URL(fileURLWithPath: "/tmp/ingest.json") : nil,
-        wasEjected: ejected, halted: false, haltReason: nil
+        wasEjected: ejected, halted: false, haltReason: nil, cancelled: false
     )
 }
 

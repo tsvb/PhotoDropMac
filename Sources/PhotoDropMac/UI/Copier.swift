@@ -7,7 +7,10 @@ enum CopierState: Equatable {
     case idle
     case running(CopyProgress)
     case completed(CopyResult)
-    case cancelled
+    /// Carries the result once the engine finishes unwinding — `nil` in the
+    /// window between the user hitting Cancel and the engine writing its
+    /// manifest for the bundles that already landed.
+    case cancelled(CopyResult?)
     case failed(String)
 }
 
@@ -32,8 +35,11 @@ final class Copier {
     private(set) var state: CopierState = .idle
     private(set) var log: [LogEntry] = []
     // Bundles fully copied + verified so far — surfaced in the cancelled/failed
-    // states to reassure the user what is safely on disk.
+    // states to reassure the user what is safely on disk. Zero when the job ran
+    // with verification off; `completedBundles` is the honest count in that case,
+    // and the two are worded differently because they promise different things.
     private(set) var verifiedBundles: Int = 0
+    private(set) var completedBundles: Int = 0
 
     var isRunning: Bool {
         if case .running = state { return true }
@@ -56,13 +62,15 @@ final class Copier {
     func cancel() {
         task?.cancel()
         cancelFlag.cancel()
-        if case .running = state { state = .cancelled }
+        if case .running = state { state = .cancelled(nil) }
     }
 
     func reset() {
         state = .idle
         log = []
         task = nil
+        verifiedBundles = 0
+        completedBundles = 0
     }
 
     func start(
@@ -82,6 +90,7 @@ final class Copier {
         cancelFlag = flag
         log.removeAll()
         verifiedBundles = 0
+        completedBundles = 0
 
         let allBundles = yearGroups.flatMap { $0.folders.flatMap { $0.bundles } }
         guard !allBundles.isEmpty else {
@@ -96,7 +105,7 @@ final class Copier {
         let cache = self.cache
         let indexStoreURL = self.indexStoreURL
         task = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { [weak self] () -> CopyResult? in
+            let result = await Task.detached(priority: .userInitiated) { [weak self] () -> CopyResult in
                 let engine = IngestEngine(
                     bundles: allBundles, description: description, primaryRoot: primaryDestination,
                     archiveRoots: archiveDestinations, verify: verify, ejectAfter: ejectAfter,
@@ -109,24 +118,29 @@ final class Copier {
                 return await engine.run()
             }.value
 
-            guard let self, !flag.isCancelled else { return }   // cancelled or superseded
-            if let result {
-                if result.halted {
-                    self.state = .failed("Halted: \(result.haltReason ?? "error"). See log.")
-                    Notifier.notifyHalt(reason: result.haltReason ?? "error")
-                } else {
-                    self.state = .completed(result)
-                    Notifier.notifyCompletion(result: result)
-                    self.runPostIngestHookIfConfigured(result)
-                }
+            // Drop the result only if a *newer* run has taken over — comparing
+            // the captured flag against the current one, not `flag.isCancelled`.
+            // A user-initiated cancel trips this run's own flag, and its result
+            // now carries the manifest and log for the bundles that did land;
+            // discarding it here would throw away the very receipt the engine
+            // stayed alive to write.
+            guard let self, self.cancelFlag === flag else { return }
+            if result.cancelled {
+                self.state = .cancelled(result)
+            } else if result.halted {
+                self.state = .failed("Halted: \(result.haltReason ?? "error"). See log.")
+                Notifier.notifyHalt(reason: result.haltReason ?? "error")
             } else {
-                self.state = .cancelled
+                self.state = .completed(result)
+                Notifier.notifyCompletion(result: result)
+                self.runPostIngestHookIfConfigured(result)
             }
         }
     }
 
     private func applyProgress(_ progress: CopyProgress) {
         verifiedBundles = progress.verifiedBundles
+        completedBundles = progress.completedBundles
         if case .running = state { state = .running(progress) }
     }
 

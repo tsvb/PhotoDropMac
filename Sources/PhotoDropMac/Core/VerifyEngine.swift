@@ -46,6 +46,13 @@ enum VerifyEngine {
         let relPath: String   // path relative to the library root, for display
         let name: String
         let expected: UInt64
+        /// Mirror roots recorded for this file, in manifest order. Unused by
+        /// verification itself — `HealEngine` reads it to look for a healthy
+        /// copy — but it is assembled here so both engines derive everything
+        /// they know about a file from one trust-checked pass over the
+        /// manifests. Untrusted: a mirror is only ever *offered* after its
+        /// contents hash to `expected`.
+        let mirrors: [URL]
     }
 
     /// Run the full verification. Calls `onProgress` after each file and aborts
@@ -99,12 +106,17 @@ enum VerifyEngine {
         // Decode every manifest, then order oldest → newest. This ordering is
         // only for deterministic output — it is explicitly *not* trusted to
         // arbitrate between manifests (see above).
-        var loaded: [(createdAt: Date, urlPath: String, root: URL, files: [ManifestEntry])] = []
+        var loaded: [(createdAt: Date, urlPath: String, root: URL, mirrors: [URL], files: [ManifestEntry])] = []
         for manifestURL in ManifestWriter.manifestURLs(near: target) {
             guard let data = try? Data(contentsOf: manifestURL),
                   let manifest = ManifestWriter.decode(data) else { continue }
             let root = manifestURL.deletingLastPathComponent().deletingLastPathComponent()
-            loaded.append((manifest.createdAt, manifestURL.path, root, manifest.files))
+            // Recorded destinations (primary at 0, then mirrors); fall back for
+            // manifests written before the `destinations` field existed.
+            let recorded = manifest.destinations
+                ?? ([manifest.primaryDestination] + (manifest.archiveDestination.map { [$0] } ?? []))
+            let mirrors = recorded.dropFirst().map { URL(fileURLWithPath: $0, isDirectory: true) }
+            loaded.append((manifest.createdAt, manifestURL.path, root, mirrors, manifest.files))
         }
         loaded.sort { ($0.createdAt, $0.urlPath) < ($1.createdAt, $1.urlPath) }
 
@@ -120,7 +132,15 @@ enum VerifyEngine {
                     conflicted[key] = VerifyIssue(name: entry.name, path: existing.relPath, kind: .conflict)
                     continue
                 }
-                byPath[key] = WorkItem(url: fileURL, relPath: entry.path, name: entry.name, expected: expected)
+                // Manifests that *agree* on the digest contribute their mirrors to
+                // one candidate list. Safe to union because a listed mirror is
+                // only ever used after its bytes hash to `expected`; a wider list
+                // just means more places a healthy copy might be found.
+                var mirrors = byPath[key]?.mirrors ?? []
+                let known = Set(mirrors.map(\.path))
+                mirrors += record.mirrors.filter { !known.contains($0.path) }
+                byPath[key] = WorkItem(url: fileURL, relPath: entry.path, name: entry.name,
+                                       expected: expected, mirrors: mirrors)
             }
         }
 

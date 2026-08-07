@@ -27,6 +27,13 @@ struct Manifest: Codable, Sendable {
     // archiveDestination.
     let destinations: [String]?
     let verified: Bool        // whether xxHash verification was on for this job
+    /// True when the job stopped before processing every bundle — cancelled by
+    /// the user, or halted on a verification mismatch. The entries are still a
+    /// complete, accurate record of what landed; this says the *card* was not
+    /// fully ingested, so an absent file is expected rather than evidence of
+    /// loss. Optional for backward compatibility: manifests written before this
+    /// field decode to nil, meaning "not known", which readers treat as false.
+    let partial: Bool?
     let filesCopied: Int
     let filesSkipped: Int
     let filesFailed: Int

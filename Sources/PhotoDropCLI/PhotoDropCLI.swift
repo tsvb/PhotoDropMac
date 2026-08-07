@@ -107,13 +107,17 @@ struct Ingest: AsyncParsableCommand {
         }
         let primaryURL = URL(fileURLWithPath: primaryPath, isDirectory: true)
 
+        // Every path here is deduped against the others and against the primary
+        // (see ArchiveDestinations) — writing one root twice makes the second
+        // pass collide with the first and reports a clean job as a total failure.
         let archiveURLs: [URL]
         if !archive.isEmpty {
-            archiveURLs = archive.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            archiveURLs = ArchiveDestinations.mirrors(primary: primaryPath, candidates: archive)
         } else if let preset = loadedPreset {
             // Honour every mirror the preset carries: primary archive + extras.
             archiveURLs = ArchiveDestinations.list(
-                archive: preset.archiveDestination, extra: preset.extraArchiveDestinations)
+                primary: primaryPath, archive: preset.archiveDestination,
+                extra: preset.extraArchiveDestinations)
         } else {
             archiveURLs = []
         }
@@ -151,7 +155,7 @@ struct Ingest: AsyncParsableCommand {
         let result = await engine.run()
         if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
 
-        guard let result else { CLIOutput.error("Ingest cancelled."); throw ExitCode(2) }
+        if result.cancelled { CLIOutput.error("Ingest cancelled — a manifest was written for what already landed.") }
         print(CLIOutput.ingestSummary(result))
         if result.halted { throw ExitCode(2) }
         if result.filesFailed > 0 { throw ExitCode(1) }
@@ -264,10 +268,18 @@ enum CLIOutput {
         }
         var lines = ["⚠ \(r.candidates.count) of \(r.total) files damaged/missing — \(r.recoverable.count) recoverable, \(r.unrecoverable.count) unrecoverable:"]
         for c in r.candidates {
-            let kind = c.kind == .changed ? "CHANGED" : "MISSING"
+            let kind: String
+            switch c.kind {
+            case .changed:    kind = "CHANGED"
+            case .missing:    kind = "MISSING"
+            case .conflicted: kind = "CONFLICT"
+            }
             lines.append("  \(kind) \(safe(c.relPath))")
             if let from = c.recoverableFrom {
                 lines.append("    ↳ recoverable from \(safe(from))")
+            } else if c.kind == .conflicted {
+                lines.append("    ↳ NOT HEALABLE — two manifests record different checksums for this file;")
+                lines.append("      the library cannot vouch for it. Run `photodrop verify` and resolve by hand.")
             } else {
                 lines.append("    ↳ UNRECOVERABLE — no healthy mirror copy")
             }
@@ -286,8 +298,14 @@ enum CLIOutput {
             healthy: r.healthy, total: r.total, manifestCount: r.manifestCount,
             recoverable: r.recoverable.count, unrecoverable: r.unrecoverable.count, allHealthy: r.allHealthy,
             candidates: r.candidates.map {
-                CandidateDTO(kind: $0.kind == .changed ? "changed" : "missing",
-                             path: $0.relPath, badPath: $0.badPath, recoverableFrom: $0.recoverableFrom)
+                let kind: String
+                switch $0.kind {
+                case .changed:    kind = "changed"
+                case .missing:    kind = "missing"
+                case .conflicted: kind = "conflicted"
+                }
+                return CandidateDTO(kind: kind, path: $0.relPath,
+                                    badPath: $0.badPath, recoverableFrom: $0.recoverableFrom)
             }
         )
         let encoder = JSONEncoder()

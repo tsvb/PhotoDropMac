@@ -248,7 +248,7 @@ struct MainView: View {
     // The full ordered list of archive (mirror) destinations: the primary
     // archive followed by any additional locations.
     private var archiveDestinations: [URL] {
-        ArchiveDestinations.list(archive: archiveDest, extra: extraArchives)
+        ArchiveDestinations.list(primary: primaryDest, archive: archiveDest, extra: extraArchives)
     }
 
     // Fulfils a one-click request from the menu bar: once the requested card
@@ -409,24 +409,32 @@ struct DetailPane: View {
     }
 
     private var cancelledDescription: String {
-        let n = copier.verifiedBundles
         var s = "Partial files from the current bundle were rolled back."
-        if n > 0 {
-            s += " The \(n) already-verified bundle\(n == 1 ? " is" : "s are") safe on disk."
-        }
+        if let landed = landedPhrase { s += " \(landed)" }
         return s
     }
 
     private func failedDescription(_ message: String) -> String {
-        let n = copier.verifiedBundles
         var s = message
-        if n > 0 {
-            s += " The \(n) already-verified bundle\(n == 1 ? " is" : "s are") safe on disk —"
-            s += " the failing file is still on the card."
-        } else {
-            s += " The failing file is still on the card."
-        }
+        if let landed = landedPhrase { s += " \(landed) —" }
+        s += " The failing file is still on the card."
         return s
+    }
+
+    /// What actually landed, worded to match what was actually checked. With
+    /// verification on, `verifiedBundles` counts bundles re-read and hash-matched
+    /// after the write, so "verified" is a claim the app can back. With it off
+    /// nothing was read back, and the only honest word is "copied".
+    private var landedPhrase: String? {
+        let verified = copier.verifiedBundles
+        if verified > 0 {
+            return "The \(verified) already-verified bundle\(verified == 1 ? " is" : "s are") safe on disk."
+        }
+        let completed = copier.completedBundles
+        if completed > 0 {
+            return "The \(completed) completed bundle\(completed == 1 ? " is" : "s are") on disk (copy verification was off)."
+        }
+        return nil
     }
 
     @ViewBuilder
