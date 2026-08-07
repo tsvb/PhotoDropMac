@@ -207,6 +207,18 @@ final class IngestEngine {
         }
 
         log(.info, "Starting ingest: \(bundles.count) bundles, \(totalBytes.formatted(.byteCount(style: .file)))\(allRoots.count > 1 ? " × \(allRoots.count) destinations" : "")")
+
+        // Say how many photos are being filed by file date rather than by the
+        // camera's own timestamp. `dateSource` was recorded on every scan and
+        // read nowhere, which made this invisible — and it is the one signal that
+        // exposes a wrong date folder. A file's mtime is the *copy* time if the
+        // card has ever passed through another machine, so these are exactly the
+        // photos most likely to be filed under a day nothing was shot on.
+        let fallbackDated = bundles.filter { $0.primary.dateSource == .fileModification }.count
+        if fallbackDated > 0 {
+            log(.info, "\(fallbackDated) of \(bundles.count) photo\(bundles.count == 1 ? "" : "s") "
+                     + "have no capture date in their metadata and are filed by file date instead.")
+        }
         emitProgress(force: true)
 
         // Build a dedup index + collision-safe plans per destination. Collision

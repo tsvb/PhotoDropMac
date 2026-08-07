@@ -79,24 +79,55 @@ struct HashCacheEntry: Codable, Sendable, Hashable {
 //   dest    — "<abspath>"                 (destinations live on the user's
 //                                          machine; path is stable)
 actor HashCache {
+    /// Upper bound on entries kept in each map.
+    ///
+    /// The cache had no eviction of any kind: every file of every card ever
+    /// inserted accumulated forever at roughly 150–200 bytes per entry, and
+    /// `save()` re-encodes the whole file on every ingest. 150k entries — a
+    /// season's work for a working photographer — is a ~25 MB JSON re-encoded
+    /// and rewritten after each job, and fully decoded on load.
+    ///
+    /// Eviction is by *staleness*, not recency of use: on save, entries whose
+    /// file no longer exists at the recorded identity go first, since they can
+    /// never produce a hit again. Only if that isn't enough do we drop the
+    /// oldest-recorded entries. Losing an entry costs one re-hash; it can never
+    /// cause a wrong answer, because every hit is re-validated against `stat`
+    /// before use.
+    static let maxEntriesPerMap = 50_000
+
     private var source: [String: HashCacheEntry] = [:]
     private var dest: [String: HashCacheEntry] = [:]
     private let storeURL: URL
     private var isDirty: Bool = false
+    private var didLoad = false
 
+    /// Deliberately does **no** I/O.
+    ///
+    /// An actor's `init` body runs synchronously on the caller, and `Copier.init`
+    /// constructs one from a `@MainActor` context — via `MainView`'s
+    /// `@State private var copier = Copier()`, which is re-evaluated every time a
+    /// window is opened. So a `Data(contentsOf:)` plus a full `JSONDecoder` pass
+    /// over the whole cache happened on the main thread at every window open, and
+    /// grew with the cache. Loading now happens inside the actor on first use,
+    /// off the main thread like every other cache operation.
     init(storeURL: URL) {
         self.storeURL = storeURL
-        if let data = try? Data(contentsOf: storeURL),
-           let stored = try? JSONDecoder().decode(StoredForm.self, from: data) {
-            self.source = stored.source
-            self.dest = stored.dest
-        }
+    }
+
+    private func loadIfNeeded() {
+        guard !didLoad else { return }
+        didLoad = true
+        guard let data = try? Data(contentsOf: storeURL),
+              let stored = try? JSONDecoder().decode(StoredForm.self, from: data) else { return }
+        source = stored.source
+        dest = stored.dest
     }
 
     // Lookup-or-compute for a source file. Returns nil only if the file
     // can't be stat'd or hashed (a permissions/IO error); callers treat
     // nil as "not a dedup candidate".
     func sourceHash(volumeUUID: String, url: URL) async -> UInt64? {
+        loadIfNeeded()
         guard let identity = statAttrs(url) else { return nil }
         let key = "\(volumeUUID)|\(url.path)"
         if let entry = source[key], entry.matches(identity) {
@@ -110,6 +141,7 @@ actor HashCache {
 
     // Lookup-or-compute for a destination file.
     func destinationHash(url: URL) async -> UInt64? {
+        loadIfNeeded()
         guard let identity = statAttrs(url) else { return nil }
         let key = url.path
         if let entry = dest[key], entry.matches(identity) {
@@ -125,6 +157,7 @@ actor HashCache {
     // typically right after a tee-hash copy + verification passes. Saves
     // re-hashing that file on the next dedup run.
     func recordDestination(url: URL, hash: UInt64) {
+        loadIfNeeded()
         guard let identity = statAttrs(url) else { return }
         dest[url.path] = HashCacheEntry(hash: hash, identity: identity)
         isDirty = true
@@ -132,6 +165,8 @@ actor HashCache {
 
     func save() throws {
         guard isDirty else { return }
+        prune(&source, keyIsSourceScoped: true)
+        prune(&dest, keyIsSourceScoped: false)
         let stored = StoredForm(source: source, dest: dest)
         let data = try JSONEncoder().encode(stored)
         let dir = storeURL.deletingLastPathComponent()
@@ -141,6 +176,32 @@ actor HashCache {
     }
 
     // MARK: - Helpers
+
+    /// Bring a map back under `maxEntriesPerMap`, cheapest-to-lose first.
+    ///
+    /// Pass 1 drops entries whose file no longer matches the recorded identity —
+    /// deleted, moved, or rewritten. Those are pure dead weight: `matches` would
+    /// reject them anyway, so removing them cannot change a single answer. Pass 2,
+    /// only if still over, drops the oldest by recorded mtime. Both are safe by
+    /// the same argument as any miss: every hit is re-validated against `stat`,
+    /// so a dropped entry costs one re-hash and never a wrong digest.
+    private func prune(_ map: inout [String: HashCacheEntry], keyIsSourceScoped: Bool) {
+        guard map.count > Self.maxEntriesPerMap else { return }
+
+        map = map.filter { key, entry in
+            // Source keys are "<volumeUUID>|<path>"; destination keys are paths.
+            let path = keyIsSourceScoped
+                ? String(key.drop(while: { $0 != "|" }).dropFirst())
+                : key
+            guard !path.isEmpty, let identity = statAttrs(URL(fileURLWithPath: path)) else { return false }
+            return entry.matches(identity)
+        }
+        guard map.count > Self.maxEntriesPerMap else { return }
+
+        let survivors = map.sorted { $0.value.mtime > $1.value.mtime }
+            .prefix(Self.maxEntriesPerMap)
+        map = Dictionary(uniqueKeysWithValues: survivors.map { ($0.key, $0.value) })
+    }
 
     /// Reads the file's identity via `stat(2)` rather than `URLResourceValues`,
     /// which rounds timestamps into a `Date` and so cannot express the

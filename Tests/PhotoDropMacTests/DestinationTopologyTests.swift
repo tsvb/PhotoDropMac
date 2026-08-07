@@ -81,6 +81,47 @@ final class DestinationTopologyTests: XCTestCase {
         XCTAssertTrue(DestinationTopology.contains(tmp.appendingPathComponent("Library"), spelledOddly))
     }
 
+    /// A path that does not exist yet must compare the same as one that does.
+    ///
+    /// `resolvingSymlinksInPath()` consults the filesystem: on macOS it rewrites
+    /// `/private/tmp/x` to `/tmp/x` when the path exists and leaves it alone when
+    /// it doesn't. Comparing the two shapes finds no common prefix, so the
+    /// overlap is missed. Measured: `heal --script <lib>/evil.sh` wrote the
+    /// script into the library it had just promised never to touch — the library
+    /// existed, the script path did not.
+    ///
+    /// The case that matters most is a **destination root that hasn't been
+    /// created yet**, which `ArchiveDestinations.identity` documents as routine
+    /// (an unplugged drive, a folder the job will create): a nested one was not
+    /// detected as nested.
+    func testContainmentHoldsForPathsThatDoNotExistYet() throws {
+        let tmp = try freshTempDir()   // under /private/tmp, which resolves to /tmp
+        let library = try dir("Library", in: tmp)
+
+        let futureChild = library.appendingPathComponent("Backup", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: futureChild.path))
+        XCTAssertTrue(DestinationTopology.contains(library, futureChild),
+                      "a mirror folder the job would create is still inside the library")
+
+        let deeper = library.appendingPathComponent("a/b/c", isDirectory: true)
+        XCTAssertTrue(DestinationTopology.contains(library, deeper))
+
+        // The sibling rule has to survive the same treatment.
+        XCTAssertFalse(DestinationTopology.contains(library, tmp.appendingPathComponent("Library2")))
+
+        // And the engine has to act on it.
+        XCTAssertEqual(DestinationTopology.check(source: nil, roots: [library, futureChild]),
+                       [.nestedDestinations(outer: library, inner: futureChild)])
+    }
+
+    /// Neither path existing must still compare structurally.
+    func testContainmentHoldsWhenNeitherPathExists() {
+        let root = URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString)/Library", isDirectory: true)
+        XCTAssertTrue(DestinationTopology.contains(root, root.appendingPathComponent("Backup")))
+        XCTAssertFalse(DestinationTopology.contains(root, root.deletingLastPathComponent()
+                                                             .appendingPathComponent("Library2")))
+    }
+
     func testSymlinkedDestinationIsRecognisedAsTheSameTree() throws {
         let tmp = try freshTempDir()
         let real = try dir("Library", in: tmp)

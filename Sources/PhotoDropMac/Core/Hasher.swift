@@ -237,15 +237,33 @@ extension XxHash64 {
 // MARK: - Self-validation
 
 #if DEBUG
-/// Vectors generated from the reference C implementation (xxHash 0.8.3) and
-/// cross-checked against `xxh64sum` on the command line. Exercises:
+/// Known-answer vectors for `HasherTests`, which is what actually runs them.
+///
+/// This table used to be checked by a `xxHash64SelfCheck()` that **nothing
+/// called**, using `assert` — a no-op in Release and a crash rather than a test
+/// failure in Debug. Meanwhile every other test in the suite uses the hasher as a
+/// *self-consistent oracle* (hash the source, hash the destination, compare),
+/// which passes identically if the algorithm is wrong. So nothing in this repo
+/// pinned the digests to XXH64 at all: a subtly wrong implementation would have
+/// verified every copy against its own mistake and reported success.
+///
+/// The vectors below were re-derived from `xxh64sum` (xxHash 0.8.x) and exercise:
+///   - empty input (short-path skipping accumulators)
+///   - <8, <16, <32 byte inputs (finalize tail loop)
+///   - exactly 32 bytes (single stripe, boundary)
+///   - larger-than-stripe inputs (accumulator merge path)
+///   - seeded inputs (the `seed` mixing)
+/// Streaming splits are covered exhaustively in the test, not here.
+///
+/// Kept `internal` (not `private`) so `HasherTests` is the single consumer and
+/// the table has one definition site. Debug-only: Release ships neither.
 ///   - empty input (short-path skipping accumulators)
 ///   - <8, <16, <32 byte inputs (finalize tail loop)
 ///   - exactly 32 bytes (single stripe, boundary)
 ///   - larger-than-stripe inputs (accumulator merge path)
 ///   - seeded inputs (the `seed` mixing)
 ///   - streaming with awkward split offsets (buffer-carry across updates)
-private enum XxHash64Vectors {
+enum XxHash64Vectors {
     struct Vector {
         let input: [UInt8]
         let seed: UInt64
@@ -298,49 +316,32 @@ private enum XxHash64Vectors {
                seed: 0xCAFEBABE,
                expected: 0x0fee2b3ae28ccbf5,
                label: "39B, seed=0xCAFEBABE"),
+
+        // Sizes either side of the 32-byte stripe boundary, and inputs long
+        // enough to run the accumulator loop many times — the region a
+        // single-stripe-only bug leaves untouched. All from `xxh64sum`.
+        Vector(input: [UInt8](repeating: 0x41, count: 31),
+               seed: 0,
+               expected: 0x04d4645ec33f5384,
+               label: "31×'A' (one byte short of a stripe)"),
+        Vector(input: [UInt8](repeating: 0x41, count: 33),
+               seed: 0,
+               expected: 0x01088411df50be7f,
+               label: "33×'A' (one stripe + 1)"),
+        Vector(input: [UInt8](repeating: 0x41, count: 64),
+               seed: 0,
+               expected: 0x09cfee27adb0debd,
+               label: "64×'A' (two whole stripes, no tail)"),
+        Vector(input: [UInt8](repeating: 0x78, count: 1000),
+               seed: 0,
+               expected: 0x4cb9a3b69cb700e1,
+               label: "1000×'x' (31 stripes + 8-byte tail)"),
+        Vector(input: (0..<512).map { UInt8($0 % 256) },
+               seed: 0,
+               expected: 0x7b3bfcaac0348ac0,
+               label: "512B byte-ramp (every byte value twice; non-ASCII, exercises endianness)"),
     ]
 
-    /// Run once on first use (via `dispatch_once`-equivalent in Swift: a lazy
-    /// static) and assert every vector matches. Cheap (<1 ms total) but
-    /// cordoned off so production builds don't pay.
-    static let validated: Bool = {
-        for v in vectors {
-            var h = XxHash64(seed: v.seed)
-            v.input.withUnsafeBufferPointer { buf in
-                h.update(UnsafeRawBufferPointer(buf))
-            }
-            let got = h.finalize()
-            assert(got == v.expected,
-                   "XxHash64 self-check failed for \(v.label): expected 0x\(String(v.expected, radix: 16)), got 0x\(String(got, radix: 16))")
-        }
-
-        // Streaming correctness: same input, two different split offsets,
-        // must produce the same digest and match the all-at-once result.
-        let message = Array("The quick brown fox jumps over the lazy dog".utf8)
-        var whole = XxHash64()
-        message.withUnsafeBufferPointer { whole.update(UnsafeRawBufferPointer($0)) }
-        let wholeDigest = whole.finalize()
-
-        for splitAt in [0, 1, 7, 8, 15, 16, 17, 31, 32, 40, message.count] {
-            guard splitAt <= message.count else { continue }
-            var streamed = XxHash64()
-            message.prefix(splitAt).withUnsafeBufferPointer {
-                streamed.update(UnsafeRawBufferPointer($0))
-            }
-            message.dropFirst(splitAt).withUnsafeBufferPointer {
-                streamed.update(UnsafeRawBufferPointer($0))
-            }
-            let got = streamed.finalize()
-            assert(got == wholeDigest,
-                   "XxHash64 streaming self-check failed at splitAt=\(splitAt): expected 0x\(String(wholeDigest, radix: 16)), got 0x\(String(got, radix: 16))")
-        }
-
-        return true
-    }()
 }
 
-/// Entry point the rest of the app can call to force validation early in
-/// launch. Returns true; the real signal is the assertions firing (or not).
-@discardableResult
-func xxHash64SelfCheck() -> Bool { XxHash64Vectors.validated }
 #endif

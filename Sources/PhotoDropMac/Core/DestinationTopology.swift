@@ -111,11 +111,38 @@ enum DestinationTopology {
         return Array(b.prefix(a.count)) == a
     }
 
+    /// Path components in a shape that is the **same whether or not the path
+    /// exists**.
+    ///
+    /// `resolvingSymlinksInPath()` consults the filesystem, so it rewrites
+    /// `/private/tmp/x` to `/tmp/x` for a directory that exists and leaves it
+    /// alone for one that doesn't. Comparing a resolved path against an
+    /// unresolved one then finds no common prefix and the overlap goes
+    /// undetected. Measured: `heal --script <lib>/evil.sh` wrote the script
+    /// straight into the library, because the library existed and the script
+    /// path did not — and, far worse, a nested *archive root that has not been
+    /// created yet* was not detected as nested, which is precisely the
+    /// configuration `ArchiveDestinations.identity` documents as routine (an
+    /// unplugged drive, a folder the job will create).
+    ///
+    /// So: resolve symlinks on the deepest ancestor that does exist, then
+    /// re-append the components that don't. Two paths sharing an existing
+    /// ancestor now always agree on how that ancestor is spelled.
     private static func components(of url: URL) -> [String] {
-        URL(fileURLWithPath: url.path(percentEncoded: false), isDirectory: true)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .pathComponents
-            .filter { $0 != "/" }
+        let fm = FileManager.default
+        var probe = URL(fileURLWithPath: url.path(percentEncoded: false)).standardizedFileURL
+        var trailing: [String] = []
+
+        while !fm.fileExists(atPath: probe.path(percentEncoded: false)) {
+            let parent = probe.deletingLastPathComponent()
+            // Guard against a path that never resolves to an existing ancestor;
+            // at the filesystem root, deletingLastPathComponent is a fixed point.
+            if parent.path(percentEncoded: false) == probe.path(percentEncoded: false) { break }
+            trailing.insert(probe.lastPathComponent, at: 0)
+            probe = parent
+        }
+
+        let existing = probe.resolvingSymlinksInPath().pathComponents.filter { $0 != "/" && $0 != "." }
+        return existing + trailing
     }
 }

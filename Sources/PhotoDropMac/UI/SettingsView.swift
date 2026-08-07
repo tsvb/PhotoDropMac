@@ -290,6 +290,18 @@ struct NamingPreferences: View {
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
                 }
+
+                if TemplateRenderer.lacksPerFileToken(filename) {
+                    Label {
+                        Text("This file-name template is the same for every photo taken in the same second, "
+                           + "so files will be numbered _1, _2, _3… Add {OriginalStem} to keep the camera’s name.")
+                    } icon: {
+                        Image(systemName: "info.circle")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Section {

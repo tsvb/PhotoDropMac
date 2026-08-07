@@ -163,12 +163,18 @@ enum AssetDiscovery {
         // the enumerator visits directories in filesystem order.
         let sortedDirs = byDirectory.keys.sorted { $0.path < $1.path }
         for dir in sortedDirs {
-            guard let siblings = byDirectory[dir] else { continue }
+            // Sort the siblings too, for the same reason the directories are
+            // sorted. It stopped being cosmetic once `claimed` made a sidecar
+            // belong to the *first* matching primary: with two RAWs of the same
+            // stem (a CR2 and its converted DNG), enumerator order decided which
+            // one got the .xmp, so the same card could produce different bundles
+            // on different runs.
+            guard let siblings = byDirectory[dir]?.sorted(by: { $0.name < $1.name }) else { continue }
 
             // Pass 1: RAW primaries.
             for file in siblings where rawExtensions.contains(file.ext) {
                 if consumed.contains(file.url) { continue }
-                let bundle = buildBundle(primary: file, siblings: siblings)
+                let bundle = buildBundle(primary: file, siblings: siblings, claimed: consumed)
                 consumed.insert(file.url)
                 for c in bundle.companions { consumed.insert(c.url) }
                 bundles.append(bundle)
@@ -178,7 +184,7 @@ enum AssetDiscovery {
             // JpegPair companion during pass 1).
             for file in siblings where jpegExtensions.contains(file.ext) {
                 if consumed.contains(file.url) { continue }
-                let bundle = buildBundle(primary: file, siblings: siblings)
+                let bundle = buildBundle(primary: file, siblings: siblings, claimed: consumed)
                 consumed.insert(file.url)
                 for c in bundle.companions { consumed.insert(c.url) }
                 bundles.append(bundle)
@@ -188,20 +194,32 @@ enum AssetDiscovery {
         return .scanned(bundles: bundles, unreadableDirectories: unreadable.value)
     }
 
-    // Build a bundle for `primary`, pulling every sibling that
-    // classifies as a companion. `siblings` is already scoped to the
+    // Build a bundle for `primary`, pulling every sibling that classifies as a
+    // companion and is not already claimed. `siblings` is already scoped to the
     // primary's own directory.
+    //
+    // `claimed` is honoured here, not just by the primary loop: a companion can
+    // legitimately match two primaries, and before this it was attached to both.
+    // The everyday case is DNG Converter output — `IMG_1234.CR2`, `IMG_1234.DNG`
+    // and `IMG_1234.xmp` side by side, where the two RAWs are each other's
+    // primaries and neither is the other's companion. The xmp landed in both
+    // bundles, so bundle 2 collided with bundle 1 on the sidecar's destination
+    // and got pushed to `_1` even though nothing about the DNG collided, and the
+    // same sidecar was copied, hashed and manifested twice under two names.
+    // First primary wins, which is the rule the primary loop already used.
     private static func buildBundle(
         primary: FileEntry,
-        siblings: [FileEntry]
+        siblings: [FileEntry],
+        claimed: Set<URL>
     ) -> AssetBundle {
         let photo = makeScannedPhoto(from: primary)
 
         var companions: [CompanionFile] = []
         for sibling in siblings {
             if sibling.url == primary.url { continue }
+            if claimed.contains(sibling.url) { continue }
             guard let kind = classifyCompanion(
-                neighborName: sibling.name,
+                neighborStem: sibling.stem,
                 neighborExt: sibling.ext,
                 primaryStem: primary.stem,
                 primaryName: primary.name
@@ -227,23 +245,30 @@ enum AssetDiscovery {
     //
     // All comparisons are case-insensitive so `.DNG` and `.dng` behave
     // identically.
+    //
+    // Both shapes match the neighbour's **stem exactly**, never by prefix.
+    // `hasPrefix(primaryStem + ".")` also accepted `IMG_1234.v2.xmp` beside
+    // `IMG_1234.CR2` as a short-form sidecar — and `CopyPlan` renames a
+    // short-form sidecar to `{newStem}.xmp`, byte-identical to what the real
+    // `IMG_1234.xmp` gets, so the two planned onto one path. (Prefix matching
+    // also swept in anything else a camera or editor happened to name with the
+    // primary's stem plus a suffix.)
     private static func classifyCompanion(
-        neighborName: String,
+        neighborStem: String,
         neighborExt: String,
         primaryStem: String,
         primaryName: String
     ) -> CompanionKind? {
-        let neighborLower = neighborName.lowercased()
+        let stem = neighborStem.lowercased()
 
-        // Case A — <primaryName>.<sidecarExt>.
-        let longPrefix = (primaryName + ".").lowercased()
-        if neighborLower.hasPrefix(longPrefix), sidecarExtensions.contains(neighborExt) {
+        // Case A — <primaryName>.<sidecarExt>, i.e. the stem *is* the primary's
+        // whole filename (IMG_1234.DNG.xmp).
+        if stem == primaryName.lowercased(), sidecarExtensions.contains(neighborExt) {
             return kind(forExtension: neighborExt)
         }
 
         // Case B — <primaryStem>.<ext>, where ext is sidecar or jpeg.
-        let stemPrefix = (primaryStem + ".").lowercased()
-        if neighborLower.hasPrefix(stemPrefix),
+        if stem == primaryStem.lowercased(),
            sidecarExtensions.contains(neighborExt) || jpegExtensions.contains(neighborExt)
         {
             return kind(forExtension: neighborExt)

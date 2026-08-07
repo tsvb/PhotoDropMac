@@ -180,6 +180,21 @@ enum TemplateRenderer {
         return sawPatternLetter && !inQuote
     }
 
+    /// True when a *filename* template contains nothing that varies between two
+    /// photos taken in the same second.
+    ///
+    /// `{OriginalName}` / `{OriginalStem}` are the only per-file tokens; a date
+    /// pattern distinguishes photos only down to its finest unit. So
+    /// `{yyyy-MM-dd}` gives every photo of a day one name, and the Settings
+    /// legend advertises `{HHmmss}` and `{Description}` as standalone tokens
+    /// without hinting at that. The result isn't data loss — collision-safe
+    /// naming still gives each file its own path — but the names are
+    /// `…_1`, `…_2`, … `…_797`, which carry no information and are not what
+    /// anyone intends. Worth a warning; not worth refusing.
+    static func lacksPerFileToken(_ template: String) -> Bool {
+        !template.contains("{OriginalName}") && !template.contains("{OriginalStem}")
+    }
+
     /// Tokens in `template` that resolve to neither a known name nor a date
     /// pattern — what Settings shows the user so a typo is visible before it
     /// names a thousand folders.

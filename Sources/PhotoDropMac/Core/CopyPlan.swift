@@ -15,6 +15,16 @@ struct PlannedFile: Sendable, Hashable {
 struct BundlePlan: Sendable, Hashable {
     let bundle: AssetBundle
     let files: [PlannedFile]   // primary at index 0
+    /// The `_n` suffix this bundle settled on (0 = none). Carried so `planBatch`
+    /// can start the next bundle with the same base name from here instead of
+    /// counting up from zero — see the O(n²) note there.
+    let disambiguator: Int
+
+    init(bundle: AssetBundle, files: [PlannedFile], disambiguator: Int = 0) {
+        self.bundle = bundle
+        self.files = files
+        self.disambiguator = disambiguator
+    }
 
     var totalBytes: Int64 { files.reduce(0) { $0 + $1.size } }
 }
@@ -54,11 +64,38 @@ enum CopyPlan {
         var taken = Set(existingPaths.map(collisionKey))
         var plans: [BundlePlan] = []
         plans.reserveCapacity(bundles.count)
+
+        // Remember the disambiguator each base name reached, so the next bundle
+        // with that name resumes from there instead of counting up from zero.
+        //
+        // Without it `plan` restarts at n = 0 every time, so with a filename
+        // template that has no per-file component — `{yyyy-MM-dd}`, or
+        // `{HHmmss}` on burst frames, both of which the Settings legend
+        // advertises — bundle *k* does *k* iterations and planning is O(n²).
+        // Measured: 800 bundles rendering to one name took 1.95 s. The hint is
+        // only a starting point; `plan` still verifies every candidate against
+        // `isTaken`, so a wrong hint costs iterations, never a collision.
+        var nextDisambiguator: [String: Int] = [:]
+
         for bundle in bundles {
-            let bundlePlan = plan(bundle: bundle, destinationRoot: destinationRoot, description: description, template: template, cardLabel: cardLabel) { url in
+            // Keyed on the *rendered base name inside its day-folder* — the thing
+            // that actually collides. Keying on the folder alone would make
+            // distinct names inherit each other's suffixes.
+            let hintKey = collisionKey(
+                destinationDirectory(for: bundle, destinationRoot: destinationRoot,
+                                     description: description, template: template,
+                                     cardLabel: cardLabel).path
+                + "\u{0}"
+                + baseStem(for: bundle, description: description, template: template, cardLabel: cardLabel))
+            let bundlePlan = plan(
+                bundle: bundle, destinationRoot: destinationRoot, description: description,
+                template: template, cardLabel: cardLabel,
+                startingAt: nextDisambiguator[hintKey] ?? 0
+            ) { url in
                 taken.contains(collisionKey(url.path))
             }
             for file in bundlePlan.files { taken.insert(collisionKey(file.destination.path)) }
+            nextDisambiguator[hintKey] = bundlePlan.disambiguator + 1
             plans.append(bundlePlan)
         }
         return plans
@@ -133,6 +170,7 @@ enum CopyPlan {
         description: String,
         template: NamingTemplate,
         cardLabel: String,
+        startingAt: Int = 0,
         isTaken: (URL) -> Bool = { _ in false }
     ) -> BundlePlan {
         let primary = bundle.primary
@@ -141,21 +179,12 @@ enum CopyPlan {
         let primaryExt = primary.url.pathExtension
 
         let destDir = destinationDirectory(for: bundle, destinationRoot: destinationRoot, description: description, template: template, cardLabel: cardLabel)
+        let baseStem = baseStem(for: bundle, description: description, template: template, cardLabel: cardLabel)
 
-        let context = TemplateContext(
-            date: primary.dateTaken,
-            description: PathPlanner.sanitize(description),
-            originalName: primaryOldName,
-            originalStem: primaryOldStem,
-            cardLabel: PathPlanner.sanitize(cardLabel)
-        )
-        let renderedStem = PathPlanner.sanitize(TemplateRenderer.render(template.filename, context))
-        let baseStem = renderedStem.isEmpty ? fallbackStem(date: primary.dateTaken, stem: primaryOldStem) : renderedStem
-
-        // Smallest disambiguator (0 = none) that frees every file in the bundle.
-        // `taken` is a finite set (on-disk + already-claimed), so some `n` is
-        // always free; this terminates.
-        var n = 0
+        // Smallest disambiguator at or above `startingAt` (0 = none) that frees
+        // every file in the bundle. `taken` is a finite set (on-disk +
+        // already-claimed), so some `n` is always free; this terminates.
+        var n = max(0, startingAt)
         while true {
             let disambiguator = n == 0 ? "" : "_\(n)"
             // The disambiguator and the extension both have to fit inside
@@ -174,10 +203,31 @@ enum CopyPlan {
                 destDir: destDir
             ))
             if !files.contains(where: { isTaken($0.destination) }) {
-                return BundlePlan(bundle: bundle, files: files)
+                return BundlePlan(bundle: bundle, files: files, disambiguator: n)
             }
             n += 1
         }
+    }
+
+    /// The rendered, sanitized primary stem before any `_n` suffix — the string
+    /// two bundles have to share to collide. Extracted so `planBatch`'s
+    /// disambiguator hint keys on exactly what `plan` will name the file, rather
+    /// than on an approximation that could drift from it.
+    static func baseStem(for bundle: AssetBundle, description: String,
+                         template: NamingTemplate, cardLabel: String) -> String {
+        let primary = bundle.primary
+        let context = TemplateContext(
+            date: primary.dateTaken,
+            description: PathPlanner.sanitize(description),
+            originalName: primary.url.lastPathComponent,
+            originalStem: primary.url.deletingPathExtension().lastPathComponent,
+            cardLabel: PathPlanner.sanitize(cardLabel)
+        )
+        let rendered = PathPlanner.sanitize(TemplateRenderer.render(template.filename, context))
+        return rendered.isEmpty
+            ? fallbackStem(date: primary.dateTaken,
+                           stem: primary.url.deletingPathExtension().lastPathComponent)
+            : rendered
     }
 
     /// Give each file in a bundle a distinct destination.

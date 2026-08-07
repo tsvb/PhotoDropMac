@@ -481,34 +481,80 @@ B8 a card yanked mid-scan produced a silently truncated plan.
 242 tests, 0 failures (was 204). Each fix carries a regression test stating its
 threat model and measured before-state.
 
-## Tier C — recorded, not fixed
+## Tier C — **fixed** (follow-up pass)
 
-- `xxHash64SelfCheck()` has **zero callers** and there is no `HasherTests`; every
-  existing test uses the hasher as a self-consistent oracle, which passes
-  identically if the algorithm is wrong. (The vectors themselves were verified
-  correct this pass against `xxh64sum`, including all 1001 pairwise streaming
-  splits — so this is a coverage gap, not a live bug.)
-- `ScannedPhoto.dateSource` is computed on every scan and read nowhere — the one
-  signal that would have exposed B5 to a user.
-- One sidecar can attach to two primaries (`CR2` + `DNG` + `xmp`), and
-  `classifyCompanion` matches by `hasPrefix` rather than exact stem, so
-  `IMG_1234.v2.xmp` renames onto the same path as `IMG_1234.xmp`. (A3's
-  intra-bundle fix contains the damage; the classification itself is unchanged.)
-- `heal --script` has no library containment, and returns 2 instead of 1 when the
-  script path exists on a damaged library — blurring the exit-code distinction
-  `ScheduledVerification` branches on.
-- `HashCache` is unbounded and is decoded synchronously on the main actor at every
-  window open (`Copier.init` → `MainView`'s `@State`).
-- A second Ctrl-C does nothing, and SIGINT stays ignored while the post-ingest hook
-  runs — with S-7's unbounded `ChildProcess`, a hook blocking on stdin is
-  un-interruptible.
-- `presets.json` is unsigned and `apply(to:)` writes destinations and templates
-  straight into `UserDefaults` — a persistence primitive, LOW only because no
-  import/share UI exists.
-- ArgumentParser's exit **64** (usage error) is undocumented alongside 0/1/2.
-- Planning is quadratic and yields `…_797.CR2` names when the filename template
-  has no per-file token (measured: 800 bundles, 1.95 s).
-- `EmbeddedCLI`, `IngestPlanner` and `DriveWatcher` have zero test references.
+All ten, plus one defect the work uncovered.
+
+- **C1 · The hash was pinned by nothing.** `xxHash64SelfCheck()` had zero callers
+  and used `assert` (a no-op in Release), while every other test in the suite used
+  the hasher as a *self-consistent oracle* — hash source, hash destination,
+  compare — which passes identically if the algorithm is wrong. → `HasherTests`:
+  known-answer vectors from `xxh64sum`, every split offset of a multi-stripe
+  message, many chunk sizes, a zero-length mid-stream update, single-bit
+  sensitivity at every offset, and `hash(fileAt:)` vs in-memory either side of the
+  1 MiB read boundary. The dead entry point is gone; README's claim that it was
+  coverage is corrected. **The new tests immediately caught a wrong vector** — one
+  reference digest had been generated from UTF-8-encoded text rather than raw
+  bytes. The implementation was right; the table was not.
+- **C2 · `dateSource` was computed on every scan and read nowhere.** → the ingest
+  log states how many photos have no capture date and are filed by file date,
+  which is the case most likely to land in the wrong day folder.
+- **C3 · Companion matching was by prefix, and a sidecar could join two bundles.**
+  `IMG_1234.v2.xmp` classified as a short-form sidecar of `IMG_1234.CR2` and
+  renamed onto the real sidecar's path; and with DNG Converter output
+  (`CR2`+`DNG`+`xmp`) the xmp joined both bundles, so one collided with the other
+  and the same file was copied, hashed and manifested twice. → exact-stem
+  matching, `buildBundle` honours `consumed`, siblings sorted so the winner is
+  deterministic.
+- **C4 · `heal --script` had no library containment**, and a failed script write
+  returned 2 (could-not-verify) over a damaged library instead of 1 (issues
+  found), blurring the distinction `ScheduledVerification` branches on. → both
+  fixed.
+- **C5 · `HashCache` was unbounded and loaded on the main actor** at every window
+  open (an actor's `init` runs synchronously on the caller). → lazy load inside
+  the actor; pruning on save, dead entries first.
+- **C6 · A second Ctrl-C did nothing**, and SIGINT stayed ignored while the
+  post-ingest hook ran, so a blocking hook was un-interruptible. → second signal
+  exits 130; dispositions restored before the hook.
+- **C7 · `presets.json` launders unsigned paths into trusted settings.** LOW and
+  unchanged in substance — writing that file already needs user-level access — but
+  a preset-supplied destination is now printed, so a headless run can't send
+  photos somewhere invisible.
+- **C8 · Exit `64`** (ArgumentParser's usage error) is documented alongside 0/1/2.
+- **C9 · Planning was O(n²)** when the filename template had no per-file token
+  (measured: 800 bundles → 1.95 s), because the disambiguator search restarted at
+  zero for every bundle. → `planBatch` carries a per-base-name hint; `plan` still
+  verifies every candidate, so a wrong hint costs iterations, never a collision.
+  Settings now also says a template with no `{OriginalStem}`/`{OriginalName}`
+  will number files `_1, _2, _3…`.
+- **C10 · `EmbeddedCLI` and `IngestPlanner` had zero test references.** →
+  `EmbeddedCLI.resolve(in:)` is injectable and now checks `isExecutableFile` on
+  *both* branches (the primary one returned a constructed path unchecked, and it
+  feeds the launchd plist — a wrong path is a nightly verify that silently never
+  runs). `IngestPlannerTests` covers the scan state machine, including
+  `scanWasComplete`, which gates the auto-eject.
+
+### Uncovered while fixing C4 — a real hole in the Tier A guard
+
+`DestinationTopology.contains` resolved symlinks with `resolvingSymlinksInPath()`,
+which **consults the filesystem** and therefore returns a different shape for a
+path that exists than for one that does not (`/private/tmp/x` → `/tmp/x` only when
+it exists). Comparing the two shapes finds no common prefix. Measured:
+`heal --script <lib>/evil.sh` wrote into the library — and, more seriously, a
+nested archive root **that had not been created yet** was not detected as nested,
+which is precisely the configuration `ArchiveDestinations.identity` documents as
+routine (an unplugged drive, a folder the job will create). So the A2 refusal had
+a hole from the day it landed. → resolve on the deepest *existing* ancestor and
+re-append the missing components; regression tests for both the not-yet-created
+and neither-exists cases.
+
+This is the same trap `CLAUDE.md` invariant 3 already states for
+`ManifestWriter.resolve` ("`standardizedFileURL` consults the filesystem and
+returns a different shape for paths that exist"). It was written down, and the new
+code walked into it anyway — worth noting for the next pass: **the invariant list
+is a checklist to run *against new code*, not just a description of old code.**
+
+272 tests, 0 failures (was 243).
 
 ## Checked and correct — do not re-spend the budget
 

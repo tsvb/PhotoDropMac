@@ -48,26 +48,47 @@ struct Heal: ParsableCommand {
 
         print(json ? CLIOutput.healJSON(report) : CLIOutput.healHuman(report))
 
+        // A failure to write the script must not change what `heal` says about
+        // the *library*. It used to `throw ExitCode(2)`, so a damaged library
+        // whose script path already existed reported "could not verify / error"
+        // instead of "issues found" — collapsing exactly the distinction
+        // `ScheduledVerification` branches on when it decides which alarm to
+        // raise. Report the write failure, then fall through to the real verdict.
+        var scriptFailed = false
         if let script, !report.recoverable.isEmpty {
-            // Create with O_EXCL rather than `write(toFile:atomically:)`, which
-            // replaces whatever is already at the path — the one destructive act
-            // in an otherwise strictly report-only command. The path is the
-            // user's explicit choice, so silently writing somewhere else would be
-            // worse than refusing; say so and let them decide.
-            let fd = open(script, O_WRONLY | O_CREAT | O_EXCL, 0o755)
-            guard fd >= 0 else {
-                CLIOutput.error(errno == EEXIST
-                    ? "Refused to overwrite \(CLIOutput.safe(script)) — remove it or choose another path."
-                    : "Could not write \(CLIOutput.safe(script)): \(String(cString: strerror(errno)))")
-                throw ExitCode(2)
+            // Keep the script out of the library it describes. `heal` promises to
+            // be report-only and never to write to the library; nothing enforced
+            // that for its own output, so `--script "<lib>/PhotoDrop Manifests/x.json"`
+            // dropped a mode-0755 shell script into the folder that holds the
+            // library's integrity records.
+            let scriptURL = URL(fileURLWithPath: script)
+            if DestinationTopology.contains(url, scriptURL) {
+                CLIOutput.error("Refused to write the restore script inside \(CLIOutput.safe(url.path)) — "
+                              + "heal never writes to the library it is reporting on. Choose a path outside it.")
+                scriptFailed = true
+            } else {
+                // Create with O_EXCL rather than `write(toFile:atomically:)`, which
+                // replaces whatever is already at the path — the one destructive act
+                // in an otherwise strictly report-only command. The path is the
+                // user's explicit choice, so silently writing somewhere else would be
+                // worse than refusing; say so and let them decide.
+                let fd = open(script, O_WRONLY | O_CREAT | O_EXCL, 0o755)
+                if fd >= 0 {
+                    let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+                    try handle.write(contentsOf: Data(HealEngine.restoreScript(report).utf8))
+                    try handle.close()
+                    CLIOutput.error("Wrote restore script to \(CLIOutput.safe(script)) — review it, then run it yourself.")
+                } else {
+                    CLIOutput.error(errno == EEXIST
+                        ? "Refused to overwrite \(CLIOutput.safe(script)) — remove it or choose another path."
+                        : "Could not write \(CLIOutput.safe(script)): \(String(cString: strerror(errno)))")
+                    scriptFailed = true
+                }
             }
-            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-            try handle.write(contentsOf: Data(HealEngine.restoreScript(report).utf8))
-            try handle.close()
-            CLIOutput.error("Wrote restore script to \(CLIOutput.safe(script)) — review it, then run it yourself.")
         }
 
         if !report.allHealthy { throw ExitCode(1) }   // 0 = healthy, 1 = damage found
+        if scriptFailed { throw ExitCode(2) }         // healthy library, but we couldn't write the script
     }
 }
 
@@ -158,6 +179,22 @@ struct Ingest: AsyncParsableCommand {
         )
         let doVerify = verify ?? loadedPreset?.verifyCopies ?? true
 
+        // Say where a preset is sending the photos.
+        //
+        // `presets.json` is unsigned data in Application Support, and
+        // `IngestPreset.apply` writes its destinations straight into the settings
+        // this app treats as trusted. Anyone who can write that file can redirect
+        // every future `--preset` run to a path of their choosing, and a headless
+        // or launchd invocation would never show it. This is not a gate — writing
+        // that file already needs user-level access — but the destinations should
+        // never be invisible when they came from a file rather than from argv.
+        if loadedPreset != nil, to == nil {
+            print("Preset “\(CLIOutput.safe(preset ?? ""))” → \(CLIOutput.safe(primaryURL.path))")
+            for mirror in archiveURLs {
+                print("  mirror: \(CLIOutput.safe(mirror.path(percentEncoded: false)))")
+            }
+        }
+
         // "Couldn't read the card" and "the card has no photos" used to be the
         // same answer — an empty array, printed as *No recognized photos found*
         // and exited 0. A wrapper script reading `$?` then treated a reader that
@@ -200,6 +237,13 @@ struct Ingest: AsyncParsableCommand {
         // default to termination, and none of them run `FileCopier`'s Swift
         // `catch` cleanup. Ctrl-C was the only one of the four anybody tested.
         // Each is ignored at the POSIX level so its dispatch source sees it.
+        // A **second** signal exits immediately. Without an escalation path there
+        // was none: the handler only re-tripped an already-tripped flag and
+        // reprinted the same line, so hammering Ctrl-C during a multi-GB file on
+        // a slow reader could not stop the process and the user had to `kill`
+        // from another terminal — which then hit the very orphan-file problem the
+        // graceful stop exists to prevent. 130 is the conventional
+        // "terminated by SIGINT" status.
         let interrupted = InterruptFlag()
         let stopSignals: [(Int32, String)] = [(SIGINT, "Interrupted"), (SIGTERM, "Terminating"), (SIGHUP, "Hung up")]
         var signalSources: [DispatchSourceSignal] = []
@@ -207,13 +251,35 @@ struct Ingest: AsyncParsableCommand {
             signal(number, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
             source.setEventHandler {
+                if interrupted.isTripped {
+                    FileHandle.standardError.write(Data(
+                        "\nStopping now. The file being written is incomplete and is not in the manifest.\n".utf8))
+                    // Qualified: `ParsableCommand` has its own `exit(withError:)`.
+                    // This runs on a dispatch queue, not in a real signal
+                    // handler, so `exit(3)` (with its atexit/flush) is fine.
+                    Darwin.exit(130)
+                }
                 interrupted.trip()
-                FileHandle.standardError.write(Data("\n\(label) — finishing the current file, then writing the manifest…\n".utf8))
+                FileHandle.standardError.write(Data(
+                    "\n\(label) — finishing the current file, then writing the manifest. Press again to stop immediately.\n".utf8))
             }
             source.resume()
             signalSources.append(source)
         }
-        defer { for source in signalSources { source.cancel() } }
+        // Restore default disposition, not just source cancellation, and do it as
+        // soon as the copy is over — **before** the post-ingest hook.
+        //
+        // The sources were cancelled at scope exit while `SIG_IGN` stayed
+        // installed, so signals were swallowed for the rest of the process. That
+        // covered the hook, which runs after the engine returns: combined with
+        // `ChildProcess` having no timeout, a hook that blocks (on stdin, on a
+        // dead mount) made the CLI un-interruptible — Ctrl-C ignored, SIGTERM
+        // ignored. Idempotent, so the `defer` backstop is free.
+        let restoreSignals = {
+            for source in signalSources { source.cancel() }
+            for (number, _) in stopSignals { signal(number, SIG_DFL) }
+        }
+        defer { restoreSignals() }
 
         let engine = IngestEngine(
             bundles: bundles, description: descriptionText, primaryRoot: primaryURL,
@@ -230,6 +296,9 @@ struct Ingest: AsyncParsableCommand {
             }
         )
         let result = await engine.run()
+        // The copy is over; nothing after this point needs a graceful stop, and
+        // everything after it (the hook) needs to remain interruptible.
+        restoreSignals()
         if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
 
         if result.cancelled { CLIOutput.error("Ingest cancelled — a manifest was written for what already landed.") }

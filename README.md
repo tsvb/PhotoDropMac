@@ -242,7 +242,7 @@ xcodebuild -project PhotoDropMac.xcodeproj -scheme PhotoDropMac \
            -configuration Debug -destination 'platform=macOS' test
 ```
 
-A DEBUG-only hash self-test (`xxHash64SelfCheck()` in `Hasher.swift`) additionally asserts XXH64 reference vectors and streaming-split correctness in Debug builds.
+`HasherTests` checks the XXH64 implementation against known-answer vectors from the reference `xxh64sum`, plus every streaming split offset, single-bit sensitivity, and file-vs-memory agreement — so a wrong-but-self-consistent hash can't quietly confirm every copy against its own mistake.
 
 ## Credits
 
