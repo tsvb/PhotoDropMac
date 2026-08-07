@@ -101,6 +101,10 @@ final class IngestEngine {
     private let cardLabel: String
     private let cache: HashCache
     private let indexStoreURL: URL
+    /// Where the job log is written. Injected so a test run never adds to the
+    /// user's real audit trail in ~/Library/Logs/PhotoDrop — see
+    /// `JobLogger.defaultDirectory`.
+    private let logDirectory: URL?
     private let isCancelled: () -> Bool
     private let onProgress: (CopyProgress) -> Void
     private let onLog: (LogEntry) -> Void
@@ -131,6 +135,7 @@ final class IngestEngine {
          cardLabel: String,
          cache: HashCache,
          indexStoreURL: URL,
+         logDirectory: URL? = nil,
          isCancelled: @escaping () -> Bool = { false },
          onProgress: @escaping (CopyProgress) -> Void = { _ in },
          onLog: @escaping (LogEntry) -> Void = { _ in }) {
@@ -146,6 +151,7 @@ final class IngestEngine {
         self.cardLabel = cardLabel
         self.cache = cache
         self.indexStoreURL = indexStoreURL
+        self.logDirectory = logDirectory
         self.isCancelled = isCancelled
         self.onProgress = onProgress
         self.onLog = onLog
@@ -345,7 +351,8 @@ final class IngestEngine {
             archiveDestinations: archiveRoots,
             // The manifest's *resolved* stem, so the log keeps its name even if
             // the manifest had to take a collision suffix.
-            baseName: manifestURL?.deletingPathExtension().lastPathComponent
+            baseName: manifestURL?.deletingPathExtension().lastPathComponent,
+            directory: logDirectory
         )
 
         // Persist the hash cache — misses populated during this run stay hot.

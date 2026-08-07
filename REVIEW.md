@@ -1,16 +1,18 @@
 # PhotoDropMac — critical review
 
 **Date:** 2026-08-06 · **Reviewed at:** `dff7ed0` · **Baseline then:** 132 tests, 0 failures
-· **Now:** 170 tests, 0 failures — **Tier 1 and Tier 2 fixed**
+· **Now:** 204 tests, 0 failures — **Tiers 1, 2 and 3 fixed**
 
 Every finding below was reproduced by a probe or traced through the source. Each is marked
 **CONFIRMED** (a probe demonstrated it), **CONFIRMED (inspection)** (the code path is
 unambiguous but no probe was run), or **MITIGATED** (real, but an existing safeguard blunts it).
 Nothing is reported as "probably".
 
-Tiers 1 and 2 have since been fixed, and each entry records what shipped. Every probe that
+Tiers 1, 2 and 3 have since been fixed, and each entry records what shipped. Every probe that
 demonstrated a defect was rewritten as a permanent regression test asserting the corrected
-behavior. **Tier 3 (process) and Tier 4 (UI/docs) remain open** — CI above all.
+behavior. **Tier 4 (UI dead ends, README drift) remains open**, along with the security
+findings in `HANDOFF.md` §5 — `XxHash64.hash(fileAt:)` accepting a character device is the
+sharpest of them.
 
 ---
 
@@ -59,9 +61,10 @@ never exercised. The most telling instance is that `HealEngine` uses the exact
 newest-manifest-wins rule that `VerifyEngine`, twenty files away, spends two paragraphs
 explaining is unsafe — the *knowledge* is in the repo, it just didn't travel.
 
-**And nothing enforces any of it.** There is no CI. 21 test files, a live GitHub remote, and
-the only thing that runs them is a human typing `xcodebuild`. `release.sh` goes from `xcodegen`
-straight to a notarized DMG with no test gate.
+**And at review time nothing enforced any of it.** There was no CI: 21 test files, a live
+GitHub remote, and the only thing that ran them was a human typing `xcodebuild`; `release.sh`
+went from `xcodegen` straight to a notarized DMG with no test gate. Both are now closed (Tier 3),
+which is what makes the rest of this document durable rather than a snapshot.
 
 ---
 
@@ -313,7 +316,18 @@ block the main thread on two `waitUntilExit()` calls.
 
 ---
 
-## Tier 3 — Process (highest leverage per hour)
+## Tier 3 — Process (highest leverage per hour) · **ALL FIXED**
+
+> **Shipped:** CI on every push and PR ([.github/workflows/ci.yml](.github/workflows/ci.yml)) —
+> full suite, both schemes, a hermeticity assertion, and a doc-link check
+> ([scripts/check-doc-links.sh](scripts/check-doc-links.sh), which reproduced all 13 broken
+> CLAUDE.md links on its first run; they are now fixed). `release.sh` gained a test gate, a
+> clean-tree refusal, version write-back and an annotated tag, plus a staged copy for
+> `create-dmg`. The suite is hermetic via `Copier.hermetic(in:)` — measured 0 files added to
+> `~/Library/Logs/PhotoDrop`, down from +18 per run. Skip-on-timeout is now a failure. 31 new
+> tests across `DestinationIndexBuildTests`, `JobLoggerTests`, `ChildProcessTests`,
+> `PreflightCheckTests` and the hermeticity cases. **Nothing in `~/Library/Logs/PhotoDrop` was
+> deleted** — that is the user's audit trail.
 
 1. **There is no CI.** No `.github/`, no workflow, no pre-commit, despite a live remote. This
    is the single highest-value item in the review: 132 passing tests that nothing runs

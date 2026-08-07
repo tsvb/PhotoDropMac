@@ -1,6 +1,19 @@
 import Foundation
 
 enum JobLogger {
+    /// `~/Library/Logs/PhotoDrop` — where a real job's log belongs.
+    ///
+    /// Injectable (see `write(… directory:)`) because this folder is the user's
+    /// audit trail for what happened to their photos, and a test run that writes
+    /// into it is indistinguishable from a real ingest. Measured before the
+    /// parameter existed: one `xcodebuild test` deposited 18 `ingest-*.log` files
+    /// there. That is an integrity problem, not a tidiness one.
+    static var defaultDirectory: URL? {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("PhotoDrop", isDirectory: true)
+    }
+
     // Writes a plaintext log of the ingest to ~/Library/Logs/PhotoDrop/
     // Filename: ingest-<sortable-timestamp>.log. Returns the log URL on
     // success, nil on failure (unwritable directory, etc.). Non-fatal —
@@ -21,15 +34,11 @@ enum JobLogger {
         elapsedSeconds: Double,
         primaryDestination: URL,
         archiveDestinations: [URL],
-        baseName: String? = nil
+        baseName: String? = nil,
+        directory: URL? = nil
     ) -> URL? {
         let fm = FileManager.default
-        guard let libraryDir = fm.urls(for: .libraryDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-        let logDir = libraryDir
-            .appendingPathComponent("Logs", isDirectory: true)
-            .appendingPathComponent("PhotoDrop", isDirectory: true)
+        guard let logDir = directory ?? defaultDirectory else { return nil }
 
         do {
             try fm.createDirectory(at: logDir, withIntermediateDirectories: true)

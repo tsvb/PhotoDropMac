@@ -48,15 +48,44 @@ final class Copier {
 
     @ObservationIgnored private let cache: HashCache
     @ObservationIgnored private let indexStoreURL: URL
+    @ObservationIgnored private let logDirectory: URL?
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let postsNotifications: Bool
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var cancelFlag = CancellationFlag()
 
-    // Store URLs for the dedup cache and destination-index snapshot are
-    // injectable so tests can point them at a temp directory; production uses
-    // the real Application Support locations.
-    init(cacheStoreURL: URL = HashCache.defaultURL, indexStoreURL: URL = DestinationIndex.defaultStoreURL) {
+    /// Everything this controller touches *outside* the destination folders is
+    /// injectable, so a test run is indistinguishable from no run at all.
+    ///
+    /// Each default below is a real user-facing side effect that the suite was
+    /// firing on every integration test: the dedup cache and index snapshot in
+    /// Application Support; `~/Library/Logs/PhotoDrop`, which is the user's audit
+    /// trail for what happened to their photos (measured: +18 files per run);
+    /// `UNUserNotificationCenter`, which prompts for permission the first time;
+    /// and `UserDefaults.standard`, which is read for a post-ingest script the
+    /// controller would then **execute** — latent only because the developer
+    /// happens to have no hook configured.
+    init(cacheStoreURL: URL = HashCache.defaultURL,
+         indexStoreURL: URL = DestinationIndex.defaultStoreURL,
+         logDirectory: URL? = nil,
+         defaults: UserDefaults = .standard,
+         postsNotifications: Bool = true) {
         self.cache = HashCache(storeURL: cacheStoreURL)
         self.indexStoreURL = indexStoreURL
+        self.logDirectory = logDirectory
+        self.defaults = defaults
+        self.postsNotifications = postsNotifications
+    }
+
+    /// A copier that writes nothing outside `directory` and raises no banners.
+    /// Tests should use this rather than assembling the parameters by hand, so a
+    /// side effect added later has one place to be contained.
+    static func hermetic(in directory: URL) -> Copier {
+        Copier(cacheStoreURL: directory.appendingPathComponent("hash-cache.json"),
+               indexStoreURL: directory.appendingPathComponent("dest-index.json"),
+               logDirectory: directory.appendingPathComponent("Logs", isDirectory: true),
+               defaults: UserDefaults(suiteName: "photodrop.tests.\(UUID().uuidString)") ?? .standard,
+               postsNotifications: false)
     }
 
     func cancel() {
@@ -104,6 +133,7 @@ final class Copier {
 
         let cache = self.cache
         let indexStoreURL = self.indexStoreURL
+        let logDirectory = self.logDirectory
         task = Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { [weak self] () -> CopyResult in
                 let engine = IngestEngine(
@@ -111,6 +141,7 @@ final class Copier {
                     archiveRoots: archiveDestinations, verify: verify, ejectAfter: ejectAfter,
                     sourceMountPoint: sourceMountPoint, sourceVolumeID: sourceVolumeID,
                     template: template, cardLabel: cardLabel, cache: cache, indexStoreURL: indexStoreURL,
+                    logDirectory: logDirectory,
                     isCancelled: { flag.isCancelled },
                     onProgress: { progress in Task { @MainActor [weak self] in self?.applyProgress(progress) } },
                     onLog: { entry in Task { @MainActor [weak self] in self?.appendLogEntry(entry) } }
@@ -129,10 +160,10 @@ final class Copier {
                 self.state = .cancelled(result)
             } else if result.halted {
                 self.state = .failed("Halted: \(result.haltReason ?? "error"). See log.")
-                Notifier.notifyHalt(reason: result.haltReason ?? "error")
+                if self.postsNotifications { Notifier.notifyHalt(reason: result.haltReason ?? "error") }
             } else {
                 self.state = .completed(result)
-                Notifier.notifyCompletion(result: result)
+                if self.postsNotifications { Notifier.notifyCompletion(result: result) }
                 self.runPostIngestHookIfConfigured(result)
             }
         }
@@ -154,16 +185,17 @@ final class Copier {
     // fire-and-forget so a slow hook can't delay the completion UI, and
     // best-effort so a missing/failing hook never affects the copy result.
     private func runPostIngestHookIfConfigured(_ result: CopyResult) {
-        let script = (UserDefaults.standard.string(forKey: PostIngestHook.defaultsKey) ?? "")
+        let script = (defaults.string(forKey: PostIngestHook.defaultsKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !script.isEmpty else { return }
+        let postsNotifications = self.postsNotifications
         Task.detached(priority: .utility) {
             do {
                 try await PostIngestHook.run(scriptPath: script, result: result)
             } catch let error as PostIngestHookError {
-                await Notifier.notifyHookFailure(message: error.message)
+                if postsNotifications { await Notifier.notifyHookFailure(message: error.message) }
             } catch {
-                await Notifier.notifyHookFailure(message: error.localizedDescription)
+                if postsNotifications { await Notifier.notifyHookFailure(message: error.localizedDescription) }
             }
         }
     }

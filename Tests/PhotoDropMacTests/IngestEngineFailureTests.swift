@@ -74,6 +74,9 @@ final class IngestEngineFailureTests: XCTestCase {
             template: .default, cardLabel: "",
             cache: HashCache(storeURL: tmp.appendingPathComponent("cache-\(UUID()).json")),
             indexStoreURL: tmp.appendingPathComponent("index-\(UUID()).json"),
+            // Keep the job log inside the fixture: the default is the user's real
+            // ~/Library/Logs/PhotoDrop audit trail.
+            logDirectory: tmp.appendingPathComponent("Logs", isDirectory: true),
             isCancelled: { flag.value },
             onProgress: { p in
                 sink.progress.append(p)

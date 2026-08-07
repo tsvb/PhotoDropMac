@@ -61,7 +61,8 @@ final class VerifierTests: XCTestCase {
             ticks += 1
         }
         guard case .completed(let report) = verifier.state else {
-            throw XCTSkip("verify did not complete; state = \(verifier.state)")
+            XCTFail("verify did not complete; state = \(verifier.state)")
+            throw VerifierTestFailure.didNotComplete
         }
         return report
     }
@@ -149,3 +150,6 @@ final class VerifierTests: XCTestCase {
         XCTAssertEqual(report.verified, 1)
     }
 }
+
+private enum VerifierTestFailure: Error { case didNotComplete }
+

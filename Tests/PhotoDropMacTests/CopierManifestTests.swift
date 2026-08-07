@@ -24,10 +24,10 @@ final class CopierManifestTests: XCTestCase {
         return dir
     }
 
-    private func makeCopier(tmp: URL) -> Copier {
-        Copier(cacheStoreURL: tmp.appendingPathComponent("cache.json"),
-               indexStoreURL: tmp.appendingPathComponent("index.json"))
-    }
+    /// Hermetic by construction: no log in ~/Library/Logs/PhotoDrop, no
+    /// notification-permission prompt, and no read of the developer's real
+    /// UserDefaults for a post-ingest script this would then execute.
+    private func makeCopier(tmp: URL) -> Copier { .hermetic(in: tmp) }
 
     private func captureDate() -> Date {
         var c = DateComponents()
@@ -63,8 +63,15 @@ final class CopierManifestTests: XCTestCase {
             try await Task.sleep(nanoseconds: 25_000_000)
             ticks += 1
         }
+        // Fail, never skip. `throw XCTSkip` here turned a real hang — or a
+        // regression that leaves the copier in .failed — into a green run on a
+        // loaded machine, and `xcodebuild` prints ** TEST SUCCEEDED ** over a
+        // skip. This helper guards the §1.2 rollback regression below, which is
+        // the most important test in the suite; it must not be able to
+        // silently stop running.
         guard case .completed(let result) = copier.state else {
-            throw XCTSkip("ingest did not complete; state = \(copier.state)")
+            XCTFail("ingest did not complete within \(ticks) ticks; state = \(copier.state)")
+            throw CopierTestFailure.didNotComplete
         }
         return result
     }
@@ -187,4 +194,55 @@ final class CopierManifestTests: XCTestCase {
         XCTAssertTrue(report.allGood, "the ingest's own manifest must verify; issues: \(report.issues.map(\.path))")
         XCTAssertEqual(report.verified, 1)
     }
+
+    // MARK: - Hermeticity
+
+    /// The suite must leave no trace outside its fixture. Before the log
+    /// directory was injectable, one `xcodebuild test` deposited 18 real
+    /// `ingest-*.log` files into `~/Library/Logs/PhotoDrop` — the folder a user
+    /// consults to reconstruct what happened to their photos. Test runs and real
+    /// ingests were indistinguishable in the audit trail.
+    ///
+    /// This asserts the positive form (the log went where we told it) rather
+    /// than counting files in the user's real directory, which would be a test
+    /// that reads global state and races other runs.
+    func testHermeticCopierWritesItsLogInsideTheFixture() async throws {
+        let tmp = try freshTempDir()
+        let dest = tmp.appendingPathComponent("dest", isDirectory: true)
+        let src = try makeSourceFile("IMG_9001.JPG", bytes: 2048, in: tmp)
+
+        let result = try await runToCompletion(makeCopier(tmp: tmp), dest: dest,
+                                               [yearGroup(primary: src, companions: [])])
+
+        let logURL = try XCTUnwrap(result.logURL, "the job still writes a log")
+        XCTAssertTrue(logURL.path.hasPrefix(tmp.path),
+                      "log escaped the fixture: \(logURL.path)")
+
+        let realLogDir = try XCTUnwrap(JobLogger.defaultDirectory)
+        XCTAssertFalse(logURL.path.hasPrefix(realLogDir.path),
+                       "a test must never write into the user's audit trail")
+    }
+
+    /// A hermetic copier must not read the developer's real preferences either:
+    /// `Copier` consults them for a post-ingest script that it would then
+    /// *execute*. That was latent only because no hook happened to be configured.
+    func testHermeticCopierDoesNotReadStandardUserDefaults() async throws {
+        let tmp = try freshTempDir()
+        let marker = tmp.appendingPathComponent("hook-should-not-run.txt")
+        UserDefaults.standard.set("/bin/sh", forKey: PostIngestHook.defaultsKey)
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: PostIngestHook.defaultsKey) }
+
+        let dest = tmp.appendingPathComponent("dest", isDirectory: true)
+        let src = try makeSourceFile("IMG_9002.JPG", bytes: 2048, in: tmp)
+        _ = try await runToCompletion(makeCopier(tmp: tmp), dest: dest,
+                                      [yearGroup(primary: src, companions: [])])
+
+        try await Task.sleep(nanoseconds: 200_000_000)   // the hook is fire-and-forget
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertEqual(UserDefaults.standard.string(forKey: PostIngestHook.defaultsKey), "/bin/sh",
+                       "sanity: the key really was set while the ingest ran")
+    }
 }
+
+private enum CopierTestFailure: Error { case didNotComplete }
+

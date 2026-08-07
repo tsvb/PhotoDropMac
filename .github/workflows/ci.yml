@@ -1,0 +1,96 @@
+name: CI
+
+# Until this existed, nothing ran the suite except a human typing xcodebuild —
+# and `scripts/release.sh` could notarize a DMG from untested code. Several of
+# the data-safety defects this suite now guards against shipped and sat unnoticed
+# for exactly that reason.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build & test
+    # The test bundle is HOSTED — it loads into the app, so the app must launch
+    # and a GUI session is required. GitHub's macOS runners provide one; a
+    # headless container would not.
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      # The .xcodeproj is gitignored and generated; there is nothing to build
+      # until this runs.
+      - name: Generate project
+        run: xcodegen generate
+
+      # Resolve the SPM dependency (swift-argument-parser) as its own step so a
+      # network failure reads as a network failure rather than a build error.
+      - name: Resolve package dependencies
+        run: xcodebuild -project PhotoDropMac.xcodeproj -resolvePackageDependencies
+
+      - name: Test the app (Debug)
+        run: |
+          set -o pipefail
+          xcodebuild -project PhotoDropMac.xcodeproj -scheme PhotoDropMac \
+                     -configuration Debug -destination 'platform=macOS' \
+                     -resultBundlePath TestResults.xcresult test
+
+      # A -target build mishandles the SPM module under Swift 6 explicit
+      # modules, so this must go through the scheme.
+      - name: Build the photodrop CLI
+        run: |
+          set -o pipefail
+          xcodebuild -project PhotoDropMac.xcodeproj -scheme photodrop \
+                     -configuration Debug -destination 'platform=macOS' build
+
+      # The suite is supposed to be hermetic: it injects its log directory,
+      # UserDefaults suite, cache and index store. If a new side effect creeps
+      # back in, it shows up here as a log written to the runner's home.
+      - name: Assert the suite left no trace in ~/Library/Logs/PhotoDrop
+        run: |
+          if [ -d "$HOME/Library/Logs/PhotoDrop" ]; then
+            count=$(ls -1 "$HOME/Library/Logs/PhotoDrop" | wc -l | tr -d ' ')
+            if [ "$count" != "0" ]; then
+              echo "::error::The test suite wrote $count file(s) into the real log directory."
+              echo "Tests must inject a log directory — see Copier.hermetic(in:)."
+              ls -la "$HOME/Library/Logs/PhotoDrop"
+              exit 1
+            fi
+          fi
+          echo "Clean."
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: TestResults.xcresult
+          retention-days: 7
+
+  docs:
+    name: Doc links
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # CLAUDE.md accumulated 13 broken source links by surviving a directory
+      # reorganisation; every one of them silently sends a reader — human or
+      # agent — to a file that isn't there. This is mechanical to catch.
+      - name: Check relative markdown links resolve
+        run: ./scripts/check-doc-links.sh

@@ -64,9 +64,34 @@ if [[ -n "${DEVELOPMENT_TEAM:-}" ]]; then
   TEAM_ARGS=(DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM")
 fi
 
+# ── 0. Refuse to ship from a dirty tree ─────────────────────────────────────
+# The build number below is a commit count, and the tag written at the end names
+# a commit. Both are lies if uncommitted work went into the binary — you would
+# have a notarized DMG that corresponds to no revision anyone can check out.
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "✗ Working tree is dirty. Commit or stash before releasing." >&2
+  git status --short >&2
+  exit 1
+fi
+
 # ── 1. Regenerate the Xcode project from project.yml ────────────────────────
 echo "▸ xcodegen generate"
 xcodegen generate
+
+# ── 1b. The test gate ───────────────────────────────────────────────────────
+# Nothing else in this project runs the suite automatically, and a release is
+# the worst possible moment to find out. It takes a couple of seconds; a
+# notarized DMG built from untested code is forever.
+if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
+  echo "⚠ SKIP_TESTS=1 — shipping without running the suite. You are on your own."
+else
+  echo "▸ xcodebuild test (Debug)"
+  xcodebuild -project "$PROJECT" -scheme "$SCHEME" \
+             -configuration Debug -destination 'platform=macOS' test
+  echo "▸ xcodebuild build (photodrop CLI)"
+  xcodebuild -project "$PROJECT" -scheme photodrop \
+             -configuration Debug -destination 'platform=macOS' build
+fi
 
 # ── 2. Archive (Release): app + embedded photodrop, both hardened + timestamped
 echo "▸ xcodebuild archive (Release)"
@@ -112,19 +137,25 @@ xcrun stapler validate "$APP"   # fail the release if the app didn't get a ticke
 # ── 4. Package the stapled app into a DMG ────────────────────────────────────
 echo "▸ Building DMG"
 rm -f "$DMG"
+# Always stage a *copy*. create-dmg does `rm "$SRC_FOLDER/.DS_Store"`, and at
+# this point the app is already notarized and stapled — deleting anything inside
+# the bundle would invalidate the signature after the ticket was attached. `ditto`
+# rather than `cp -R` so extended attributes (the stapled ticket among them)
+# survive the copy.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+ditto "$APP" "$STAGE/$APP_NAME.app"
+
 if command -v create-dmg >/dev/null 2>&1; then
   create-dmg \
     --volname "$APP_NAME" \
     --app-drop-link 450 150 \
     --icon "$APP_NAME.app" 150 150 \
-    "$DMG" "$APP"
+    "$DMG" "$STAGE"
 else
-  # Zero-dependency fallback: stage the app + an Applications symlink, compress.
-  STAGE="$(mktemp -d)"
-  cp -R "$APP" "$STAGE/"
+  # Zero-dependency fallback: add an Applications symlink and compress.
   ln -s /Applications "$STAGE/Applications"
   hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
-  rm -rf "$STAGE"
 fi
 
 # ── 5. Notarize the DMG and wait for the verdict ────────────────────────────
@@ -142,8 +173,31 @@ spctl -a -t exec -vvv "$APP" || true          # informational
 xcrun stapler validate "$APP"                 # the copy the user keeps
 xcrun stapler validate "$DMG"                 # the download itself
 
+# ── 8. Record the release in the repo ───────────────────────────────────────
+# Until now `./release.sh 0.2.0` shipped 0.2.0 while project.yml still said
+# 0.1.3 and git recorded nothing, so the committed spec drifted from every
+# artifact ever handed out and no tag named the code inside a DMG.
+COMMITTED_VERSION="$(grep -m1 'MARKETING_VERSION:' project.yml | sed -E 's/.*"([^"]+)".*/\1/')"
+if [[ "$COMMITTED_VERSION" != "$VERSION" ]]; then
+  echo "▸ Writing MARKETING_VERSION $COMMITTED_VERSION → $VERSION in project.yml"
+  # Only the MARKETING_VERSION line; -i '' is the BSD sed in-place form.
+  sed -i '' -E "s/(MARKETING_VERSION: )\"[^\"]+\"/\1\"$VERSION\"/" project.yml
+  git add project.yml
+  git commit -m "chore(release): $VERSION"
+fi
+
+TAG="v$VERSION"
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  echo "⚠ Tag $TAG already exists — leaving it alone."
+else
+  echo "▸ git tag $TAG"
+  git tag -a "$TAG" -m "$APP_NAME $VERSION (build $BUILD)"
+fi
+
 echo ""
 echo "✓ Done: $DMG"
+echo "  Tagged $TAG locally — push it yourself when you are ready:"
+echo "    git push origin main --follow-tags"
 echo "  Spot-check the embedded CLI is hardened:"
 echo "    codesign -dvvv '$APP/Contents/MacOS/photodrop' 2>&1 | grep -E 'Authority|flags'"
 echo "  Simulate a clean download (should open with no Gatekeeper dialog):"
