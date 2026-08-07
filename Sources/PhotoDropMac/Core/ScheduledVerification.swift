@@ -73,19 +73,26 @@ enum ScheduledVerification {
     ///
     /// Output is only echoed on a non-zero exit, so the log accumulates
     /// diagnostics for problems instead of a JSON report per night forever.
+    ///
+    /// Each branch emits its own complete `osascript` call with the message
+    /// **inline**. The obvious factoring — one shared call interpolating `$MSG`
+    /// — is silently broken: the AppleScript has to be single-quoted for the
+    /// shell, and the shell does not expand variables inside single quotes, so
+    /// the banner reads a literal `$MSG`. Unit tests that only assert the
+    /// message text appears somewhere in the command string pass over that
+    /// happily; `notificationScripts` exists so a test can execute the branches
+    /// and read what `osascript` would actually receive.
     static func jobPlist(photodropPath: String, libraryPath: String,
                          schedule: VerifySchedule, logPath: String) -> [String: Any] {
-        let notify = "/usr/bin/osascript -e 'display notification \"$MSG\" with title \"PhotoDrop\"'"
         let command = """
             OUT=$(\(quote(photodropPath)) verify \(quote(libraryPath)) --json 2>&1); RC=$?
             if [ $RC -eq 0 ]; then exit 0; fi
             printf '%s\\n' "$(date)" "$OUT"
             if [ $RC -eq 1 ]; then
-              MSG='Verification found issues — see the PhotoDrop log.'
+              /usr/bin/osascript -e \(quote(appleScript(message: issuesMessage)))
             else
-              MSG='Could not verify your library — no manifest found, or it is unreadable.'
+              /usr/bin/osascript -e \(quote(appleScript(message: cannotVerifyMessage)))
             fi
-            \(notify)
             """
         return [
             "Label": label,
@@ -154,6 +161,20 @@ enum ScheduledVerification {
                 : text)
         }
         return output.status
+    }
+
+    /// Exit 1: the library was read and something is wrong with it.
+    static let issuesMessage = "Verification found issues — see the PhotoDrop log."
+    /// Exit 2: the library could not be checked at all. A different event, and
+    /// the reason this isn't one shared message.
+    static let cannotVerifyMessage = "Could not verify your library — no manifest found, or it is unreadable."
+
+    private static func appleScript(message: String) -> String {
+        // AppleScript string literals escape with a backslash, same as C.
+        let escaped = message
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "display notification \"\(escaped)\" with title \"PhotoDrop\""
     }
 
     private static func quote(_ s: String) -> String {

@@ -87,4 +87,69 @@ final class ScheduledVerificationTests: XCTestCase {
             .first { $0.contains("[ $RC -eq 0 ]") })
         XCTAssertTrue(exitLine.contains("exit 0"), "clean runs return before printing anything")
     }
+
+    // MARK: - What osascript actually receives
+
+    /// Regression, and the reason this suite executes the command instead of
+    /// grepping it: the branches originally shared one `osascript` call
+    /// interpolating `$MSG`. The AppleScript must be single-quoted for the
+    /// shell, and the shell does not expand variables inside single quotes — so
+    /// the banner would have read a literal `$MSG` every night. The old tests
+    /// asserted both message strings appeared *somewhere in the command* and
+    /// passed green over a feature that was inert in production.
+    ///
+    /// `osascript` is rewritten to `/bin/echo` so the branch can be run for
+    /// real without posting a notification from the test suite.
+    private func notificationText(forExitCode code: Int32) throws -> String {
+        let stub = try stubPhotodrop(exiting: code)
+        let plist = ScheduledVerification.jobPlist(
+            photodropPath: stub.path, libraryPath: "/lib",
+            schedule: .daily, logPath: "/dev/null")
+        let command = try XCTUnwrap((plist["ProgramArguments"] as? [String])?.last)
+            .replacingOccurrences(of: "/usr/bin/osascript", with: "/bin/echo")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    /// A stand-in for the CLI that exits with the code under test.
+    private func stubPhotodrop(exiting code: Int32) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SchedVerifyStub-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("photodrop")
+        try "#!/bin/sh\necho '{\"stub\":true}'\nexit \(code)\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
+    func testExitOneNotifiesThatIssuesWereFound() throws {
+        let text = try notificationText(forExitCode: 1)
+        XCTAssertTrue(text.contains(ScheduledVerification.issuesMessage),
+                      "osascript must receive the real message, got: \(text)")
+        XCTAssertFalse(text.contains("$"), "no unexpanded shell variable may survive: \(text)")
+    }
+
+    func testExitTwoNotifiesThatItCouldNotVerify() throws {
+        let text = try notificationText(forExitCode: 2)
+        XCTAssertTrue(text.contains(ScheduledVerification.cannotVerifyMessage),
+                      "exit 2 is a different event and says so, got: \(text)")
+        XCTAssertFalse(text.contains(ScheduledVerification.issuesMessage),
+                       "and must not claim damage was found")
+    }
+
+    func testCleanRunNotifiesNothingAtAll() throws {
+        let text = try notificationText(forExitCode: 0)
+        XCTAssertTrue(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      "a healthy library must be silent, got: \(text)")
+    }
 }
