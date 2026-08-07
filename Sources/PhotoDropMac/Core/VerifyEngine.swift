@@ -25,13 +25,56 @@ struct VerifyReport: Sendable, Equatable {
     let verified: Int
     let issues: [VerifyIssue]
     let manifestCount: Int
+    /// Directories the walk could not open (xattr mode only).
+    ///
+    /// The enumerator was created without an error handler, so a subtree that
+    /// couldn't be read — mode `0000`, or a NAS mount dropping mid-walk — was
+    /// skipped in silence and the run printed `✓ All 4,200 files match` over a
+    /// library a third of which was never opened. A verification tool must never
+    /// count files it didn't visit as evidence of anything.
+    let unreadableDirectories: Int
+    /// Files present but carrying no checksum attribute (xattr mode only).
+    ///
+    /// Unstamped files were dropped without a tally, so a library round-tripped
+    /// through anything that strips xattrs — some cloud sync, `cp -X`, a
+    /// zip/unzip restore — reported `✓ All 1,000 files match` over 10,000 files.
+    /// "The stamp was lost" and "it was never stamped" are indistinguishable from
+    /// the outside, so the honest report is the count.
+    let unstamped: Int
+
+    init(verified: Int, issues: [VerifyIssue], manifestCount: Int,
+         unreadableDirectories: Int = 0, unstamped: Int = 0) {
+        self.verified = verified
+        self.issues = issues
+        self.manifestCount = manifestCount
+        self.unreadableDirectories = unreadableDirectories
+        self.unstamped = unstamped
+    }
 
     var changed: Int { issues.lazy.filter { $0.kind == .changed }.count }
     var missing: Int { issues.lazy.filter { $0.kind == .missing }.count }
     var unreadable: Int { issues.lazy.filter { $0.kind == .unreadable }.count }
     var conflicts: Int { issues.lazy.filter { $0.kind == .conflict }.count }
     var total: Int { verified + issues.count }
-    var allGood: Bool { issues.isEmpty }
+    /// No issues **and** nothing the walk was unable to reach. A clean verdict has
+    /// to cover the whole target, not just the part that was reachable.
+    ///
+    /// `unstamped` is deliberately *not* a failure condition: `FileChecksumXattr`
+    /// states that an absent attribute means "unstamped", never "changed", and
+    /// failing on it would make every partially-stamped library exit 1 — the
+    /// nightly-alarm-that-cries-wolf failure the scheduled-verify exit codes were
+    /// split to avoid. It is always *reported*, and a run where nothing at all
+    /// could be checked is refused separately by the CLI.
+    var allGood: Bool { issues.isEmpty && unreadableDirectories == 0 }
+}
+
+/// Tally shared with the xattr walk's error handler — see `UnreadableCounter` in
+/// `AssetDiscovery` for why this is a locked class rather than a captured `var`.
+private final class XattrWalkCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
 
 /// Headless re-verification engine. Reads the manifest(s) at `target`, re-hashes
@@ -184,15 +227,26 @@ enum VerifyEngine {
         }
 
         let keys: [URLResourceKey] = [.isRegularFileKey]
+        // The error handler is what keeps an unreadable subtree from being
+        // silently skipped — see `VerifyReport.unreadableDirectories`.
+        let unreadableDirectories = XattrWalkCounter()
         guard let enumerator = fm.enumerator(at: folder, includingPropertiesForKeys: keys,
-                                             options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
+                                             options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                                             errorHandler: { _, _ in unreadableDirectories.increment(); return true }) else {
             return .unreadableTarget
         }
 
         var items: [(url: URL, rel: String, expected: UInt64)] = []
+        var unstamped = 0
         for case let url as URL in enumerator {
             guard (try? url.resourceValues(forKeys: Set(keys)))?.isRegularFile == true else { continue }
-            guard let expected = FileChecksumXattr.read(from: url) else { continue }   // unstamped → skip
+            // The manifests are the record, not library content. They are never
+            // stamped, so counting them as "files that went unchecked" would put
+            // a permanent floor of 2 on every clean report — noise that trains
+            // the reader to ignore the number, which is the one thing it cannot
+            // afford to be.
+            guard !url.pathComponents.contains(ManifestWriter.folderName) else { continue }
+            guard let expected = FileChecksumXattr.read(from: url) else { unstamped += 1; continue }
             items.append((url, relativePath(of: url, under: folder), expected))
         }
         items.sort { $0.rel < $1.rel }
@@ -209,7 +263,9 @@ enum VerifyEngine {
             }
             onProgress(VerifyProgress(total: items.count, checked: i + 1, currentFile: item.url.lastPathComponent))
         }
-        return .report(VerifyReport(verified: verified, issues: issues, manifestCount: 0))
+        return .report(VerifyReport(verified: verified, issues: issues, manifestCount: 0,
+                                    unreadableDirectories: unreadableDirectories.value,
+                                    unstamped: unstamped))
     }
 
     private static func relativePath(of url: URL, under root: URL) -> String {

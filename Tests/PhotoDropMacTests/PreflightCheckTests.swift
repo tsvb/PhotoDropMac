@@ -80,3 +80,32 @@ final class PreflightCheckTests: XCTestCase {
         XCTAssertNil(PreflightCheck.spaceWarning(plannedBytes: 1024, primary: ghost, archives: []))
     }
 }
+
+// MARK: - Topology (the GUI's copy of the engine's refusal)
+
+/// The engine refuses overlapping trees for every caller; this is the check that
+/// lets the GUI say so *before* the user presses Ingest rather than after the job
+/// halts. It is deliberately not a warning — see `PreflightCheck.topologyRefusal`.
+extension PreflightCheckTests {
+
+    func testTopologyRefusalNamesTheOverlap() throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreflightTopology-\(UUID().uuidString)", isDirectory: true)
+        let library = tmp.appendingPathComponent("Library", isDirectory: true)
+        let card = library.appendingPathComponent("card", isDirectory: true)
+        let mirror = tmp.appendingPathComponent("Mirror", isDirectory: true)
+        try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: mirror, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: tmp) }
+
+        let refusal = try XCTUnwrap(
+            PreflightCheck.topologyRefusal(source: card, primary: library, archives: []))
+        XCTAssertTrue(refusal.contains("is inside the destination"), refusal)
+
+        XCTAssertNil(PreflightCheck.topologyRefusal(source: nil, primary: library, archives: [mirror]),
+                     "disjoint destinations are the normal case")
+        XCTAssertNotNil(PreflightCheck.topologyRefusal(
+            source: nil, primary: library, archives: [library.appendingPathComponent("Backup")]),
+                        "a mirror inside the primary is not an independent copy")
+    }
+}

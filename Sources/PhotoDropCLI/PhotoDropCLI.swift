@@ -125,6 +125,18 @@ struct Ingest: AsyncParsableCommand {
         }
         let primaryURL = URL(fileURLWithPath: primaryPath, isDirectory: true)
 
+        // The destination must already exist. `FileCopier.copyAndHash` creates
+        // intermediate directories, so a typo'd `--to` silently materialized a
+        // whole new library tree and exited 0 with a manifest attesting to it —
+        // the photos were "ingested" into a folder nobody would look in again.
+        // Creating a library is a deliberate act; make the user do it.
+        var primaryIsDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: primaryURL.path, isDirectory: &primaryIsDirectory),
+              primaryIsDirectory.boolValue else {
+            CLIOutput.error("Destination “\(CLIOutput.safe(primaryURL.path))” does not exist. Create it first.")
+            throw ExitCode(2)
+        }
+
         // Every path here is deduped against the others and against the primary
         // (see ArchiveDestinations) — writing one root twice makes the second
         // pass collide with the first and reports a clean job as a total failure.
@@ -145,32 +157,63 @@ struct Ingest: AsyncParsableCommand {
             filename: fileTemplate ?? loadedPreset?.fileTemplate ?? NamingTemplate.default.filename
         )
         let doVerify = verify ?? loadedPreset?.verifyCopies ?? true
-        let doEject = eject ?? loadedPreset?.ejectAfterIngest ?? false
 
-        let bundles = AssetDiscovery.scan(root: cardURL)
+        // "Couldn't read the card" and "the card has no photos" used to be the
+        // same answer — an empty array, printed as *No recognized photos found*
+        // and exited 0. A wrapper script reading `$?` then treated a reader that
+        // hadn't finished mounting, or a typo'd path, as a completed ingest and
+        // released the card. Same rule the verify side already enforces with
+        // `.unreadableTarget`.
+        let outcome = AssetDiscovery.scanOutcome(root: cardURL)
+        guard case let .scanned(bundles, unreadableDirectories) = outcome else {
+            CLIOutput.error("Could not read “\(CLIOutput.safe(cardURL.path))” — it does not exist, is not a folder, or is not readable.")
+            throw ExitCode(2)
+        }
+        if unreadableDirectories > 0 {
+            CLIOutput.error("\(unreadableDirectories) folder(s) on the card could not be read; this ingest covers only what was visible. Not ejecting.")
+        }
         guard !bundles.isEmpty else {
             print("No recognized photos found on \(cardURL.path).")
             return
         }
 
+        // An incomplete scan never ejects: the card holds the only copy of
+        // whatever the walk couldn't see, and ejecting is the one step that puts
+        // it out of reach. (`IngestEngine` separately refuses to eject when files
+        // failed; this covers what was never planned in the first place.)
+        let doEject = (eject ?? loadedPreset?.ejectAfterIngest ?? false) && unreadableDirectories == 0
+
         let volumeID = (try? cardURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? cardURL.path
         let cardLabel = (try? cardURL.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? cardURL.lastPathComponent
         let showProgress = isatty(FileHandle.standardError.fileDescriptor) != 0
 
-        // Ctrl-C asks the engine to stop at the next file boundary instead of
-        // killing the process mid-write. Without this the copy was terminated
-        // partway through a file, leaving a partial in the library with no
-        // manifest entry and no checksum xattr — invisible to both verify modes.
-        // SIGINT is ignored at the POSIX level so the dispatch source sees it.
+        // A termination signal asks the engine to stop at the next file boundary
+        // instead of killing the process mid-write. Without this the copy is
+        // terminated partway through a file, leaving a partial in the library
+        // with no manifest entry and no checksum xattr — invisible to both verify
+        // modes, and on re-ingest its size differs so dedup misses it and the
+        // *real* file gets pushed to `…_1`.
+        //
+        // SIGTERM and SIGHUP are handled for exactly the same reason as SIGINT
+        // and were missed: closing the terminal window (SIGHUP), `pkill
+        // photodrop`, a launchd job hitting its exit timeout, and logging out all
+        // default to termination, and none of them run `FileCopier`'s Swift
+        // `catch` cleanup. Ctrl-C was the only one of the four anybody tested.
+        // Each is ignored at the POSIX level so its dispatch source sees it.
         let interrupted = InterruptFlag()
-        signal(SIGINT, SIG_IGN)
-        let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
-        sigintSource.setEventHandler {
-            interrupted.trip()
-            FileHandle.standardError.write(Data("\nInterrupted — finishing the current file, then writing the manifest…\n".utf8))
+        let stopSignals: [(Int32, String)] = [(SIGINT, "Interrupted"), (SIGTERM, "Terminating"), (SIGHUP, "Hung up")]
+        var signalSources: [DispatchSourceSignal] = []
+        for (number, label) in stopSignals {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
+            source.setEventHandler {
+                interrupted.trip()
+                FileHandle.standardError.write(Data("\n\(label) — finishing the current file, then writing the manifest…\n".utf8))
+            }
+            source.resume()
+            signalSources.append(source)
         }
-        sigintSource.resume()
-        defer { sigintSource.cancel() }
+        defer { for source in signalSources { source.cancel() } }
 
         let engine = IngestEngine(
             bundles: bundles, description: descriptionText, primaryRoot: primaryURL,
@@ -271,8 +314,16 @@ struct Verify: ParsableCommand {
         }
         guard report.total > 0 else {
             if xattr {
-                // The folder was readable and simply holds nothing stamped —
-                // genuinely not an error.
+                // The folder was readable and holds nothing stamped. That is only
+                // "genuinely not an error" when there was nothing there to stamp.
+                // A mirror on exFAT or SMB — where `setxattr` fails and the stamp
+                // silently no-ops — is *full of files* and carries no checksums,
+                // and this line was reporting it with exit 0. Say what was
+                // actually skipped, and refuse to call it a pass.
+                if report.unstamped > 0 || report.unreadableDirectories > 0 {
+                    CLIOutput.error(CLIOutput.xattrNothingChecked(at: url, report: report))
+                    throw ExitCode(1)
+                }
                 print("No checksummed (xattr) files found under \(CLIOutput.safe(url.path)).")
                 return
             }
@@ -418,17 +469,47 @@ enum CLIOutput {
         return s
     }
 
+    /// Why a `--xattr` run checked nothing, when there were files to check.
+    static func xattrNothingChecked(at url: URL, report r: VerifyReport) -> String {
+        var lines = ["✗ Nothing could be verified under \(safe(url.path))."]
+        if r.unstamped > 0 {
+            lines.append("  \(r.unstamped) file(s) carry no checksum attribute. Extended attributes are "
+                       + "stripped by exFAT/FAT and some network shares and sync tools, so this folder may "
+                       + "never have been stampable. Verify it against its manifest instead.")
+        }
+        if r.unreadableDirectories > 0 {
+            lines.append("  \(r.unreadableDirectories) folder(s) could not be read.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func verifyHuman(_ r: VerifyReport) -> String {
         let files = "\(r.total) file\(r.total == 1 ? "" : "s")"
         let scope = r.manifestCount == 0   // xattr mode doesn't use manifests
             ? files
             : "\(files) across \(r.manifestCount) manifest\(r.manifestCount == 1 ? "" : "s")"
         guard !r.allGood else {
-            return "✓ All \(scope) match their recorded checksums."
+            var ok = "✓ All \(scope) match their recorded checksums."
+            // Even a pass says what it did not look at. Without this line a
+            // library that lost 9,000 of 10,000 xattrs read as a clean bill of
+            // health over the 1,000 that survived.
+            if r.unstamped > 0 {
+                ok += "\n  \(r.unstamped) file(s) carry no checksum attribute and were not checked."
+            }
+            return ok
         }
         var headline = "✗ \(r.verified) of \(scope) verified — \(r.changed) changed, \(r.missing) missing, \(r.unreadable) unreadable"
         if r.conflicts > 0 { headline += ", \(r.conflicts) conflicting" }
         var lines = [headline + ":"]
+        // Anything the run did not examine is stated in the headline block, not
+        // buried: a count of files that were never opened is the difference
+        // between a verdict about the library and a verdict about a subset of it.
+        if r.unreadableDirectories > 0 {
+            lines.append("  \(r.unreadableDirectories) folder(s) could not be read and were not checked.")
+        }
+        if r.unstamped > 0 {
+            lines.append("  \(r.unstamped) file(s) carry no checksum attribute and were not checked.")
+        }
         for issue in r.issues {
             let tag: String
             switch issue.kind {
@@ -452,6 +533,10 @@ enum CLIOutput {
         struct ReportDTO: Encodable {
             let verified: Int, changed: Int, missing: Int, unreadable: Int, conflicts: Int
             let total: Int, manifestCount: Int, allGood: Bool
+            /// What the run could not examine. A consumer that only reads
+            /// `allGood` is entitled to assume the verdict covered everything;
+            /// these say how much of the target it actually reached.
+            let unreadableDirectories: Int, unstamped: Int
             let issues: [IssueDTO]
         }
         func kindString(_ k: VerifyIssue.Kind) -> String {
@@ -466,6 +551,7 @@ enum CLIOutput {
             verified: r.verified, changed: r.changed, missing: r.missing, unreadable: r.unreadable,
             conflicts: r.conflicts,
             total: r.total, manifestCount: r.manifestCount, allGood: r.allGood,
+            unreadableDirectories: r.unreadableDirectories, unstamped: r.unstamped,
             issues: r.issues.map { IssueDTO(kind: kindString($0.kind), name: safe($0.name), path: safe($0.path)) }
         )
         let encoder = JSONEncoder()

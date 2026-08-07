@@ -119,9 +119,24 @@ final class IngestEngine {
     private var filesSkipped = 0
     private var filesFailed = 0
     private var currentFile = ""
-    private var manifestEntries: [ManifestEntry] = []
+    /// Manifest entries **per destination root**, parallel to `allRoots`.
+    ///
+    /// Previously only the primary recorded entries, on the reasoning that a
+    /// mirror is byte-identical. It is byte-identical only when it was fully
+    /// written — and nothing recorded whether it was. A 3-destination job whose
+    /// NAS dropped offline at bundle 40 of 500 wrote one manifest saying
+    /// `partial: false` with `destinations: [lib, nas, ssd]` and 500 verified
+    /// entries, and no verification surface could contradict it: a mirror root has
+    /// no manifest folder, so `verify <mirror>` exits 2 "no manifest found", and
+    /// `verify --xattr` enumerates the files that *are* there and so can never
+    /// detect absence. Recording per root makes each destination self-describing
+    /// — a root's manifest lists exactly what landed *there*, by construction.
+    private var manifestEntriesByRoot: [[ManifestEntry]] = []
     private var logEntries: [LogEntry] = []
     private var lastProgressTick: Date
+    /// Roots whose volume rejected the checksum xattr, so the notice is logged
+    /// once per destination instead of once per file (or, as before, never).
+    private var xattrUnsupportedRoots = Set<Int>()
 
     init(bundles: [AssetBundle],
          description: String,
@@ -171,6 +186,25 @@ final class IngestEngine {
                      + "the same folder was listed more than once.")
         }
         totalBytes = perDestinationBytes * Int64(allRoots.count)
+        manifestEntriesByRoot = Array(repeating: [], count: allRoots.count)
+
+        // Refuse a topology where the trees overlap. `dedupedRoots` above collapses
+        // roots that are the *same* folder; this catches roots that *contain* one
+        // another, and a destination that contains the source. All three make the
+        // dedup index match files against copies of themselves, which reads as a
+        // clean all-duplicate job — nothing copied, nothing failed, no halt — and
+        // then ejects the card. See DestinationTopology for the measured cases.
+        // Checked here rather than only in the UI because the engine takes roots
+        // from any caller, and the CLI has no preflight at all.
+        let topologyProblems = DestinationTopology.check(
+            source: sourceMountPoint.map { URL(fileURLWithPath: $0, isDirectory: true) },
+            roots: allRoots
+        )
+        if let first = topologyProblems.first {
+            for problem in topologyProblems { log(.error, problem.message) }
+            log(.error, "Refusing the job: nothing was copied and the card was not ejected.")
+            return refusedResult(reason: first.shortReason, allRoots: allRoots)
+        }
 
         log(.info, "Starting ingest: \(bundles.count) bundles, \(totalBytes.formatted(.byteCount(style: .file)))\(allRoots.count > 1 ? " × \(allRoots.count) destinations" : "")")
         emitProgress(force: true)
@@ -240,9 +274,7 @@ final class IngestEngine {
             // already contained per destination.
             for d in allRoots.indices {
                 do {
-                    // Only the primary (index 0) records the manifest — the
-                    // mirrors are byte-identical.
-                    try await copyBundle(plansPerRoot[d][i], index: indexes[d], recordManifest: d == 0, root: allRoots[d])
+                    try await copyBundle(plansPerRoot[d][i], index: indexes[d], destination: d, root: allRoots[d])
                 } catch is CancellationError {
                     wasCancelled = true
                     break outer
@@ -304,8 +336,13 @@ final class IngestEngine {
             }
         }
 
+        // Ejecting is the one irreversible act in the job, and it was gated only
+        // on halt/cancel. A run where files *failed* — a full disk, a permission
+        // error, a mirror that vanished — ejected the card anyway, removing the
+        // only remaining copy of whatever didn't land from reach. Failures are
+        // recoverable exactly as long as the card is still mounted.
         var didEject = false
-        if haltReason == nil, !wasCancelled, ejectAfter, let mountPoint = sourceMountPoint {
+        if haltReason == nil, !wasCancelled, filesFailed == 0, ejectAfter, let mountPoint = sourceMountPoint {
             log(.info, "Ejecting card…")
             do {
                 try await DriveEjector.eject(mountPoint: mountPoint)
@@ -317,30 +354,53 @@ final class IngestEngine {
         }
 
         // Reported size = bytes that actually landed in the primary library (the
-        // sum of the manifest entries), not the progress counter `bytesCopied`,
+        // sum of its manifest entries), not the progress counter `bytesCopied`,
         // which counts every pass (≈N× under mirrors).
-        let landedBytes = manifestEntries.reduce(Int64(0)) { $0 + $1.bytes }
+        let landedBytes = manifestEntriesByRoot[0].reduce(Int64(0)) { $0 + $1.bytes }
 
-        let manifest = Manifest(
-            schema: Manifest.schemaID,
-            app: Manifest.appName,
-            createdAt: startedAt,
-            source: sourceMountPoint.map { URL(fileURLWithPath: $0).lastPathComponent },
-            primaryDestination: primaryRoot.path(percentEncoded: false),
-            archiveDestination: archiveRoots.first?.path(percentEncoded: false),
-            destinations: allRoots.map { $0.path(percentEncoded: false) },
-            verified: verify,
-            partial: wasCancelled || haltReason != nil,
-            filesCopied: filesCopied,
-            filesSkipped: filesSkipped,
-            filesFailed: filesFailed,
-            totalBytes: landedBytes,
-            elapsedSeconds: elapsed,
-            files: manifestEntries
-        )
-        let manifestURL = ManifestWriter.write(manifest, intoRoot: primaryRoot, stamp: startedAt)
+        // One manifest **per destination root**, each listing only what landed at
+        // that root and each marked `partial` on its own evidence. Writing a
+        // single manifest at the primary meant a mirror had no integrity record
+        // at all and no way to acquire one; see `manifestEntriesByRoot`.
+        //
+        // `partial` now also accounts for failures. It read
+        // `wasCancelled || haltReason != nil`, so a job that lost 300 files to an
+        // offline NAS recorded `partial: false` — a durable, confident claim of
+        // completeness over an incomplete tree.
+        var manifestURLs: [URL?] = []
+        for (d, root) in allRoots.enumerated() {
+            let entries = manifestEntriesByRoot[d]
+            let manifest = Manifest(
+                schema: Manifest.schemaID,
+                app: Manifest.appName,
+                createdAt: startedAt,
+                source: sourceMountPoint.map { URL(fileURLWithPath: $0).lastPathComponent },
+                // Each manifest describes the root it sits in, so `heal` reading a
+                // mirror's manifest treats that mirror as the library and the
+                // other roots as its recovery sources.
+                primaryDestination: root.path(percentEncoded: false),
+                archiveDestination: allRoots.first { $0 != root }?.path(percentEncoded: false),
+                destinations: allRoots.map { $0.path(percentEncoded: false) },
+                verified: verify,
+                partial: wasCancelled || haltReason != nil || failuresByRoot[d] > 0,
+                // Counts derived from *this root's* entries, so a manifest never
+                // describes work done somewhere else. The job-wide totals stay in
+                // `CopyResult`, where they belong.
+                filesCopied: entries.lazy.filter { $0.status != "skipped" }.count,
+                filesSkipped: entries.lazy.filter { $0.status == "skipped" }.count,
+                filesFailed: failuresByRoot[d],
+                totalBytes: entries.reduce(Int64(0)) { $0 + $1.bytes },
+                elapsedSeconds: elapsed,
+                files: entries
+            )
+            manifestURLs.append(ManifestWriter.write(manifest, intoRoot: root, stamp: startedAt))
+        }
+        let manifestURL = manifestURLs.first ?? nil
         if manifestURL != nil {
-            log(.info, "Verification manifest written to “\(ManifestWriter.folderName)”.")
+            let written = manifestURLs.compactMap { $0 }.count
+            log(.info, written > 1
+                ? "Verification manifests written to “\(ManifestWriter.folderName)” at \(written) destinations."
+                : "Verification manifest written to “\(ManifestWriter.folderName)”.")
         }
 
         let logURL = JobLogger.write(
@@ -383,6 +443,40 @@ final class IngestEngine {
         )
     }
 
+    /// A job refused before any file was touched: halted, nothing copied, no
+    /// manifest. Deliberately writes **no** manifest — a manifest is a receipt for
+    /// bytes that landed, and refusing means none did; writing one into a root
+    /// that overlaps the source would also plant a record inside the card.
+    /// The log *is* written, so the refusal is in the audit trail.
+    private func refusedResult(reason: String, allRoots: [URL]) -> CopyResult {
+        let elapsed = Date().timeIntervalSince(startedAt)
+        let logURL = JobLogger.write(
+            entries: logEntries,
+            startedAt: startedAt,
+            elapsedSeconds: elapsed,
+            primaryDestination: primaryRoot,
+            archiveDestinations: archiveRoots,
+            baseName: nil,
+            directory: logDirectory
+        )
+        return CopyResult(
+            bundleCount: totalBundles,
+            filesCopied: 0,
+            filesSkipped: 0,
+            filesFailed: 0,
+            failuresByDestination: [:],
+            totalBytes: 0,
+            elapsedSeconds: elapsed,
+            primaryDestination: primaryRoot,
+            logURL: logURL,
+            manifestURL: nil,
+            wasEjected: false,
+            halted: true,
+            haltReason: reason,
+            cancelled: false
+        )
+    }
+
     /// `absolute` expressed relative to `root`, or nil if it isn't under it.
     /// Purely lexical: both strings are built from the same root spelling by
     /// `destinationDirectory` / `existingFilePaths`, and consulting the
@@ -420,7 +514,7 @@ final class IngestEngine {
 
     // MARK: - Per-bundle copy (all-or-nothing, with rollback)
 
-    private func copyBundle(_ plan: BundlePlan, index: DestinationIndex, recordManifest: Bool, root: URL) async throws {
+    private func copyBundle(_ plan: BundlePlan, index: DestinationIndex, destination d: Int, root: URL) async throws {
         var writtenFiles: [URL] = []
         // Counts + manifest entries are accumulated locally and committed to the
         // job totals only once every file in the bundle has landed (below), so a
@@ -448,20 +542,18 @@ final class IngestEngine {
                 if let existingDuplicate {
                     log(.skipped, "\(file.source.lastPathComponent) — already present as \(existingDuplicate.url.lastPathComponent)")
                     skippedInBundle += 1
-                    if recordManifest {
-                        bundleManifest.append(ManifestEntry(
-                            name: file.source.lastPathComponent,
-                            path: relativePath(of: existingDuplicate.url, under: root),
-                            bytes: file.size,
-                            // The digest the dedup match was *made* on, so a
-                            // re-ingest of an already-complete card still writes
-                            // a manifest that can be verified. Recording nil here
-                            // meant `verify` skipped the entry entirely and
-                            // reported success over zero files.
-                            xxhash64: String(format: "%016llx", existingDuplicate.hash),
-                            status: "skipped"
-                        ))
-                    }
+                    bundleManifest.append(ManifestEntry(
+                        name: file.source.lastPathComponent,
+                        path: relativePath(of: existingDuplicate.url, under: root),
+                        bytes: file.size,
+                        // The digest the dedup match was *made* on, so a
+                        // re-ingest of an already-complete card still writes
+                        // a manifest that can be verified. Recording nil here
+                        // meant `verify` skipped the entry entirely and
+                        // reported success over zero files.
+                        xxhash64: String(format: "%016llx", existingDuplicate.hash),
+                        status: "skipped"
+                    ))
                     bytesCopied += file.size   // count skip bytes so the bar fills smoothly
                     emitProgress()
                     continue
@@ -490,18 +582,24 @@ final class IngestEngine {
                 await cache.recordDestination(url: dest, hash: copyHash)
                 // Stamp the digest into an xattr so the file carries its own
                 // checksum (survives a library reorg / a lost manifest).
-                // Best-effort — silently no-ops on volumes without xattr support.
-                FileChecksumXattr.stamp(copyHash, on: dest)
-
-                if recordManifest {
-                    bundleManifest.append(ManifestEntry(
-                        name: file.source.lastPathComponent,
-                        path: relativePath(of: dest, under: root),
-                        bytes: file.size,
-                        xxhash64: String(format: "%016llx", copyHash),
-                        status: verify ? "verified" : "copied"
-                    ))
+                // Best-effort by design — exFAT, FAT and some SMB shares have
+                // nowhere to put it. The *result* used to be discarded, which
+                // made "this whole mirror carries no checksums" indistinguishable
+                // from success; say it once per root instead, since `verify
+                // --xattr` is otherwise the only tool that would have noticed and
+                // it reports an unstamped tree as nothing to check.
+                if !FileChecksumXattr.stamp(copyHash, on: dest), xattrUnsupportedRoots.insert(d).inserted {
+                    log(.info, rootLabel(d, of: [primaryRoot] + archiveRoots)
+                             + "This volume does not support checksum attributes; the manifest is the record for it.")
                 }
+
+                bundleManifest.append(ManifestEntry(
+                    name: file.source.lastPathComponent,
+                    path: relativePath(of: dest, under: root),
+                    bytes: file.size,
+                    xxhash64: String(format: "%016llx", copyHash),
+                    status: verify ? "verified" : "copied"
+                ))
                 copiedInBundle += 1
             }
         } catch {
@@ -515,9 +613,12 @@ final class IngestEngine {
         }
 
         // Bundle fully landed: commit its tallies and manifest entries now.
+        // `filesCopied`/`filesSkipped` count every (file × destination) write, as
+        // they always have; the per-destination breakdown lives in
+        // `manifestEntriesByRoot`, which each root's own manifest is derived from.
         filesCopied += copiedInBundle
         filesSkipped += skippedInBundle
-        if recordManifest { manifestEntries.append(contentsOf: bundleManifest) }
+        manifestEntriesByRoot[d].append(contentsOf: bundleManifest)
     }
 
     // MARK: - Progress / log

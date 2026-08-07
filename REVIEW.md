@@ -417,3 +417,112 @@ block the main thread on two `waitUntilExit()` calls.
 5. **T2-2**, **T2-3**, **T2-4**, **T2-5** — contained, and each has a probe ready to promote.
 6. Tier 4 docs in one pass; the CLAUDE.md link rot and the `Copier` section are actively
    misleading to anyone (or any agent) working from them.
+
+---
+
+# Third pass — topology, mirrors, and reporting (2026-08-07)
+
+Run after Tiers 1–3 closed, aimed only at what the earlier passes missed. Three
+disjoint sweeps (pure transforms, filesystem topology, lifecycle/CLI), every claim
+re-verified against source. `HANDOFF.md` §5–§7 items are unaffected and remain open.
+
+The pass named a second characteristic failure mode, alongside §2's *a correct
+mechanism applied at some sinks and not others*:
+
+> **Every guard protects one destination tree in isolation. Nothing validated the
+> relationship *between* the trees — source vs destination, or destination vs
+> destination — and nothing could verify a mirror at all.**
+
+## Tier A — data safety · **fixed**
+
+- **A1 · A destination may contain the source, and the card is then ejected.** No
+  check anywhere. `findDuplicate` matches content anywhere under a root, so every
+  file matched itself: 0 copied, 0 failed, no halt, a manifest pointing at the
+  *source* files, CLI exit 0, card ejected. → `DestinationTopology`, refused.
+- **A2 · Nested destination roots silently defeat mirroring.** `dedupedRoots`
+  compares dev+inode, so `/Vol/X` and `/Vol/X/Lib` are "different folders" but not
+  independent trees. Mirror-as-parent: the mirror stays empty forever, reporting
+  success. Mirror-as-child: the primary write is skipped in favour of the backup
+  copy and the manifest re-points the photo into it. → refused.
+- **A3 · Case-only collisions escaped `_1`.** APFS is case-insensitive;
+  `taken` compared exact strings. `IMG_0001.JPG` + `img_0001.jpg` → `O_EXCL`
+  refuses, bundle fails and rolls back on every run, forever. Intra-bundle
+  collisions were structurally invisible (`taken.insert` runs after `plan`
+  returns), and could not be fixed inside the `_n` loop without hanging it.
+  → `CopyPlan.collisionKey` + `separateInternalCollisions`.
+- **A4 · Mirrors had no integrity record and the manifest attested to them
+  anyway.** `partial` ignored `filesFailed`; entries were primary-only; mirrors
+  had no manifest folder, so `verify <mirror>` exited 2 and `verify --xattr`
+  cannot detect absence. → one manifest per root, `partial` on per-root failure,
+  xattr-stamp failure logged once per root.
+- **A5 · `photodrop ingest` exited 0 when the card was never read**, and a typo'd
+  `--to` minted a whole library tree. → `ScanOutcome`; `--to` must exist.
+- **A6 · Only SIGINT was a graceful stop.** SIGTERM/SIGHUP/logout/launchd-timeout
+  all left an orphan partial invisible to both verify modes. → all three handled.
+
+## Tier B — reporting integrity · **fixed**
+
+B1 xattr walk had no `errorHandler` (unreadable subtree → `✓ All N match`, exit 0) ·
+B2 unstamped files never counted (a stripped library read as a pass; a fully
+unstamped exFAT/SMB mirror read as "nothing to check", exit 0) ·
+B3 a directory-read failure was persisted as an *empty* snapshot **with the real
+mtime**, so one transient EIO hid a day-folder from dedup forever ·
+B4 unknown `{Token}`s went to `DateFormatter` (`{Descripton}` → `14854052026`,
+`{Wedding}` → `5528`) and never dropped their optional group ·
+B5 `ExifReader.parse` returned nil for the DST spring-forward hour, filing an hour
+of shooting under the mtime date ·
+B6 `sanitize` passed `? * < > | "` and trailing dots, which every SMB/exFAT mirror
+rejects ·
+B7 `Copier`'s progress/log hops had no generation guard and `reset()` didn't retire
+the flag, so a superseded job's lines landed in the next job's log and the panel
+reverted on its own ·
+B8 a card yanked mid-scan produced a silently truncated plan.
+
+242 tests, 0 failures (was 204). Each fix carries a regression test stating its
+threat model and measured before-state.
+
+## Tier C — recorded, not fixed
+
+- `xxHash64SelfCheck()` has **zero callers** and there is no `HasherTests`; every
+  existing test uses the hasher as a self-consistent oracle, which passes
+  identically if the algorithm is wrong. (The vectors themselves were verified
+  correct this pass against `xxh64sum`, including all 1001 pairwise streaming
+  splits — so this is a coverage gap, not a live bug.)
+- `ScannedPhoto.dateSource` is computed on every scan and read nowhere — the one
+  signal that would have exposed B5 to a user.
+- One sidecar can attach to two primaries (`CR2` + `DNG` + `xmp`), and
+  `classifyCompanion` matches by `hasPrefix` rather than exact stem, so
+  `IMG_1234.v2.xmp` renames onto the same path as `IMG_1234.xmp`. (A3's
+  intra-bundle fix contains the damage; the classification itself is unchanged.)
+- `heal --script` has no library containment, and returns 2 instead of 1 when the
+  script path exists on a damaged library — blurring the exit-code distinction
+  `ScheduledVerification` branches on.
+- `HashCache` is unbounded and is decoded synchronously on the main actor at every
+  window open (`Copier.init` → `MainView`'s `@State`).
+- A second Ctrl-C does nothing, and SIGINT stays ignored while the post-ingest hook
+  runs — with S-7's unbounded `ChildProcess`, a hook blocking on stdin is
+  un-interruptible.
+- `presets.json` is unsigned and `apply(to:)` writes destinations and templates
+  straight into `UserDefaults` — a persistence primitive, LOW only because no
+  import/share UI exists.
+- ArgumentParser's exit **64** (usage error) is undocumented alongside 0/1/2.
+- Planning is quadratic and yields `…_797.CR2` names when the filename template
+  has no per-file token (measured: 800 bundles, 1.95 s).
+- `EmbeddedCLI`, `IngestPlanner` and `DriveWatcher` have zero test references.
+
+## Checked and correct — do not re-spend the budget
+
+The XXH64 algorithm and all 11 vectors (verified against `xxh64sum`) ·
+NFC/NFD handling in `taken` and `hasPrefix` (correct via Swift's
+canonical-equivalence semantics) · `truncatedToByteLimit` never splits a scalar ·
+`PreflightCheck` sums per *volume* across mirrors, deterministically ·
+`PhotoDrop Manifests/` is walked by the dedup index but can never yield a false
+duplicate · `runXattr`'s `isRegularFile` guard has the same lstat semantics as
+`AssetDiscovery`, and `.skipsPackageDescendants` is set ·
+`HashCache` fails closed on a corrupt store and writes atomically ·
+`DestinationIndex` staleness cannot produce a false duplicate (`findDuplicate`
+re-hashes the candidate's real bytes) · `--folder-template ../../../etc` collapses
+to a single `etc` component · the SIGINT mechanism itself (`SIG_IGN` +
+`DispatchSourceSignal` + locked flag) is the correct async-signal-safe shape ·
+`DestinationIndex.fullWalk` has no error handler **deliberately** — a missed
+directory costs a re-copy, never a false duplicate.

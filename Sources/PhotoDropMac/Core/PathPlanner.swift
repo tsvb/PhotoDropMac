@@ -96,19 +96,34 @@ enum PathPlanner {
     /// creation and abort the whole bundle, so we truncate to fit instead.
     static let maxComponentBytes = 255
 
+    /// Characters replaced with `-` in any rendered path component.
+    ///
+    /// `/ \ :` are the POSIX/HFS-illegal set this always handled. The rest —
+    /// `? * < > | "` — are legal on APFS and **rejected by SMB, exFAT and FAT**,
+    /// which are precisely the filesystems N-way mirroring exists to write to. A
+    /// description as ordinary as `Trip?` produced a folder the primary library
+    /// accepted and every mirror refused at `mkdir`, surfacing to the user as
+    /// "mirror 2: 500 failures" with nothing explaining why. A name has to be
+    /// writable at *every* destination or the mirror silently stops being one.
+    private static let illegalComponentCharacters: Set<Character> = ["/", "\\", ":", "?", "*", "<", ">", "|", "\""]
+
     // Light folder-name sanitization: strip whitespace, collapse spaces
-    // to underscores, replace characters that can't sit in a POSIX path
-    // component, neutralize "."/".."/hidden names, and cap the length to
-    // what the filesystem allows.
+    // to underscores, replace characters that can't sit in a path component on
+    // any destination filesystem, neutralize "."/".."/hidden names, and cap the
+    // length to what the filesystem allows.
     static func sanitize(_ s: String) -> String {
-        var out = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        out = out.replacingOccurrences(of: "/", with: "-")
-        out = out.replacingOccurrences(of: "\\", with: "-")
-        out = out.replacingOccurrences(of: ":", with: "-")
+        var out = String(s.trimmingCharacters(in: .whitespacesAndNewlines).map {
+            illegalComponentCharacters.contains($0) ? "-" : $0
+        })
         out = out.replacingOccurrences(of: " ", with: "_")
         // Strip leading dots so a rendered component can never become "." or
         // ".." (a path-traversal / wrong-directory write) or a hidden entry.
         out = String(out.drop(while: { $0 == "." }))
+        // Trailing dots are legal on APFS and silently stripped by SMB/exFAT —
+        // same class as the characters above: the mirror ends up with a
+        // differently-named folder than the library, so the two stop agreeing on
+        // where a photo lives. Trailing spaces travel equally badly.
+        out = String(out.reversed().drop(while: { $0 == "." || $0 == " " }).reversed())
         return truncatedToByteLimit(out, maxComponentBytes)
     }
 

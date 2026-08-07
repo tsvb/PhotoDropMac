@@ -50,25 +50,82 @@ private struct FileEntry {
     let ext: String
 }
 
+/// Tally shared with the enumerator's error handler. A class (not a captured
+/// `var`) because the handler is escaping; locked because `FileManager` gives no
+/// guarantee about which thread it calls it on.
+private final class UnreadableCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+/// What a scan found — or why it found nothing.
+///
+/// `scan` used to answer `[]` for a card that does not exist, is not mounted yet,
+/// or cannot be read, which is the same answer it gives for a card with no
+/// photos. The CLI printed *No recognized photos found* and exited **0**, so a
+/// nightly wrapper reading `$?` treated an unmounted reader — or a typo'd
+/// `/Volumes/CRAD` — as a successful ingest and released the card. This is the
+/// same distinction `XattrOutcome` exists to make on the verify side: "couldn't
+/// read the target" must never be reported as "nothing there".
+///
+/// `unreadableDirectories` carries the partial-failure case the enumerator used
+/// to swallow silently: a card yanked (or a directory returning EIO) *during*
+/// enumeration simply yielded fewer bundles, so a 500-photo card could plan 137
+/// files, report "✓ Ingest complete", and write a manifest attesting to the 137.
+enum ScanOutcome: Sendable {
+    case unreadableSource
+    case scanned(bundles: [AssetBundle], unreadableDirectories: Int)
+
+    var bundles: [AssetBundle] {
+        if case let .scanned(bundles, _) = self { return bundles }
+        return []
+    }
+    var isComplete: Bool {
+        if case let .scanned(_, unreadable) = self { return unreadable == 0 }
+        return false
+    }
+}
+
 enum AssetDiscovery {
+    /// Bundles only, for the many callers that don't distinguish the failure
+    /// modes. Prefer `scanOutcome` anywhere the answer drives an exit code, an
+    /// eject, or a claim of completeness.
+    static func scan(root: URL) -> [AssetBundle] {
+        scanOutcome(root: root).bundles
+    }
+
     // Two-pass discovery:
     //   1. RAW primaries and their same-directory companions.
     //   2. Standalone JPEGs — JPEGs not already claimed as a JpegPair
     //      companion by a RAW in the same directory.
     // Orphan sidecars (a .dop with no primary) are silently dropped.
-    static func scan(root: URL) -> [AssetBundle] {
+    static func scanOutcome(root: URL) -> ScanOutcome {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [
             .isRegularFileKey,
             .fileSizeKey,
             .contentModificationDateKey,
         ]
+
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue,
+              fm.isReadableFile(atPath: root.path) else {
+            return .unreadableSource
+        }
+
+        // Count directories the walk could not open instead of dropping the
+        // error. Without a handler the enumerator skips them silently and the
+        // scan just comes back short — indistinguishable from a smaller card.
+        let unreadable = UnreadableCounter()
         guard let enumerator = fm.enumerator(
             at: root,
             includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, _ in unreadable.increment(); return true }
         ) else {
-            return []
+            return .unreadableSource
         }
 
         // All files that could matter (primary or sidecar), grouped by
@@ -128,7 +185,7 @@ enum AssetDiscovery {
             }
         }
 
-        return bundles
+        return .scanned(bundles: bundles, unreadableDirectories: unreadable.value)
     }
 
     // Build a bundle for `primary`, pulling every sibling that

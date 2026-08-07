@@ -133,9 +133,72 @@ enum TemplateRenderer {
         case "OriginalStem": return (context.originalStem, context.originalStem.isEmpty)
         case "CardLabel":    return (context.cardLabel, context.cardLabel.isEmpty)
         default:
-            // Anything else is treated as a date-format pattern.
+            // A token that isn't a known name is a date-format pattern — but only
+            // if it actually looks like one.
+            //
+            // Every unrecognized token used to be handed straight to
+            // `DateFormatter`, which treats most ASCII letters as reserved
+            // pattern characters and answers with digits. Measured:
+            // `{Descripton}` (one missing `i`) rendered `14854052026`,
+            // `{Description }` with a trailing space the same, `{Wedding}` → `5528`,
+            // `{Shoot}` → `07`. A typo in the one field whose whole job is to name
+            // the user's folders produced plausible-looking garbage in every
+            // folder name on the card, with no error anywhere.
+            //
+            // It also returned `isNamedEmpty: false` unconditionally, so tokens
+            // that rendered *empty* (`{Camera}`, `{Trip}`) didn't drop their
+            // optional group either: `[_{Camera}]` left a bare `_` on every folder.
+            guard isDatePattern(token) else { return ("", true) }
             return (Self.format(context.date, pattern: token), false)
         }
+    }
+
+    /// The date-format characters this app supports, plus the punctuation and
+    /// literals that can sit between them.
+    ///
+    /// A whitelist rather than a blacklist: `DateFormatter` reserves nearly every
+    /// ASCII letter, so "which letters are safe to pass through" is a far shorter
+    /// and far more stable list than "which letters mean something surprising".
+    private static let datePatternLetters = Set("yYMdDHhmsSaEZzGwWFkKquLcvVxX")
+
+    /// True when `token` is plausibly a date-format pattern. Quoted literals
+    /// (`'at'`) are accepted wholesale, matching `DateFormatter`'s own syntax.
+    static func isDatePattern(_ token: String) -> Bool {
+        guard !token.isEmpty else { return false }
+        var inQuote = false
+        var sawPatternLetter = false
+        for ch in token {
+            if ch == "'" { inQuote.toggle(); continue }
+            if inQuote { continue }
+            if ch.isLetter {
+                guard datePatternLetters.contains(ch) else { return false }
+                sawPatternLetter = true
+            }
+        }
+        // A token of pure punctuation (`{-}`) is not a date pattern either; it
+        // would render as itself, which the user can write literally.
+        return sawPatternLetter && !inQuote
+    }
+
+    /// Tokens in `template` that resolve to neither a known name nor a date
+    /// pattern — what Settings shows the user so a typo is visible before it
+    /// names a thousand folders.
+    static func unknownTokens(in template: String) -> [String] {
+        var found: [String] = []
+        var index = template.startIndex
+        while index < template.endIndex {
+            guard template[index] == "{", let close = template[index...].firstIndex(of: "}") else {
+                index = template.index(after: index)
+                continue
+            }
+            let token = String(template[template.index(after: index)..<close])
+            let known = ["Description", "OriginalName", "OriginalStem", "CardLabel"]
+            if !known.contains(token), !isDatePattern(token), !found.contains(token) {
+                found.append(token)
+            }
+            index = template.index(after: close)
+        }
+        return found
     }
 
     /// Formats `date` with a cached `DateFormatter` for `pattern`.

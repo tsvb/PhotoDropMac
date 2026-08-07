@@ -95,6 +95,16 @@ final class Copier {
     }
 
     func reset() {
+        // Retire the current generation, not just the visible state.
+        //
+        // `reset()` used to leave `cancelFlag` intact while dropping `task`, so
+        // the in-flight run's completion guard (`self.cancelFlag === flag`) still
+        // matched: the engine finished its tail — rollback, fsync, manifest, log —
+        // and then set `state = .cancelled(result)`, making the app jump from an
+        // idle screen back to the "Ingest cancelled" panel seconds after the user
+        // dismissed it, with no user action in between.
+        cancelFlag.cancel()
+        cancelFlag = CancellationFlag()
         state = .idle
         log = []
         task = nil
@@ -143,8 +153,16 @@ final class Copier {
                     template: template, cardLabel: cardLabel, cache: cache, indexStoreURL: indexStoreURL,
                     logDirectory: logDirectory,
                     isCancelled: { flag.isCancelled },
-                    onProgress: { progress in Task { @MainActor [weak self] in self?.applyProgress(progress) } },
-                    onLog: { entry in Task { @MainActor [weak self] in self?.appendLogEntry(entry) } }
+                    // Both hops carry the same generation check as the result
+                    // path below. Without it, a superseded run's tail lines —
+                    // "Ingest cancelled after 12.3s…", "Complete: 40 copied" —
+                    // arrived *after* `log.removeAll()` and appended into the next
+                    // job's visible log, and `applyProgress` overwrote the new
+                    // job's counters. The log is the surface this app asks the
+                    // user to trust about what happened to their photos; it may
+                    // not carry another job's lines.
+                    onProgress: { progress in Task { @MainActor [weak self] in self?.applyProgress(progress, from: flag) } },
+                    onLog: { entry in Task { @MainActor [weak self] in self?.appendLogEntry(entry, from: flag) } }
                 )
                 return await engine.run()
             }.value
@@ -169,13 +187,15 @@ final class Copier {
         }
     }
 
-    private func applyProgress(_ progress: CopyProgress) {
+    private func applyProgress(_ progress: CopyProgress, from flag: CancellationFlag) {
+        guard cancelFlag === flag else { return }
         verifiedBundles = progress.verifiedBundles
         completedBundles = progress.completedBundles
         if case .running = state { state = .running(progress) }
     }
 
-    private func appendLogEntry(_ entry: LogEntry) {
+    private func appendLogEntry(_ entry: LogEntry, from flag: CancellationFlag) {
+        guard cancelFlag === flag else { return }
         log.append(entry)
         // Cap the in-memory log to keep the UI snappy; the on-disk log has all.
         if log.count > 500 { log.removeFirst(log.count - 500) }

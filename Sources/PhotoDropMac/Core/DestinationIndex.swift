@@ -108,6 +108,12 @@ struct DestinationIndex: Sendable {
 
     // MARK: - Full walk (non-native FS; nothing persisted)
 
+    // No error handler here, deliberately, unlike the verify walk: a directory
+    // this walk misses is simply absent from the dedup index, which costs a
+    // re-copy and can never produce a *false* duplicate (`findDuplicate` still
+    // re-hashes the candidate's real bytes). Missing dedup is the safe direction;
+    // a verification walk that skips a subtree in silence is not, which is why
+    // `VerifyEngine.runXattr` counts what it couldn't open and this doesn't.
     private static func fullWalk(at root: URL) -> [Int64: [URL]] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
@@ -180,7 +186,17 @@ struct DestinationIndex: Sendable {
             includingPropertiesForKeys: scanKeyArray,
             options: [.skipsHiddenFiles]
         ) else {
-            fresh[dir.path] = DirSnapshot(mtime: mtime ?? 0, files: [:], subdirs: [])
+            // Record **nothing** for a directory we could not list, so the next
+            // build re-lists it.
+            //
+            // This used to store an empty snapshot carrying the directory's *real*
+            // mtime — `directoryMTime` uses `stat`, which succeeds even when the
+            // directory is unreadable. The fast path above then matched that mtime
+            // forever, so one transient EIO / EACCES / NAS timeout made a
+            // day-folder permanently invisible to dedup: every later re-ingest of
+            // that card re-copied its photos as `_1` variants, and nothing could
+            // heal it because a read failure never bumps mtime. Omitting the entry
+            // fails open — a re-walk costs time, a false "empty" costs duplicates.
             return
         }
 

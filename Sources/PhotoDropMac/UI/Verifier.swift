@@ -35,6 +35,10 @@ final class Verifier {
     }
 
     func reset() {
+        // Retire the generation too, so an in-flight run can't repaint the UI
+        // after the user has dismissed it — see `Copier.reset`.
+        cancelFlag.cancel()
+        cancelFlag = CancellationFlag()
         state = .idle
         task = nil
     }
@@ -54,7 +58,11 @@ final class Verifier {
                     guard progress.checked == progress.total || now.timeIntervalSince(lastTick) > 0.1 else { return }
                     lastTick = now
                     Task { @MainActor [weak self] in
-                        guard let self, case .running = self.state else { return }
+                        // Guard on flag *identity*, not just `.running`: a
+                        // superseded verify is still `.running` (the new one put
+                        // it there), so its ticks were overwriting the new run's
+                        // progress until its current file finished hashing.
+                        guard let self, self.cancelFlag === flag, case .running = self.state else { return }
                         self.state = .running(progress)
                     }
                 }

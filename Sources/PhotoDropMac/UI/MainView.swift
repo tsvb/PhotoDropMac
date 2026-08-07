@@ -28,6 +28,8 @@ struct MainView: View {
     @State private var deselectedIDs: Set<AssetBundle.ID> = []
     @State private var thumbnailLoader = ThumbnailLoader()
     @State private var preflightMessage: String?
+    /// Separate from `preflightMessage` because this one has no "Ingest Anyway".
+    @State private var topologyRefusal: String?
 
     private var source: DetectedDrive? {
         guard let id = selectedSourceID else { return nil }
@@ -174,6 +176,20 @@ struct MainView: View {
         } message: { message in
             Text(message)
         }
+        // No "Ingest Anyway": with overlapping trees there is no version of
+        // proceeding that copies anything.
+        .alert(
+            "These folders overlap",
+            isPresented: Binding(
+                get: { topologyRefusal != nil },
+                set: { if !$0 { topologyRefusal = nil } }
+            ),
+            presenting: topologyRefusal
+        ) { _ in
+            Button("OK", role: .cancel) { topologyRefusal = nil }
+        } message: { message in
+            Text(message + "\n\nChoose a destination outside the card, and destinations that don’t contain one another.")
+        }
     }
 
     private var canStartIngest: Bool {
@@ -197,6 +213,20 @@ struct MainView: View {
         let groups = selectedYearGroups()
         guard !groups.isEmpty else { return }
         let primaryURL = URL(fileURLWithPath: primaryDest, isDirectory: true)
+
+        // Overlapping trees are refused, with no "Ingest Anyway": the job would
+        // copy nothing, report success, and eject the card. Checked here so the
+        // user hears it before pressing Ingest; `IngestEngine` enforces it again
+        // for every other caller.
+        if let refusal = PreflightCheck.topologyRefusal(
+            source: source.map { URL(fileURLWithPath: $0.mountPoint, isDirectory: true) },
+            primary: primaryURL,
+            archives: archiveDestinations
+        ) {
+            topologyRefusal = refusal
+            return
+        }
+
         // Preflight on the *selected* bytes: warn (don't hard-block) if a
         // destination volume looks too full. The user can still proceed —
         // dedup may make it fit.
@@ -220,7 +250,10 @@ struct MainView: View {
             archiveDestinations: archiveDestinations,
             description: descriptionText,
             verify: verifyCopies,
-            ejectAfter: ejectAfterIngest,
+            // Never eject on the strength of a partial view of the card. If the
+            // scan couldn't open every folder, what it missed exists *only* on the
+            // card, and ejecting is the step that puts it out of reach.
+            ejectAfter: ejectAfterIngest && planner.scanWasComplete,
             sourceMountPoint: source.mountPoint,
             sourceVolumeID: source.id,
             template: template,
@@ -453,6 +486,14 @@ struct DetailPane: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if planner.sourceUnreadable {
+            // Distinct from "no photos found": that reads as a fact about the
+            // card, and the user acts on it by reformatting or moving on.
+            ContentUnavailableView(
+                "Card could not be read",
+                systemImage: "exclamationmark.triangle.fill",
+                description: Text("This card is not readable — it may have been removed, or the volume may be damaged. Nothing was scanned.")
+            )
         } else if planner.yearGroups.isEmpty {
             ContentUnavailableView(
                 "No photos found",
@@ -460,12 +501,46 @@ struct DetailPane: View {
                 description: Text("This card has no recognized photo files.")
             )
         } else {
-            switch previewMode {
-            case .tree:
-                PreviewTree(yearGroups: planner.yearGroups)
-            case .grid:
-                ContactSheet(yearGroups: planner.yearGroups, deselectedIDs: $deselectedIDs, loader: loader)
+            VStack(spacing: 0) {
+                // A partial scan is stated where the file list is, not only in the
+                // log: the count beside the Ingest button is what the user checks
+                // their card against, and it was silently short.
+                if planner.unreadableDirectories > 0 {
+                    IncompleteScanBanner(count: planner.unreadableDirectories)
+                }
+                switch previewMode {
+                case .tree:
+                    PreviewTree(yearGroups: planner.yearGroups)
+                case .grid:
+                    ContactSheet(yearGroups: planner.yearGroups, deselectedIDs: $deselectedIDs, loader: loader)
+                }
             }
         }
+    }
+}
+
+/// Shown when the card walk couldn't open every folder. Says plainly that the
+/// list below is incomplete and that the card will not be ejected, because the
+/// combination of an incomplete list and an ejected card is how photos get lost.
+private struct IncompleteScanBanner: View {
+    let count: Int
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .symbolRenderingMode(.multicolor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(count) folder\(count == 1 ? "" : "s") on this card couldn’t be read")
+                    .fontWeight(.semibold)
+                Text("The list below may not be everything on the card. The card won’t be ejected after this ingest.")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.yellow.opacity(0.15))
+        .accessibilityElement(children: .combine)
     }
 }

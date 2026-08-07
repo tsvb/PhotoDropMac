@@ -274,6 +274,22 @@ struct NamingPreferences: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+
+                // A token that is neither a known name nor a date pattern is a
+                // typo, and the preview alone doesn't reveal it: an unknown token
+                // now renders *empty*, which reads as a template that simply
+                // doesn't include that part. Name it.
+                if !unknownTokens.isEmpty {
+                    Label {
+                        Text("Not a known token: \(unknownTokens.map { "{\($0)}" }.joined(separator: ", ")). "
+                           + "It will render as nothing. Check the token reference below.")
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .symbolRenderingMode(.multicolor)
+                    }
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Section {
@@ -295,6 +311,10 @@ struct NamingPreferences: View {
     // engine would. Shared with the inspector's naming preview.
     private var previewPath: String {
         NamingTemplate.samplePath(folder: folder, filename: filename)
+    }
+
+    private var unknownTokens: [String] {
+        TemplateRenderer.unknownTokens(in: folder) + TemplateRenderer.unknownTokens(in: filename)
     }
 }
 

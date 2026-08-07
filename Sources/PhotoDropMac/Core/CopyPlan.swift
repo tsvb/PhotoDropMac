@@ -51,17 +51,43 @@ enum CopyPlan {
         cardLabel: String,
         existingPaths: Set<String> = []
     ) -> [BundlePlan] {
-        var taken = existingPaths
+        var taken = Set(existingPaths.map(collisionKey))
         var plans: [BundlePlan] = []
         plans.reserveCapacity(bundles.count)
         for bundle in bundles {
             let bundlePlan = plan(bundle: bundle, destinationRoot: destinationRoot, description: description, template: template, cardLabel: cardLabel) { url in
-                taken.contains(url.path)
+                taken.contains(collisionKey(url.path))
             }
-            for file in bundlePlan.files { taken.insert(file.destination.path) }
+            for file in bundlePlan.files { taken.insert(collisionKey(file.destination.path)) }
             plans.append(bundlePlan)
         }
         return plans
+    }
+
+    /// The key two destination paths are compared on when deciding whether a name
+    /// is free.
+    ///
+    /// **Case-folded, because APFS is case-insensitive by default.** Comparing raw
+    /// strings meant `IMG_0001.JPG` and `img_0001.jpg` — the same file on disk —
+    /// looked like two free names, so `_1` never fired, `FileCopier`'s `O_EXCL`
+    /// correctly refused the second write, and that bundle failed and rolled back
+    /// on *every* run, forever: a photo the user believes was ingested never is.
+    /// Two DCIM folders shot in the same second, or the far more common `.JPG` vs
+    /// `.jpg` extension casing against a name already on disk, both reach it.
+    ///
+    /// Folded **unconditionally** rather than probing each volume's case
+    /// sensitivity: the whole point of the union rule in `IngestEngine` is that a
+    /// name is free only if it is free at *every* destination, so one
+    /// case-insensitive mirror in the set would make folding mandatory anyway. The
+    /// cost on an all-case-sensitive setup is an occasional unnecessary `_1` —
+    /// a cosmetic name, never a lost or overwritten file.
+    ///
+    /// Canonical (NFC) mapping is applied for the same reason at the Unicode
+    /// level; Swift's own `String` comparison already normalizes, but `lowercased`
+    /// on a decomposed string is not guaranteed to yield the same scalars as on a
+    /// composed one, and this key is compared as a raw `String` in a `Set`.
+    static func collisionKey(_ path: String) -> String {
+        path.precomposedStringWithCanonicalMapping.lowercased()
     }
 
     /// The day-folder a bundle's files land in: `{root}/{yyyy}/{yyyy-MM-dd}[_{desc}]`.
@@ -140,18 +166,57 @@ enum CopyPlan {
                 - (primaryExt.isEmpty ? 0 : primaryExt.utf8.count + 1)
             let primaryNewStem = PathPlanner.truncatedToByteLimit(baseStem, max(1, stemRoom)) + disambiguator
             let primaryNewName = PathPlanner.fileName(stem: primaryNewStem, extension: primaryExt)
-            let files = buildFiles(
+            let files = separateInternalCollisions(buildFiles(
                 bundle: bundle,
                 primaryOldName: primaryOldName,
                 primaryNewName: primaryNewName,
                 primaryNewStem: primaryNewStem,
                 destDir: destDir
-            )
+            ))
             if !files.contains(where: { isTaken($0.destination) }) {
                 return BundlePlan(bundle: bundle, files: files)
             }
             n += 1
         }
+    }
+
+    /// Give each file in a bundle a distinct destination.
+    ///
+    /// `isTaken` structurally cannot see a collision *within* a bundle —
+    /// `planBatch` inserts a bundle's paths only after `plan` returns — and the
+    /// `n` loop above cannot resolve one either: companions derive their names
+    /// from the primary's stem, so every file moves together and an internal
+    /// duplicate survives at every `n`. Adding the internal check to that loop
+    /// would spin it forever.
+    ///
+    /// Reachable because `classifyCompanion` matches sidecars by stem *prefix*:
+    /// `IMG_1234.xmp` and `IMG_1234.v2.xmp` beside `IMG_1234.CR2` both classify as
+    /// short-form sidecars and both render to `{newStem}.xmp`. Before this, they
+    /// planned onto one path, `O_EXCL` refused the second, and the entire bundle
+    /// — the RAW included — failed and rolled back. Suffixing the later file keeps
+    /// the bundle atomic and loses nothing; the primary is index 0 and is never
+    /// the one moved.
+    private static func separateInternalCollisions(_ files: [PlannedFile]) -> [PlannedFile] {
+        var seen = Set<String>()
+        var result: [PlannedFile] = []
+        result.reserveCapacity(files.count)
+        for file in files {
+            var destination = file.destination
+            if !seen.insert(collisionKey(destination.path)).inserted {
+                let dir = destination.deletingLastPathComponent()
+                let ext = destination.pathExtension
+                let stem = destination.deletingPathExtension().lastPathComponent
+                var n = 1
+                repeat {
+                    destination = dir.appendingPathComponent(
+                        PathPlanner.fileName(stem: "\(stem)_\(n)", extension: ext))
+                    n += 1
+                } while !seen.insert(collisionKey(destination.path)).inserted
+            }
+            result.append(PlannedFile(source: file.source, destination: destination,
+                                      size: file.size, role: file.role))
+        }
+        return result
     }
 
     // Default stem when a filename template renders empty: the canonical

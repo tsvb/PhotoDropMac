@@ -6,6 +6,21 @@ import Foundation
 /// needs 2×. Best-effort: a volume that can't be resolved (e.g. the folder
 /// doesn't exist yet) is skipped rather than reported.
 enum PreflightCheck {
+    /// Returns a human-readable refusal if the source and destination trees
+    /// overlap, or `nil` if the topology is safe.
+    ///
+    /// Distinct from `spaceWarning` and **not** overridable: a full disk still
+    /// copies what fits, so "Ingest Anyway" is a reasonable offer there. An
+    /// overlapping topology copies *nothing* while reporting success, so there is
+    /// no version of proceeding that helps. `IngestEngine` enforces this too —
+    /// this exists so the GUI says it before the user presses Ingest rather than
+    /// after the job halts. See `DestinationTopology`.
+    static func topologyRefusal(source: URL?, primary: URL, archives: [URL]) -> String? {
+        let problems = DestinationTopology.check(source: source, roots: [primary] + archives)
+        guard !problems.isEmpty else { return nil }
+        return problems.map(\.message).joined(separator: "\n\n")
+    }
+
     /// Returns a human-readable warning if a destination volume looks too full,
     /// or `nil` if everything fits (or can't be checked).
     static func spaceWarning(plannedBytes: Int64, primary: URL, archives: [URL]) -> String? {

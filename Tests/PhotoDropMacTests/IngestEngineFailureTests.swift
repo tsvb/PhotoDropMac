@@ -250,6 +250,37 @@ final class IngestEngineFailureTests: XCTestCase {
                       "and the mirror must use that same name, not its own")
     }
 
+    /// The other half of the union rule, and the half only the union loop
+    /// protects: the name is free at the **primary** and taken at a *mirror*.
+    ///
+    /// `testMirrorUsesTheSameFilenameAsThePrimary` plants the colliding file in
+    /// the primary only, which a per-primary scan would also have handled — so it
+    /// could not detect a regression that dropped the `for root in allRoots` loop.
+    /// Here the primary sees a clear name; only scanning every destination
+    /// reveals that it isn't free. Without the union, the mirror's write earns
+    /// `EEXIST` from `O_EXCL` and that bundle silently fails at the mirror.
+    func testANameTakenOnlyAtAMirrorStillMovesEveryDestination() async throws {
+        let tmp = try freshTempDir()
+        let primary = try dir("primary", in: tmp)
+        let mirror = try dir("mirror", in: tmp)
+
+        // Different-content file occupying the planned name — in the MIRROR only.
+        let mirrorDay = mirror.appendingPathComponent("2026/2026-05-28", isDirectory: true)
+        try FileManager.default.createDirectory(at: mirrorDay, withIntermediateDirectories: true)
+        try Data(repeating: 0x11, count: 128)
+            .write(to: mirrorDay.appendingPathComponent("20260528_120000_IMG_0001.JPG"))
+
+        let bundles = [try makeBundle("IMG_0001.JPG", bytes: 4096, in: tmp)]
+        let (result, _) = await ingest(bundles, primary: primary, archives: [mirror], tmp: tmp)
+
+        XCTAssertEqual(result.filesFailed, 0, "the mirror's occupied name must not fail the copy")
+        XCTAssertTrue(photoNames(in: primary).contains("20260528_120000_IMG_0001_1.JPG"),
+                      "the primary takes the disambiguator too, though nothing was in its way — "
+                    + "a name is only free if it is free at every destination: \(photoNames(in: primary))")
+        XCTAssertTrue(photoNames(in: mirror).contains("20260528_120000_IMG_0001_1.JPG"),
+                      "and the mirror lands on the same name, beside the file that was already there")
+    }
+
     /// The manifest records one relative path, so `heal` must find the mirror
     /// copy at that path. This is the failure the divergence actually caused.
     func testHealFindsTheMirrorCopyAfterACollision() async throws {
