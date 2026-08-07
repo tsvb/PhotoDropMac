@@ -1,17 +1,16 @@
 # PhotoDropMac — critical review
 
 **Date:** 2026-08-06 · **Reviewed at:** `dff7ed0` · **Baseline then:** 132 tests, 0 failures
-· **Now:** 153 tests, 0 failures — **Tier 1 fixed**
+· **Now:** 170 tests, 0 failures — **Tier 1 and Tier 2 fixed**
 
 Every finding below was reproduced by a probe or traced through the source. Each is marked
 **CONFIRMED** (a probe demonstrated it), **CONFIRMED (inspection)** (the code path is
 unambiguous but no probe was run), or **MITIGATED** (real, but an existing safeguard blunts it).
 Nothing is reported as "probably".
 
-Tier 1 has since been fixed, and each entry records what shipped. The probes that demonstrated
-those five defects were rewritten as permanent regression tests asserting the corrected
-behavior; the remaining probes are preserved outside the repo and can be promoted the same way
-as their fixes land.
+Tiers 1 and 2 have since been fixed, and each entry records what shipped. Every probe that
+demonstrated a defect was rewritten as a permanent regression test asserting the corrected
+behavior. **Tier 3 (process) and Tier 4 (UI/docs) remain open** — CI above all.
 
 ---
 
@@ -68,12 +67,11 @@ straight to a notarized DMG with no test gate.
 
 ## Tier 1 — Data safety, or the user is told something false
 
-> **STATUS: all five fixed.** Suite is 153 tests / 0 failures (was 132 before this
-> work; the 21 added are the regressions below). New coverage:
-> `IngestEngineFailureTests` (9 — mirror independence, duplicate roots, the cancel
-> receipt, verified-count honesty), `HealEngineTests` +3 (planted manifest,
-> agreeing manifests, pooled mirrors), `ArchiveDestinationsTests` +9 (identity
-> dedup incl. symlinks). Each fix is described in place below.
+> **STATUS: all five fixed.** New coverage: `IngestEngineFailureTests` (mirror
+> independence, duplicate roots, the cancel receipt, verified-count honesty),
+> `HealEngineTests` +3 (planted manifest, agreeing manifests, pooled mirrors),
+> `ArchiveDestinationsTests` +9 (identity dedup incl. symlinks). Each fix is
+> described in place below.
 
 ### T1-1 · Mirror destinations do not fail independently · CONFIRMED → **FIXED**
 [IngestEngine.swift:167](Sources/PhotoDropMac/Core/IngestEngine.swift:167) —
@@ -174,7 +172,14 @@ disk" only when something was actually hash-checked, otherwise "N completed bund
 
 ## Tier 2 — Advertised but shallow
 
-### T2-1 · Mirror filenames diverge from the primary, silently breaking `heal` · CONFIRMED
+> **STATUS: all eight fixed.** New coverage: mirror parity and re-ingest digests in
+> `IngestEngineFailureTests`, deadlock races in `PostIngestHookTests`, the NAME_MAX
+> cases in `CopyPlanTests`, unreadable-target cases in `XattrTests`, exit-code
+> branching in `ScheduledVerificationTests`, schema validation in
+> `ManifestTrustTests`. The child-process fix is shared:
+> [`ChildProcess`](Sources/PhotoDropMac/Core/ChildProcess.swift).
+
+### T2-1 · Mirror filenames diverge from the primary, silently breaking `heal` · CONFIRMED → **FIXED**
 [IngestEngine.swift:149](Sources/PhotoDropMac/Core/IngestEngine.swift:149) computes
 `existingPaths` and `planBatch` independently per root, so `_1` disambiguation is per-root.
 
@@ -183,11 +188,12 @@ disk" only when something was actually hash-checked, otherwise "N completed bund
 > path, so `heal` looks for the primary's name under the mirror root, doesn't find it, and
 > reports the file **unrecoverable** with a perfect copy sitting right there.
 
-**Fix:** plan once and reuse the same relative path for every mirror — a mirror should be
-name-identical by definition, and `heal` already assumes it. Union the existing-name sets
-across roots when disambiguating.
+**Shipped:** the plan is computed once and rebased onto each mirror (`IngestEngine.rebase`), and
+collision avoidance unions the existing names across *all* destinations so one name is free
+everywhere. Regression: `testMirrorUsesTheSameFilenameAsThePrimary` and
+`testHealFindsTheMirrorCopyAfterACollision`, which asserts the actual consequence, not just the names.
 
-### T2-2 · An all-duplicate re-ingest writes a manifest that attests to nothing · CONFIRMED
+### T2-2 · An all-duplicate re-ingest writes a manifest that attests to nothing · CONFIRMED → **FIXED**
 `DestinationIndex.findDuplicate` computes the source digest and returns only the URL;
 [IngestEngine.swift:320](Sources/PhotoDropMac/Core/IngestEngine.swift:320) then records
 `xxhash64: nil`, and `VerifyEngine.build:115` skips nil-digest entries.
@@ -197,9 +203,12 @@ across roots when disambiguating.
 
 The digest needed to fix this was already computed and thrown away.
 
-**Fix:** return the digest from `findDuplicate` and record it on skipped entries.
+**Shipped:** `findDuplicate` returns a `Duplicate { url, hash }` and the skipped manifest entry
+records it. Verified end-to-end: a second `photodrop ingest` of the same card now yields
+`✓ All 3 files across 2 manifests match`. Regression:
+`testSkippedFilesRecordTheDigestTheDedupMatchedOn`.
 
-### T2-3 · `PostIngestHook` deadlocks on a chatty hook · CONFIRMED
+### T2-3 · `PostIngestHook` deadlocks on a chatty hook · CONFIRMED → **FIXED**
 [PostIngestHook.swift:51](Sources/PhotoDropMac/Core/PostIngestHook.swift:51) sets
 `standardOutput = Pipe()` and never reads it; stderr drains only inside `terminationHandler`,
 which by definition runs after exit.
@@ -210,11 +219,13 @@ which by definition runs after exit.
 
 Any hook that runs `rsync -v` or `exiftool` trips this.
 
-**Fix:** drain both pipes concurrently (`readabilityHandler`, or read to EOF before
-`waitUntilExit`). `DriveEjector.swift:50` and `ScheduledVerification.runLaunchctl:106` have the
-same shape — safe today only because `diskutil` and `launchctl` are quiet. Fix the pattern once.
+**Shipped:** a shared [`ChildProcess`](Sources/PhotoDropMac/Core/ChildProcess.swift) runner starts
+both drains *before* `run()` and completes only once both hit EOF; it also closes the write ends
+if the spawn fails, so reader threads can't be stranded. `PostIngestHook`, `DriveEjector` and
+`ScheduledVerification` all use it. Regression: two tests race a ~1 MiB-of-output hook against a
+20 s deadline — they now finish in 0.14 s.
 
-### T2-4 · A long filename exceeds `NAME_MAX` and fails the whole bundle · CONFIRMED
+### T2-4 · A long filename exceeds `NAME_MAX` and fails the whole bundle · CONFIRMED → **FIXED**
 `PathPlanner.sanitize` caps the **stem** at 255 UTF-8 bytes; `CopyPlan.swift:136` then appends
 `.{ext}`.
 
@@ -223,10 +234,12 @@ same shape — safe today only because `diskutil` and `launchctl` are quiet. Fix
 > for the extension. `CopyPlanTests.swift:93` only asserts the *folder leaf* is ≤ 255, so
 > CLAUDE.md listing "the `NAME_MAX` cap" under tested behavior is not accurate for filenames.
 
-**Fix:** cap the stem at `255 - (extension bytes + 1)`. Same for the long-form companion suffix
-at `CopyPlan.swift:189`. Add the filename case to `CopyPlanTests`.
+**Shipped:** `PathPlanner.fileName(stem:extension:)` composes the whole name under the cap and
+never truncates the extension; `CopyPlan` also subtracts the `_1` disambiguator's own length
+before trimming, and both companion forms go through it. Regression: four tests in
+`CopyPlanTests`, including the disambiguated case.
 
-### T2-5 · `verify --xattr` exits 0 on an unreadable or nonexistent target · CONFIRMED
+### T2-5 · `verify --xattr` exits 0 on an unreadable or nonexistent target · CONFIRMED → **FIXED**
 [VerifyEngine.swift:149](Sources/PhotoDropMac/Core/VerifyEngine.swift:149) returns an empty
 report, indistinguishable from "nothing stamped".
 
@@ -234,10 +247,12 @@ report, indistinguishable from "nothing stamped".
 > "No checksummed (xattr) files found" and **exited 0**. A verification tool reporting success
 > on a target it could not read. A typo in a script gets a green check forever.
 
-**Fix:** distinguish "target unreadable/absent" from "target readable, nothing stamped" —
-return `nil` (or a distinct case) for the former and exit 2, matching the manifest path.
+**Shipped:** `runXattr` returns a `XattrOutcome` — `.report`, `.unreadableTarget`, `.cancelled` —
+decided up front, because `FileManager`'s enumerator is lazy and swallows its own errors. The CLI
+exits 2 with a specific message. Verified end-to-end: nonexistent → 2, `chmod 000` → 2,
+readable-but-unstamped → 0. Regression: four tests in `XattrTests`.
 
-### T2-6 · The nightly agent cries wolf on a missing manifest · CONFIRMED
+### T2-6 · The nightly agent cries wolf on a missing manifest · CONFIRMED → **FIXED**
 [ScheduledVerification.swift:55](Sources/PhotoDropMac/Core/ScheduledVerification.swift:55)
 builds `… verify … --json || osascript -e 'display notification "Verification found issues"'`.
 Measured: `verify` exits **2** when no manifest exists — identical treatment to exit 1
@@ -247,10 +262,12 @@ Point it at a library with no `PhotoDrop Manifests/` and it posts "Verification 
 every night, training the user to ignore the one notification that matters. The log at
 `StandardOutPath` also has no rotation.
 
-**Fix:** branch on the exit code in the shell command — 1 → "issues found", 2 → "could not
-verify (no manifest)". Add `newsyslog`-style rotation or cap the log.
+**Shipped:** the command captures `RC` and branches — exit 1 says "found issues", exit 2 says
+"could not verify … no manifest found". Instead of log rotation, output is echoed *only* on a
+non-zero exit, so a healthy library adds nothing to the log at all. Regression: two tests in
+`ScheduledVerificationTests`, one asserting the old `--json ||` shape is gone.
 
-### T2-7 · The scheduled-verify toggle can lie in both directions · CONFIRMED (inspection)
+### T2-7 · The scheduled-verify toggle can lie in both directions · CONFIRMED (inspection) → **FIXED**
 `isInstalled` ([:47](Sources/PhotoDropMac/Core/ScheduledVerification.swift:47)) only stats the
 plist and never asks launchd whether the job is loaded. If `bootstrap` throws,
 [SettingsView.swift:97](Sources/PhotoDropMac/UI/SettingsView.swift:97) sets `enabled = false`
@@ -261,30 +278,38 @@ at next login, running verifications the user believes are off. Separately,
 new one; and `.disabled(effectiveBinaryPath.isEmpty || libraryPath.isEmpty)` can strand the
 toggle greyed *on* with no way to remove the agent.
 
-**Fix:** `uninstall()` on bootstrap failure; derive `isInstalled` from `launchctl print`;
-`onChange` for the path fields; don't disable the toggle when it is currently on.
+**Shipped:** all four. `install` removes the plist again when `bootstrap` throws; `isLoaded()`
+asks `launchctl print` (the old `isInstalled` is now honestly named `hasPlist`); Settings
+re-applies on `binaryPath`, `libraryOverride` and `primary` changes; and the toggle is disabled
+only when it is *off*, so it can always be turned back off. `apply()` is async now — it used to
+block the main thread on two `waitUntilExit()` calls.
 
-### T2-8 · Smaller confirmed items
+### T2-8 · Smaller confirmed items · **FIXED**
+**Shipped:** every item below, except the one already marked MITIGATED, which needed no change.
+
 - **`heal --script` overwrites its output path** with `write(toFile:atomically:)`
   ([PhotoDropCLI.swift:51](Sources/PhotoDropCLI/PhotoDropCLI.swift:51)) — the exact behavior
-  `JobStamp.claimUniqueName` exists to prevent everywhere else. Use the claim.
+  `JobStamp.claimUniqueName` exists to prevent everywhere else. **Fixed** with `O_EXCL` and a clear refusal rather than the claim's rename-and-continue: the path is the user's explicit choice, so quietly writing somewhere else would be the greater surprise.
 - **`schemaID` is write-only.** `ManifestWriter.decode` never checks `schema`, so any
-  structurally-valid JSON is accepted as a PhotoDrop manifest. Versioning that isn't.
+  structurally-valid JSON is accepted as a PhotoDrop manifest. Versioning that isn't. **Fixed** — `decode` rejects an unrecognized schema, so a future format is ignored rather than misread.
 - **CLI ingest has no cancellation path and skips the post-ingest hook.**
   `PhotoDropCLI.swift:138` never supplies `isCancelled` and there is no SIGINT handler, so
-  Ctrl-C leaves a partial file with no manifest entry; `:151` never runs the hook the app runs.
+  Ctrl-C leaves a partial file with no manifest entry; `:151` never runs the hook the app runs. **Fixed** — a `DispatchSource` SIGINT handler drives the engine's existing cancellation, and `--post-ingest-hook` runs it explicitly. Verified end-to-end: Ctrl-C at 33 of 40 files wrote a `partial: true` manifest covering exactly those 33, which then verified clean.
 - **`heal` restoring from a manifest-named root · MITIGATED.** A planted manifest can point
   `destinations[1]` anywhere and `heal` will emit a `cp` from it — but the generated script
   *does* list every source root in an up-front "confirm you recognize every one of them"
   comment block, and the control-character refusal works. The safeguard functions as designed;
   the residual risk is only that a disclosed path may look plausible. Worth keeping in mind,
   not worth code changes.
-- **`AssetBundle.photoCount`** returns a fixed `1` and has zero call sites. Dead.
+- **`AssetBundle.photoCount`** returned a fixed `1` and had zero call sites. **Deleted.**
 - **`PreflightCheck.spaceWarning`** iterates a `Dictionary` and returns on the first
   over-capacity volume, so with two full destinations the one reported is nondeterministic.
+  **Fixed** — it now reports the volume furthest short, ties broken by path.
 - **`TemplateRenderer.resolve`** allocates a `DateFormatter` per token per bundle per root, and
   `destinationDirectory` is called three times per bundle. Thousands of the most expensive
-  object in Foundation on a large card.
+  object in Foundation on a large card. **Fixed** — formatters are cached by (time zone,
+  pattern), with the formatting done inside the lock since `DateFormatter` isn't thread-safe.
+  The redundant `destinationDirectory` calls remain.
 
 ---
 
