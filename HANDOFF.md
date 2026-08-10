@@ -198,27 +198,27 @@ existing hosted target (`Contents/MacOS/photodrop`) and assert exit codes and JS
 
 ## 6. Findings dossier — process and tests
 
-**T3-1 · No CI at all.** No `.github/`, no workflow, no pre-commit, no lint/format config,
+**T3-1 · No CI at all.** **FIXED (`07a5810`).** `.github/workflows/ci.yml` — xcodegen, the suite, the `photodrop` scheme, the log-directory assertion, and the doc-link check. A second assertion (`9a7a62f`) fails the build if a test run leaves a launch agent behind. No `.github/`, no workflow, no pre-commit, no lint/format config,
 despite a live GitHub remote. 173 tests that nothing runs automatically. A workflow needs:
 `brew install xcodegen`, `xcodegen generate`, then both schemes. Tests are **hosted** — the host
 app must launch, so the runner needs a GUI session (GitHub's macOS runners provide one). A doc
 link-check would catch §7's whole first category mechanically.
 
-**T3-2 · `release.sh` notarizes and ships without running tests.** No test gate, no `git tag`,
+**T3-2 · `release.sh` notarizes and ships without running tests.** **FIXED (`07a5810`).** Dirty-tree refusal, the suite + CLI build before archiving (`SKIP_TESTS=1` overrides loudly), `MARKETING_VERSION` write-back, annotated `v<version>` tag. No test gate, no `git tag`,
 no clean-tree check, no version write-back: `:36` takes a version and `:80` passes it as a build
 setting only, so `./release.sh 0.2.0` ships 0.2.0 while `project.yml:58` still says `0.1.3` and
 git records nothing. `BUILD="$(git rev-list --count HEAD)"` (`:38`) stamps a count a dirty tree
 doesn't correspond to. Three lines close the worst-consequence hole: a notarized DMG built from
 untested code.
 
-**T3-3 · Two `XCTSkip` sites turn a timeout into a green skip** —
+**T3-3 · Two `XCTSkip` sites turn a timeout into a green skip** **FIXED (`07a5810`).** Both now fail. The remaining `XCTSkip`s are the deliberate `getuid() == 0` and no-capacity guards. —
 `CopierManifestTests.swift:67` and `VerifierTests.swift:64` (REVIEW.md cites `:66`/`:63`; those
 are the guards, not the throws). Both sit behind a hard 5 s poll budget, and
 `CopierManifestTests` carries the §1.2 rollback regression at `:148`. `xcodebuild` prints
 `** TEST SUCCEEDED **` over a skip. Leave the other two alone: `XattrTests.swift:56` follows an
 already-recorded `XCTFail`, and `:128`'s `XCTSkipIf(getuid() == 0, …)` is a deliberate guard.
 
-**T3-4 · The suite writes into the developer's real home.** Measured:
+**T3-4 · The suite writes into the developer's real home.** **FIXED (`07a5810`).** `Copier.hermetic(in:)` injects the cache, index store, log directory, an isolated `UserDefaults` suite, and disables notifications; CI asserts the log folder stays empty. `Notifier.notifyHookFailure` keeps its missing frontmost check **on purpose** — there is no in-app surface for a hook failure, and that is now stated at the definition. Measured:
 `~/Library/Logs/PhotoDrop` went 329 → 347 files (**+18**) in one run, never cleaned.
 `JobLogger.swift:28-31` derives the directory from `.libraryDirectory` with no injection point,
 while `IngestEngine.init` already injects `cache:` and `indexStoreURL:` — follow that pattern.
@@ -229,14 +229,14 @@ then *execute* (latent only because no key is set today). `notifyHookFailure`
 **Do not delete the accumulated files in `~/Library/Logs/PhotoDrop`** — that is the user's audit
 trail and it is on the ask-first list. Fix the injection, not the symptom.
 
-**T3-5 · Untested data-safety code, in risk order.** `DestinationIndex.build` /
+**T3-5 · Untested data-safety code, in risk order.** **FIXED (`07a5810`, `9a7a62f`).** `DestinationIndexBuildTests` covers `build`/`buildIncremental` including the stale-entry false-duplicate; `JobLoggerTests`, `PreflightCheckTests` and `ChildProcessTests` exist; `ScheduledVerificationInstallTests` closes install/uninstall/`isLoaded` behind an injected agent. `DestinationIndex.build` /
 `buildIncremental` (`DestinationIndex.swift:99`, `:145`) — tests hand-construct
 `DestinationIndex(bySize:)` and only exercise `findDuplicate`; **a stale incremental index
 yields a false duplicate, and a false duplicate silently skips a photo.** That is the riskiest
 untested path in Core. Then `JobLogger` (free once T3-4 lands), `PreflightCheck`,
 `ChildProcess` (only indirect coverage), and `ScheduledVerification` install/uninstall/isLoaded.
 
-**T3-6 · STRUCK — not a defect. Do not "fix" it.** REVIEW.md's suspicion about the `create-dmg`
+**T3-6 · STRUCK — not a defect. Do not "fix" it.** **RESIDUAL FIXED (`07a5810`).** `release.sh` stages a `ditto` copy for `create-dmg`, so nothing deletes inside the stapled bundle. REVIEW.md's suspicion about the `create-dmg`
 branch was disproved by reproduction: create-dmg 1.2.3 is installed and the exact
 `release.sh:115-120` invocation produces a DMG whose root holds the intact `.app` plus the
 `Applications` symlink — `hdiutil` special-cases a bundle at `-srcfolder`. One real residual:
