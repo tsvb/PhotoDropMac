@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Show toolchain
         run: |
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # CLAUDE.md accumulated 13 broken source links by surviving a directory
       # reorganisation; every one of them silently sends a reader — human or
       # agent — to a file that isn't there. This is mechanical to catch.

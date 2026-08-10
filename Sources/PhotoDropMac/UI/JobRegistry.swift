@@ -53,3 +53,18 @@ enum MenuBarAutoOpen {
         visibility != .hidden
     }
 }
+
+/// Which card stays selected when the set of mounted cards changes.
+///
+/// This lived as an if/else-if inside an `.onChange` closure in `MainView.body`
+/// — a rule with three cases and no test, in the one place a test could not
+/// reach it. (It was also, measurably, one of the two expressions the type
+/// checker still spent real time on there.)
+enum DriveSelection {
+    static func reconcile(current: DetectedDrive.ID?, drives: [DetectedDrive.ID]) -> DetectedDrive.ID? {
+        // Keep the user's choice while that card is still mounted: inserting a
+        // second card must not move the selection out from under them.
+        if let current, drives.contains(current) { return current }
+        return drives.first
+    }
+}

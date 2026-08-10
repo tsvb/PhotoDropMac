@@ -119,3 +119,30 @@ final class AppLifecycleTests: XCTestCase {
         XCTAssertFalse(MenuBarAutoOpen.isAvailable(for: .hidden))
     }
 }
+
+/// The card-selection rule, extracted from a closure inside `MainView.body`.
+///
+/// It lived inline as an if/else-if on `selectedSourceID` — untestable where it
+/// was, and one of the two expressions the type checker still spent real time
+/// on. Pulling it out is worth doing for the first reason alone.
+@MainActor
+final class DriveSelectionTests: XCTestCase {
+
+    func testAStillPresentSelectionIsKept() {
+        XCTAssertEqual(DriveSelection.reconcile(current: "b", drives: ["a", "b", "c"]), "b",
+                       "inserting another card must not move the user's selection")
+    }
+
+    func testAnEjectedSelectionFallsBackToTheFirstCard() {
+        XCTAssertEqual(DriveSelection.reconcile(current: "b", drives: ["a", "c"]), "a")
+    }
+
+    func testNoSelectionAdoptsTheFirstCard() {
+        XCTAssertEqual(DriveSelection.reconcile(current: nil, drives: ["a", "b"]), "a")
+    }
+
+    func testNoCardsMeansNoSelection() {
+        XCTAssertNil(DriveSelection.reconcile(current: "a", drives: []))
+        XCTAssertNil(DriveSelection.reconcile(current: nil, drives: []))
+    }
+}

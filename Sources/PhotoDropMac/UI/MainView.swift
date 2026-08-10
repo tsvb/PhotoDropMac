@@ -52,6 +52,37 @@ struct MainView: View {
     /// it on a slower toolchain: `ApertureMark` did, on CI, with a build that
     /// was green on this machine. A view whose compilability depends on the host
     /// is not compilable.
+    /// The detail column, lifted out of `body`.
+    ///
+    /// `body` is the largest expression in the app and the one the type checker
+    /// charges most for; on CI's older toolchain that is the difference between
+    /// a build and a failure (see `ApertureMark.draw`).
+    private var detailColumn: some View {
+        DetailPane(
+            source: source,
+            planner: planner,
+            copier: copier,
+            previewMode: previewMode,
+            deselectedIDs: $deselectedIDs,
+            loader: thumbnailLoader
+        )
+        .navigationTitle(source?.label ?? "PhotoDrop")
+        .navigationSubtitle(detailSubtitle)
+        .toolbar { mainToolbar }
+        .inspector(isPresented: $showInspector) {
+            InspectorPane(
+                description: $descriptionText,
+                canStart: canStartIngest,
+                onIngest: startIngest,
+                presetStore: presetStore
+            )
+            .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
+        }
+        .sheet(item: completionSheetBinding) { result in
+            CompletionSheet(result: result, onDismiss: { copier.reset() })
+        }
+    }
+
     /// Also extracted from `body` — an inline `Binding(get:set:)` with a
     /// ternary inside a `.sheet(item:)` is another expression the type checker
     /// charges a lot for.
@@ -119,61 +150,36 @@ struct MainView: View {
         NavigationSplitView {
             Sidebar(selection: $selectedSourceID)
         } detail: {
-            DetailPane(
-                source: source,
-                planner: planner,
-                copier: copier,
-                previewMode: previewMode,
-                deselectedIDs: $deselectedIDs,
-                loader: thumbnailLoader
-            )
-            .navigationTitle(source?.label ?? "PhotoDrop")
-            .navigationSubtitle(detailSubtitle)
-            .toolbar { mainToolbar }
-            .inspector(isPresented: $showInspector) {
-                InspectorPane(
-                    description: $descriptionText,
-                    canStart: canStartIngest,
-                    onIngest: startIngest,
-                    presetStore: presetStore
-                )
-                .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
-            }
-            .sheet(item: completionSheetBinding) { result in
-                CompletionSheet(result: result, onDismiss: { copier.reset() })
-            }
+            detailColumn
         }
         .onAppear {
-            if selectedSourceID == nil {
-                selectedSourceID = watcher.drives.first?.id
-            }
+            selectedSourceID = DriveSelection.reconcile(current: selectedSourceID,
+                                                        drives: watcher.drives.map(\.id))
             planner.setSource(source, description: descriptionText, template: template)
         }
         .onChange(of: watcher.drives) { _, drives in
-            if let id = selectedSourceID, !drives.contains(where: { $0.id == id }) {
-                selectedSourceID = drives.first?.id
-            } else if selectedSourceID == nil {
-                selectedSourceID = drives.first?.id
-            }
+            selectedSourceID = DriveSelection.reconcile(current: selectedSourceID,
+                                                        drives: drives.map(\.id))
         }
-        .onChange(of: selectedSourceID) { _, _ in
-            deselectedIDs = []   // a different card → start with everything selected
-            planner.setSource(source, description: descriptionText, template: template)
-        }
-        .onChange(of: descriptionText) { _, new in
-            planner.updateDescription(new)
-        }
-        .onChange(of: templateFolder) { _, _ in planner.updateTemplate(template) }
-        .onChange(of: templateFilename) { _, _ in planner.updateTemplate(template) }
-        .onChange(of: coordinator.pendingOneClickCardID) { _, id in
-            guard let id else { return }
-            selectedSourceID = id
-            autoIngestPending = true
-            tryAutoIngest()
-        }
-        .onChange(of: planner.isScanning) { _, _ in
-            tryAutoIngest()
-        }
+        .modifier(PlanningHandlers(
+            selectedSourceID: selectedSourceID,
+            descriptionText: descriptionText,
+            templateFolder: templateFolder,
+            templateFilename: templateFilename,
+            pendingOneClickCardID: coordinator.pendingOneClickCardID,
+            isScanning: planner.isScanning,
+            onSourceChanged: {
+                deselectedIDs = []   // a different card → start with everything selected
+                planner.setSource(source, description: descriptionText, template: template)
+            },
+            onDescriptionChanged: { planner.updateDescription($0) },
+            onTemplateChanged: { planner.updateTemplate(template) },
+            onOneClickRequested: { id in
+                selectedSourceID = id
+                autoIngestPending = true
+                tryAutoIngest()
+            },
+            onScanStateChanged: { tryAutoIngest() }))
         // Menu commands. A `Commands` builder is scene-scoped and can't reach
         // this view's state, so it posts tickets on the coordinator and the
         // window performs them — see `PhotoDropCommands`. Grouped in one
@@ -663,6 +669,39 @@ private struct SheetsAndAlerts: ViewModifier {
     } message: { message in
         Text(message + "\n\nChoose a destination outside the card, and destinations that don’t contain one another.")
     }
+    }
+}
+
+/// The plan-affecting `onChange` handlers, grouped out of `MainView.body`.
+///
+/// Same reason as `MenuCommandHandlers` and `SheetsAndAlerts`: a long chain of
+/// closures on one expression is what the type checker charges for, and CI's
+/// older toolchain charges several times what this one does.
+private struct PlanningHandlers: ViewModifier {
+    let selectedSourceID: DetectedDrive.ID?
+    let descriptionText: String
+    let templateFolder: String
+    let templateFilename: String
+    let pendingOneClickCardID: DetectedDrive.ID?
+    let isScanning: Bool
+
+    let onSourceChanged: () -> Void
+    let onDescriptionChanged: (String) -> Void
+    let onTemplateChanged: () -> Void
+    let onOneClickRequested: (DetectedDrive.ID) -> Void
+    let onScanStateChanged: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: selectedSourceID) { _, _ in onSourceChanged() }
+            .onChange(of: descriptionText) { _, new in onDescriptionChanged(new) }
+            .onChange(of: templateFolder) { _, _ in onTemplateChanged() }
+            .onChange(of: templateFilename) { _, _ in onTemplateChanged() }
+            .onChange(of: pendingOneClickCardID) { _, id in
+                guard let id else { return }
+                onOneClickRequested(id)
+            }
+            .onChange(of: isScanning) { _, _ in onScanStateChanged() }
     }
 }
 
