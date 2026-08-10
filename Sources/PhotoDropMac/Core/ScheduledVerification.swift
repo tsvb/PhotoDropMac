@@ -33,10 +33,37 @@ struct ScheduledVerificationError: Error, Sendable { let message: String }
 enum ScheduledVerification {
     static let label = "com.tsvb.photodrop.verify"
 
-    static var plistURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+    /// Where the agent lives and what loads it — injected so the install path
+    /// can be tested.
+    ///
+    /// This is the last piece of the app that had no tests, and the reason was
+    /// that exercising it meant writing into the developer's real
+    /// `~/Library/LaunchAgents` and running the real `launchctl`. That is not a
+    /// tidiness problem: the failures this code exists to prevent are *silent*
+    /// — a user who believes a nightly verification is running when it is not,
+    /// or believes it is off while launchd still holds the job — and a test is
+    /// the only place either can be caught. Same pattern as `JobLogger`'s
+    /// injected directory and `Copier.hermetic(in:)`.
+    struct Agent: Sendable {
+        var launchAgentsDirectory: URL
+        var launchctl: URL
+
+        static let live = Agent(
+            launchAgentsDirectory: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/LaunchAgents", isDirectory: true),
+            launchctl: URL(fileURLWithPath: "/bin/launchctl"))
+
+        var plistURL: URL {
+            launchAgentsDirectory.appendingPathComponent("\(ScheduledVerification.label).plist")
+        }
+
+        /// Whether the agent plist is on disk. **Not** the same question as "is
+        /// the job loaded" — see `isLoaded` — and on its own it will happily
+        /// report an orphaned plist as installed.
+        var hasPlist: Bool { FileManager.default.fileExists(atPath: plistURL.path) }
     }
+
+    static var plistURL: URL { Agent.live.plistURL }
 
     static var defaultLogPath: String {
         let base = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
@@ -44,17 +71,14 @@ enum ScheduledVerification {
         return base.appendingPathComponent("Logs/PhotoDrop/scheduled-verify.log").path
     }
 
-    /// Whether the agent plist is on disk. This is *not* the same question as
-    /// "is the job loaded" — see `isLoaded` — and on its own it will happily
-    /// report an orphaned plist as installed.
-    static var hasPlist: Bool { FileManager.default.fileExists(atPath: plistURL.path) }
+    static var hasPlist: Bool { Agent.live.hasPlist }
 
     /// Whether launchd actually has the job. A plist can exist without being
     /// loaded (a failed `bootstrap` used to leave exactly that behind), and a
     /// stat can't tell the difference — so the UI asks launchd.
-    static func isLoaded() async -> Bool {
+    static func isLoaded(agent: Agent = .live) async -> Bool {
         let output = try? await ChildProcess.run(
-            executable: URL(fileURLWithPath: "/bin/launchctl"),
+            executable: agent.launchctl,
             arguments: ["print", "gui/\(getuid())/\(label)"])
         return output?.isSuccess == true
     }
@@ -121,38 +145,45 @@ enum ScheduledVerification {
     /// at the next login — running verifications the user believed were
     /// disabled. Either the agent is installed and loaded, or nothing is left.
     static func install(photodropPath: String, libraryPath: String,
-                        schedule: VerifySchedule, logPath: String = defaultLogPath) async throws {
+                        schedule: VerifySchedule, logPath: String = defaultLogPath,
+                        agent: Agent = .live) async throws {
         let data = try plistData(photodropPath: photodropPath, libraryPath: libraryPath,
                                  schedule: schedule, logPath: logPath)
         let fm = FileManager.default
+        let plistURL = agent.plistURL
         try fm.createDirectory(at: plistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.createDirectory(at: URL(fileURLWithPath: logPath).deletingLastPathComponent(),
                                withIntermediateDirectories: true)
         try data.write(to: plistURL, options: .atomic)
 
         let domain = "gui/\(getuid())"
-        _ = try? await runLaunchctl(["bootout", "\(domain)/\(label)"])   // remove any prior instance
+        // `bootout` routinely fails — usually there is nothing loaded to remove
+        // — so its status is ignored. `bootstrap` is the one that must succeed.
+        _ = try? await runLaunchctl(["bootout", "\(domain)/\(label)"], agent: agent)
         do {
-            try await runLaunchctl(["bootstrap", domain, plistURL.path])
+            try await runLaunchctl(["bootstrap", domain, plistURL.path], agent: agent)
         } catch {
             try? fm.removeItem(at: plistURL)
             throw error
         }
     }
 
-    static func uninstall() async throws {
-        _ = try? await runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
-        try? FileManager.default.removeItem(at: plistURL)
+    /// Turning it off has to actually turn it off. The plist is removed even
+    /// when `bootout` fails — leaving it would let the next login reload a job
+    /// the user disabled.
+    static func uninstall(agent: Agent = .live) async throws {
+        _ = try? await runLaunchctl(["bootout", "gui/\(getuid())/\(label)"], agent: agent)
+        try? FileManager.default.removeItem(at: agent.plistURL)
     }
 
     @discardableResult
-    private static func runLaunchctl(_ arguments: [String]) async throws -> Int32 {
+    private static func runLaunchctl(_ arguments: [String], agent: Agent) async throws -> Int32 {
         // Async, and via ChildProcess: this used to be two blocking
         // `waitUntilExit()` calls made from a synchronous @MainActor function,
         // i.e. the main thread waiting on a subprocess, with the same
         // read-after-wait pipe shape that deadlocks on a chatty child.
         let output = try await ChildProcess.run(
-            executable: URL(fileURLWithPath: "/bin/launchctl"),
+            executable: agent.launchctl,
             arguments: arguments)
         if !output.isSuccess {
             let text = output.stderrText

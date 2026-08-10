@@ -75,6 +75,22 @@ jobs:
           fi
           echo "Clean."
 
+      # The scheduled-verify install path writes a launchd plist and runs
+      # launchctl. Both are injected (ScheduledVerification.Agent) so the suite
+      # never touches the real ones — measured the hard way: before the
+      # injection existed, one red-phase run wrote and removed a plist in the
+      # developer's actual ~/Library/LaunchAgents and invoked the real
+      # launchctl. A test must never be able to install a login item.
+      - name: Assert the suite installed no launch agent
+        run: |
+          plist="$HOME/Library/LaunchAgents/com.tsvb.photodrop.verify.plist"
+          if [ -e "$plist" ]; then
+            echo "::error::The test suite wrote a real launch agent at $plist."
+            echo "Tests must inject an agent — see ScheduledVerification.Agent."
+            exit 1
+          fi
+          echo "Clean."
+
       - name: Upload test results on failure
         if: failure()
         uses: actions/upload-artifact@v4

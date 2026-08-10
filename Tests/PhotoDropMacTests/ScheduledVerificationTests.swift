@@ -1,8 +1,11 @@
 import XCTest
 @testable import PhotoDropMac
 
-/// The launchd job-plist generation for scheduled verification (pure; the
-/// launchctl install/uninstall is side-effecting and not unit-tested).
+/// The launchd job-plist generation for scheduled verification, plus what the
+/// notification branches actually emit. The side-effecting half —
+/// install/uninstall/isLoaded — is covered by
+/// `ScheduledVerificationInstallTests`, which injects the agent directory and a
+/// stub `launchctl`.
 final class ScheduledVerificationTests: XCTestCase {
     func testJobPlistContents() {
         let plist = ScheduledVerification.jobPlist(
