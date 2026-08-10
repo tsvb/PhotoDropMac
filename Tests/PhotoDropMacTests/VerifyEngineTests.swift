@@ -2,9 +2,16 @@ import XCTest
 @testable import PhotoDropMac
 
 /// Direct, synchronous tests of the extracted `VerifyEngine` — match / changed /
-/// missing, newest-manifest-wins, the empty case, cancellation, and the
-/// per-file progress callback. (The `Verifier` controller wrapper is covered
-/// separately by `VerifierTests`.)
+/// missing, the empty case, cancellation, and the per-file progress callback.
+/// (The `Verifier` controller wrapper is covered separately by `VerifierTests`.)
+///
+/// **Manifests that disagree are reported, never reconciled.** This header used
+/// to advertise "newest-manifest-wins", which is the exact rule these suites
+/// exist to prove was *replaced*: every ordering signal — `createdAt`, the
+/// `ingest-<stamp>` filename, the file's mtime — is chosen by whoever wrote the
+/// file, so newest-wins hands the expected digest to the most recently planted
+/// manifest. A doc comment teaching the discarded rule is worse than none: it
+/// invites the next reader to restore it.
 final class VerifyEngineTests: XCTestCase {
 
     private func freshTempDir() throws -> URL {

@@ -1,11 +1,14 @@
 import XCTest
 @testable import PhotoDropMac
 
-/// Integration tests for re-verification (§6). Drive the public `Verifier`
-/// against temp libraries with hand-written manifests. The headline case is the
-/// multi-manifest determinism fix: a file recorded by several ingests must be
-/// verified against its newest recorded hash, not whichever manifest the
-/// filesystem happened to list first.
+/// Integration tests for re-verification. Drive the public `Verifier` against
+/// temp libraries with hand-written manifests.
+///
+/// The headline case is multi-manifest disagreement — and the rule is **report,
+/// never reconcile**. This header used to describe verifying against "its newest
+/// recorded hash", which was replaced precisely because every ordering signal is
+/// attacker-chosen; see `VerifyEngine.build`. Agreement dedupes quietly,
+/// disagreement is a `.conflict`.
 @MainActor
 final class VerifierTests: XCTestCase {
 

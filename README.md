@@ -28,6 +28,7 @@ PhotoDrop is a native macOS app for the one moment that should never be lossy: p
 - [Settings](#settings)
 - [Naming templates](#naming-templates)
 - [Themes](#themes)
+- [Command line](#command-line)
 - [Architecture](#architecture)
 - [Project layout](#project-layout)
 - [Signing and sandbox](#signing-and-sandbox)
@@ -57,7 +58,7 @@ To build from source instead, see [Build and run](#build-and-run). Maintainers c
 | **Verification receipts** | Every ingest writes a manifest (JSON + CSV) of each file and its xxHash into a `PhotoDrop Manifests/` folder beside the photos — an exportable, chain-of-custody record of exactly what landed. |
 | **Library re-verify** | Point at a library (or a single manifest) and re-hash every recorded file to surface silent corruption (bit-rot) or anything gone missing — long after the original ingest. |
 | **Content-based dedup** | A file already present anywhere under the destination — even renamed by an earlier import — is detected by size + hash and skipped. |
-| **Dual-destination archival** | Optionally write a second, independently verified copy to an archive location in the same pass. |
+| **Multi-destination archival** | Write any number of independently verified mirror copies in the same pass (3-2-1 backups). Each destination fails independently — an offline NAS doesn't void the copy that landed in your library. |
 | **Contact-sheet culling** | Preview thumbnails in a grid and deselect individual frames or whole days before ingesting. |
 | **Warm hash cache** | Re-ingesting the same card against the same library skips the slow card reads entirely — a stat-bound operation instead of a read-bound one. |
 | **Card-aware menu bar** | A menu bar item detects card arrival, can auto-open the window, and offers optional one-click ingest with your saved defaults. |
@@ -84,7 +85,7 @@ flowchart LR
 2. **`AssetDiscovery`** does a two-pass directory walk: RAW primaries and their same-directory companions first, then standalone JPEGs not already claimed as a RAW's JPEG pair. Companion matching is same-directory only, by design.
 3. **`ExifReader`** reads `DateTimeOriginal` (or `Digitized`) via ImageIO in the local time zone, falling back to file modification time. This date drives all folder grouping.
 4. **`PathPlanner`** groups bundles into the preview tree; **`CopyPlan`** computes the real destination path and filename for each bundle from your templates.
-5. **`Copier`** builds a per-destination dedup index, then for each file: dedup-check → copy + tee-hash → verify → record the hash. A verification mismatch halts the job; any other per-bundle error is logged and the job continues. On success it optionally ejects the card, writes a log and a **verification manifest** (the receipt of every file and its hash), and persists the hash cache.
+5. **`IngestEngine`** builds a per-destination dedup index, then for each file: dedup-check → copy + tee-hash → verify → record the hash. A verification mismatch halts the job; any other per-bundle error is logged and the job continues. On success it optionally ejects the card, writes a log and a **verification manifest** (the receipt of every file and its hash) at *every* destination, and persists the hash cache. Cancelling or halting still writes both, marked `partial`, because the files that landed need a record too. (`Copier` is the main-actor controller that drives the engine and holds the UI state.)
 
 The unit that everything operates on is the **`AssetBundle`** — one primary photo plus its companions. Copy, verify, rollback, and dedup all act on whole bundles, because a RAW without its `.dop` has lost its edits.
 
@@ -150,6 +151,13 @@ Preferences are plain `@AppStorage` keys (no central store). Defaults:
 | `photodrop.menuBar.visibility` | enum | `always` | Menu bar item: Always / With card / Hidden. |
 | `photodrop.menuBar.autoOpenWindow` | Bool | `true` | Open the window when a card arrives. |
 | `photodrop.menuBar.oneClickIngest` | Bool | `false` | One-click ingest from the menu bar using saved defaults. |
+| `photodrop.extraArchiveDestinations` | String | — | Newline-separated extra mirror folders, beyond Primary + Archive (3-2-1 backups). |
+| `photodrop.postIngestScript` | String | — | Executable run after a clean ingest; argv[1] is the primary destination, job details in `PHOTODROP_*` env vars. |
+| `photodrop.scheduledVerify.enabled` | Bool | `false` | Install a launchd agent that re-verifies the library on a schedule. |
+| `photodrop.scheduledVerify.schedule` | enum | `weekly` | Cadence of the scheduled verification (daily / weekly / monthly, always 03:00). |
+| `photodrop.scheduledVerify.binaryPath` | String | bundled CLI | Path to `photodrop` for the scheduled job; defaults to the copy inside the app. |
+| `photodrop.scheduledVerify.library` | String | — | Library the scheduled job checks; defaults to the primary destination. |
+| `photodrop.notify.authorizationDenied` | Bool | `false` | Written by the app, not a toggle: macOS refused permission to post banners. |
 
 ## Naming templates
 
@@ -180,6 +188,53 @@ Companions are renamed to track the primary's new name, so the stem relationship
 
 The verification mark differs per theme too: Steady uses the mechanical **seal grid** that fills as bundles verify (the motif in the banner above), Ledger a **wax-seal stamp** ring, and Pressroom an **aperture iris**.
 
+## Command line
+
+A headless `photodrop` tool ships **inside the app bundle** at
+`PhotoDropMac.app/Contents/MacOS/photodrop`, signed and notarized with it — nothing to install
+separately. Symlink it onto your `PATH` if you want it by name:
+
+```bash
+sudo ln -s /Applications/PhotoDropMac.app/Contents/MacOS/photodrop /usr/local/bin/photodrop
+```
+
+It drives the same engines as the app, so its answers are the app's answers.
+
+**Exit codes are the contract** — `0` success, `1` issues found, `2` could not check (no manifest,
+unreadable target, or an error), `64` usage error. Anything scripting this should branch on all four:
+"found a problem" and "couldn't look" are different events and deserve different responses.
+
+### `photodrop verify <library|manifest.json> [--json] [--xattr]`
+
+Re-hashes every file recorded in the library's manifests and reports matches, silent corruption,
+missing files, and manifests that disagree with each other. `--xattr` instead verifies each file
+against the checksum stamped into its own extended attribute, so it works on any folder even after a
+reorganization or a lost manifest — best-effort, since exFAT, some cloud sync and `cp -X` strip
+xattrs. `--json` emits a machine-readable report, including counts of what could *not* be examined.
+
+### `photodrop ingest --from <card> --to <library> [--archive <mirror>]… [options]`
+
+A headless ingest: the same scan, plan, dedup, tee-hash verification and mirroring as the app.
+`--to` must already exist. Other options: `--preset <name>`, `--[no-]verify`, `--[no-]eject`,
+`--description`, `--folder-template`, `--file-template`, `--post-ingest-hook <path>`.
+
+**SIGINT, SIGTERM and SIGHUP are all graceful cancels** — the job stops at the next file boundary and
+still writes its manifest and log for what landed. A second signal exits immediately.
+
+### `photodrop heal <library> [--json] [--script <path>] [--mirror <path>]…`
+
+Recovery triage, and **strictly report-only** — it never writes to the library. It verifies the
+library, and for every damaged or missing file reports whether a healthy copy still exists in one of
+the mirrors that job wrote, and where. `--script` writes a shell script that would restore them,
+for **you** to review and run; PhotoDrop will not run it, will not write it inside the library, and
+will not overwrite an existing file with it.
+
+A recorded mirror is searched only if it looks like a PhotoDrop destination (it carries a
+`PhotoDrop Manifests/` folder) or you vouch for it with `--mirror`. Manifests are unauthenticated
+files that anyone who can write to the library can add to, and without that gate a planted one turns
+`heal` into a way to confirm the contents of any directory you can read. Roots that are skipped are
+listed in the output rather than quietly ignored.
+
 ## Architecture
 
 Swift 6 strict concurrency is on, with a deliberate split:
@@ -201,24 +256,34 @@ State is persisted in the user's Library: the hash cache at `~/Library/Applicati
 
 ```text
 PhotoDropMac/
-├─ project.yml                 # XcodeGen spec (the .xcodeproj is generated)
+├─ project.yml                 # XcodeGen spec (the .xcodeproj is generated, not committed)
 ├─ CLAUDE.md                   # in-repo guide to the codebase
+├─ .github/workflows/ci.yml    # xcodegen + suite + CLI + side-effect assertions + doc links
+├─ scripts/                    # release.sh, make-icon.swift, check-doc-links.sh
 ├─ docs/
 │  └─ design_handoff_polish_pass/   # design spec, copy, and an HTML prototype
+├─ Tests/PhotoDropMacTests/    # the XCTest target (hosted in the app)
+├─ Sources/PhotoDropCLI/       # the headless `photodrop` front-end (argument-parser)
 └─ Sources/PhotoDropMac/
-   ├─ PhotoDropMacApp.swift · AppCoordinator.swift      # app entry, scenes, menu bar
-   ├─ DriveWatcher.swift · DriveEjector.swift           # card detection & eject
-   ├─ AssetBundle.swift · AssetDiscovery.swift · ExifReader.swift   # scan & model
-   ├─ PathPlanner.swift · CopyPlan.swift · NamingTemplate.swift     # path planning
-   ├─ IngestPlanner.swift · PreflightCheck.swift        # orchestration & free-space check
-   ├─ Copier.swift · FileCopier.swift · DestinationIndex.swift      # copy engine & dedup
-   ├─ Hasher.swift · HashCache.swift · JobLogger.swift · Manifest.swift   # xxHash, cache, logs, receipts
-   ├─ MainView.swift · PreviewTree.swift · ContactSheet.swift · ThumbnailLoader.swift
-   ├─ InspectorPane.swift · ProgressPane.swift · CompletionSheet.swift · SettingsView.swift
-   ├─ Verifier.swift · VerifySheet.swift                # library re-verification
-   ├─ VerificationStyle+Theme.swift                     # the three themes
-   ├─ SealGrid.swift · StampMark.swift · ApertureMark.swift · VerifiedSignature.swift  # marks
-   └─ Notifier.swift                                    # completion notifications
+   ├─ Core/                    # engines + pure logic; compiled into the app AND the CLI
+   │  ├─ AssetBundle.swift · AssetDiscovery.swift · ExifReader.swift        # scan & model
+   │  ├─ PathPlanner.swift · CopyPlan.swift · NamingTemplate.swift          # path planning
+   │  ├─ IngestEngine.swift · FileCopier.swift · DestinationIndex.swift     # the copy engine & dedup
+   │  ├─ Hasher.swift · HashCache.swift · FileChecksumXattr.swift           # xxHash, cache, per-file stamps
+   │  ├─ Manifest.swift · JobLogger.swift · JobStamp.swift                  # receipts, logs, job naming
+   │  ├─ VerifyEngine.swift · HealEngine.swift                              # re-verification & recovery
+   │  ├─ DestinationTopology.swift · ArchiveDestinations.swift · PreflightCheck.swift
+   │  ├─ ChildProcess.swift · DriveEjector.swift · PostIngestHook.swift · ScheduledVerification.swift
+   │  └─ SafeText.swift · IngestPreset.swift                                # sink neutralization, presets
+   └─ UI/                      # SwiftUI; never compiled into the CLI
+      ├─ PhotoDropMacApp.swift · AppCoordinator.swift · JobRegistry.swift   # app entry, scenes, menus, quit
+      ├─ DriveWatcher.swift · IngestPlanner.swift · Copier.swift · Verifier.swift   # controllers
+      ├─ MainView.swift · PreviewTree.swift · ContactSheet.swift · ThumbnailLoader.swift
+      ├─ InspectorPane.swift · ProgressPane.swift · CompletionSheet.swift · JobArtifactButtons.swift
+      ├─ SettingsView.swift · VerifySheet.swift · EmbeddedCLI.swift
+      ├─ VerificationStyle+Theme.swift                                      # the three themes
+      ├─ SealGrid.swift · StampMark.swift · ApertureMark.swift · VerifiedSignature.swift  # marks
+      └─ Notifier.swift                                                     # completion notifications
 ```
 
 ## Signing and sandbox
@@ -242,7 +307,7 @@ xcodebuild -project PhotoDropMac.xcodeproj -scheme PhotoDropMac \
            -configuration Debug -destination 'platform=macOS' test
 ```
 
-`HasherTests` checks the XXH64 implementation against known-answer vectors from the reference `xxh64sum`, plus every streaming split offset, single-bit sensitivity, and file-vs-memory agreement — so a wrong-but-self-consistent hash can't quietly confirm every copy against its own mistake.
+`HasherTests` checks the XXH64 implementation against known-answer vectors from the reference `xxh64sum`, plus every streaming split offset, single-bit sensitivity, and file-vs-memory agreement — so a wrong-but-self-consistent hash can't quietly confirm every copy against its own mistake. It is the *only* consumer of the vector table, which is Debug-only in `Hasher.swift`. (An earlier `xxHash64SelfCheck()` used those vectors with `assert` and had zero callers, so it never ran; this README claimed otherwise.)
 
 ## Credits
 

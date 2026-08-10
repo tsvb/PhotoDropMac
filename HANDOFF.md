@@ -248,7 +248,7 @@ ticket was attached. Stage a copy first — one line.
 
 ## 7. Findings dossier — UI and docs
 
-**T4-1 · The halt path dead-ends, and the payload already exists.** `Copier.swift:130-132`
+**T4-1 · The halt path dead-ends, and the payload already exists.** **FIXED (`5d1e1d2`).** `CopierState.failed` carries the `CopyResult`; `JobArtifactButtons` is shared by completed, cancelled and failed. `Copier.swift:130-132`
 collapses a halted `CopyResult` to a bare string, discarding `logURL` and `manifestURL` — but
 the engine *did* write a `partial: true` manifest and a log and *did* return their URLs
 (`IngestEngine.swift:318-335`). `MainView.swift:396-405` offers one sentence and a Reset button;
@@ -257,7 +257,7 @@ Meanwhile `Notifier.swift:29` tells the user to "see the app for details" — th
 story on cancel: `CopierState.cancelled(CopyResult?)` carries the receipt and nothing in `UI/`
 binds it. A `JobArtifactButtons(result:)` shared by all three terminal states closes it.
 
-**T4-2 · No `applicationShouldTerminate` anywhere, and this one loses integrity coverage.**
+**T4-2 · No `applicationShouldTerminate` anywhere, and this one loses integrity coverage.** **FIXED (`19baa73`).** Quit routes through the graceful cancel (`JobRegistry` + `AppDelegate`), and `Copier` is owned by the app rather than the window.
 `PhotoDropMacApp.swift:123-125` wires Quit straight to `NSApp.terminate(nil)`. `FileCopier`'s
 partial cleanup is a Swift `catch` that process death skips, and the orphan is then invisible
 forever: not in the manifest (written after the loop), not xattr-stamped, and on re-ingest its
@@ -267,12 +267,12 @@ size differs so dedup misses and `CopyPlan` disambiguates the *real* file to `�
 hook), and a reopened window mints a fresh `Copier()` at `.idle` reporting no ingest while one
 runs.
 
-**ProgressPane shows "VERIFIED" when verification is off.** `ProgressPane.swift:74-92` drives
+**ProgressPane shows "VERIFIED" when verification is off.** **FIXED (`5d1e1d2`).** The caption reads the running job's flag, not the current preference. `ProgressPane.swift:74-92` drives
 the mark from `progress.percent` (bytes copied) and hard-codes the caption at `:88`; the verify
 flag is never passed. This is exactly the dishonesty T1-5 just fixed in the completion text,
 left standing in the more prominent surface. Three lines.
 
-**One-click ingest can auto-start an ingest nobody requested.** `tryAutoIngest`
+**One-click ingest can auto-start an ingest nobody requested.** **FIXED (`5d1e1d2`).** `AutoIngestGate` separates "not yet" from "never" and clears both flags. `tryAutoIngest`
 (`MainView.swift:257-267`) returns without clearing `autoIngestPending` or
 `coordinator.pendingOneClickCardID` on any guard failure, and its only retry trigger is
 `.onChange(of: planner.isScanning)`. One-click a card with no recognized photos → flag stays
@@ -280,24 +280,24 @@ armed → insert a different card later → it ingests with no user action. Seco
 uncleared coordinator field means re-clicking for the same card sets an identical value, so
 `onChange` doesn't fire and the second click silently does nothing.
 
-**T4-3 · Culling is invisible outside the grid.** `MainView.swift:304` and
+**T4-3 · Culling is invisible outside the grid.** **FIXED (`5d1e1d2`).** One `SelectionSummary` behind the header, the subtitle and the button. `MainView.swift:304` and
 `PreviewTree.swift:27-31` report all discovered bundles while `MainView.swift:197` ingests
 `selectedYearGroups()` (`:233-246`). Deselect 400 of 500, switch to tree, read "500 files"
 beside a button that will copy 100. `selectedBundleCount` is already computed at `:188-193`.
 
-**T4-4 · "Auto-open window" is inert in `.withCard` mode.** `PhotoDropMacApp.swift:61-71` puts
+**T4-4 · "Auto-open window" is inert in `.withCard` mode.** **FIXED (`19baa73`).** `initial: true` plus `MenuBarAutoOpen`; Settings disables the toggle in `.hidden` and says why. `PhotoDropMacApp.swift:61-71` puts
 the `onChange` on the MenuBarExtra *label*, which in `.withCard` is created by the very
 drives-empty→non-empty transition it needs to observe; without `initial: true` it never fires,
 so the first card of a session never auto-opens. It's also inert in `.hidden`, and
 `SettingsView.swift:316` shows the toggle plainly enabled in all three modes.
 
-**T4-5 · Silent `try?` cluster:** failed preset save (`IngestPreset.swift:127-130` — appears to
+**T4-5 · Silent `try?` cluster:** **FIXED (`f2d6c08`).** failed preset save (`IngestPreset.swift:127-130` — appears to
 succeed, gone next launch), denied notification authorization (`Notifier.swift:47`, `:55` —
 toggle reads checked forever, and authorization is first requested at the worst possible moment,
 deliberately while the app is *not* frontmost), failed sidebar eject (`MainView.swift:359`,
 reports neither outcome — contrast `IngestEngine.swift:300-307`, which logs it).
 
-**T4-6 · Accessibility:** five image-only controls carry `.help()` but no `accessibilityLabel`
+**T4-6 · Accessibility:** **FIXED (`f2d6c08`)** for the labels and the missing `.commands` block. Localization and `@SceneStorage` remain deliberate non-goals for a one-developer tool — now said out loud here rather than left implicit. five image-only controls carry `.help()` but no `accessibilityLabel`
 (different AX attributes) — `MainView.swift:357-365`, `InspectorPane.swift:186-192` and
 `:255-262`, `SettingsView.swift:211` and `:353` — plus the preview-mode Picker's two bare
 `Image` tags. No `.commands` block, so no menu items for Refresh / Verify Library / Toggle
@@ -305,14 +305,14 @@ Inspector / Cancel. (Correction to REVIEW.md: keyboard shortcuts *do* exist — 
 localization and no `@SceneStorage`; both are defensible scope choices for a one-developer tool,
 but say so somewhere rather than leaving it implicit.
 
-**T4-7 (low):** `IngestPlanner.replan` is synchronous on the main actor per keystroke
+**T4-7 (low):** **FIXED (`f2d6c08`).** Debounced replan with a `replanNow()` flush before ingest; undecodable thumbnails cached and rendered as such; the phantom concurrency-bound claim replaced with what actually bounds it. `IngestPlanner.replan` is synchronous on the main actor per keystroke
 (`:54-57`, `:64-66`), O(bundles) per character. `ThumbnailLoader` uses `Task.detached` (`:61-68`)
 which doesn't inherit cancellation, so scrolled-away decodes run to completion; the claimed
 concurrency bound is prose only (`:42-43` — no semaphore exists); a nil decode (`:79`) is never
 cached, so `ContactSheet.swift:164-172` spins a `ProgressView` forever and retries on every
 reappearance.
 
-**Docs — mechanical but load-bearing:**
+**Docs — mechanical but load-bearing:** **FIXED (`07a5810` for the links, this pass for the rest).**
 - `CLAUDE.md` has **13 broken links across 11 unique paths**, all flat
   `Sources/PhotoDropMac/X.swift` predating the `Core/`/`UI/` split: lines 47, 65, 75, 79, 129,
   144 (×3), 152, 153, 161 (×2), 169.

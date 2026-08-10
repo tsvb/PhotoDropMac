@@ -107,9 +107,16 @@ A bundle is one primary photo + its companions (`.xmp`/`.dop`/`.pp3` sidecars, J
 
 **The plan is computed once and rebased onto every mirror** (`IngestEngine.rebase`), so a file has the same relative path at every destination. Planning per root let the `_1` disambiguator be chosen independently, and since the manifest records only the primary's path, `heal` would look for that name under a mirror root, miss, and call a file unrecoverable with a perfect copy present. Collision avoidance therefore unions the existing names across *all* destinations — a name is only free if it is free everywhere.
 
-### The copy engine (`Copier`)
+### The copy engine ([IngestEngine.swift](Sources/PhotoDropMac/Core/IngestEngine.swift))
 
-`Copier.start(...)` spawns a `Task` running `run(...)`, which:
+**Everything below is `IngestEngine` (~560 lines), not `Copier`.** This section
+used to be titled "`Copier`" and attributed the destination index, the rollback and the manifest writing to
+it; `Copier` ([Copier.swift](Sources/PhotoDropMac/UI/Copier.swift)) is ~230 lines of main-actor state plumbing —
+it owns the `CopierState`, the visible log, the cancellation generation and the terminal-state receipt, spawns
+the engine detached, and marshals progress back. The engine is nonisolated, has no UI dependencies, and is what
+the CLI drives directly. Sending a reader to the wrong file is the whole reason this correction is written out.
+
+`Copier.start(...)` spawns a `Task` that runs `IngestEngine.run()`, which:
 - Builds a **`DestinationIndex`** per destination root (size-bucketed snapshot; hashes only on a size collision) for dedup.
 - Per bundle, per file: dedup-check → copy+tee-hash → optional verify → record hash. Skipped (duplicate) bytes still count toward progress so the bar fills smoothly.
 - **Rollback:** if any file in a bundle fails, already-written files from *that bundle* are deleted (the bundle is all-or-nothing).
@@ -179,7 +186,21 @@ Swift 6 strict concurrency is on. Follow the existing split:
 
 ## Settings contract (`@AppStorage`)
 
-Preferences are plain `@AppStorage` keys with **no central store** — the same keys are declared independently in [MainView.swift](Sources/PhotoDropMac/UI/MainView.swift), [InspectorPane.swift](Sources/PhotoDropMac/UI/InspectorPane.swift), and [SettingsView.swift](Sources/PhotoDropMac/UI/SettingsView.swift). If you add or rename one, update **every** declaration site or the views silently desync:
+Preferences are plain `@AppStorage` keys with **no central store**, and the same key is re-declared at every
+site that reads it. **Eleven files declare them** — [MainView.swift](Sources/PhotoDropMac/UI/MainView.swift),
+[SettingsView.swift](Sources/PhotoDropMac/UI/SettingsView.swift),
+[InspectorPane.swift](Sources/PhotoDropMac/UI/InspectorPane.swift),
+[PhotoDropMacApp.swift](Sources/PhotoDropMac/UI/PhotoDropMacApp.swift),
+[ProgressPane.swift](Sources/PhotoDropMac/UI/ProgressPane.swift),
+[CompletionSheet.swift](Sources/PhotoDropMac/UI/CompletionSheet.swift),
+[ContactSheet.swift](Sources/PhotoDropMac/UI/ContactSheet.swift),
+[PreviewTree.swift](Sources/PhotoDropMac/UI/PreviewTree.swift),
+[VerifySheet.swift](Sources/PhotoDropMac/UI/VerifySheet.swift),
+[AppCoordinator.swift](Sources/PhotoDropMac/UI/AppCoordinator.swift) and
+[IngestPreset.swift](Sources/PhotoDropMac/Core/IngestPreset.swift). `photodrop.verificationStyle` alone has nine
+declarations across eight files. This doc previously said "three files", which undercut the very invariant it was
+stating. If you add or rename a key, `grep` for it and update **every** declaration site or the views silently
+desync:
 
 - `photodrop.primaryDestination` (String)
 - `photodrop.archiveDestination` (String, optional second copy)
@@ -187,6 +208,7 @@ Preferences are plain `@AppStorage` keys with **no central store** — the same 
 - `photodrop.verifyCopies` (Bool, default `true`)
 - `photodrop.ejectAfterIngest` (Bool, default `false`)
 - `photodrop.showCompletionSheet` (Bool, default `true`)
+- `photodrop.notify.authorizationDenied` (Bool, default `false`) — written by [Notifier.swift](Sources/PhotoDropMac/UI/Notifier.swift), not by a toggle: macOS refused permission to post banners. Authorization is requested when the user turns notifications *on* (in Settings, where they can answer the prompt) rather than lazily from `post`, which by construction ran while the app was **not** frontmost and discarded the answer — leaving a checked toggle that never produced a banner. Settings shows a warning row when this is set
 - `photodrop.notifyOnCompletion` (Bool, default `true`) — posts a Notification Center banner on finish when the app isn't frontmost ([Notifier.swift](Sources/PhotoDropMac/UI/Notifier.swift), read via `UserDefaults`; toggled in `SettingsView`)
 - `photodrop.postIngestScript` (String, default empty) — path to an executable run after a clean (non-halted) ingest ([PostIngestHook.swift](Sources/PhotoDropMac/Core/PostIngestHook.swift)); argv[1] is the primary destination, job details are in `PHOTODROP_*` env vars. Best-effort (a failure posts a banner, never affects the copy). Read via `UserDefaults` in `Copier`, set in `SettingsView`
 - `photodrop.template.folder` (String, default `{yyyy-MM-dd}[_{Description}]`) — day-folder name template

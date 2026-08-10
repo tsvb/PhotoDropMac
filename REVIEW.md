@@ -61,7 +61,7 @@ never exercised. The most telling instance is that `HealEngine` uses the exact
 newest-manifest-wins rule that `VerifyEngine`, twenty files away, spends two paragraphs
 explaining is unsafe — the *knowledge* is in the repo, it just didn't travel.
 
-**And at review time nothing enforced any of it.** There was no CI: 21 test files, a live
+**And at review time nothing enforced any of it.** There was no CI: 22 test files, a live
 GitHub remote, and the only thing that ran them was a human typing `xcodebuild`; `release.sh`
 went from `xcodegen` straight to a notarized DMG with no test gate. Both are now closed (Tier 3),
 which is what makes the rest of this document durable rather than a snapshot.
@@ -330,7 +330,7 @@ block the main thread on two `waitUntilExit()` calls.
 > deleted** — that is the user's audit trail.
 
 1. **There is no CI.** No `.github/`, no workflow, no pre-commit, despite a live remote. This
-   is the single highest-value item in the review: 132 passing tests that nothing runs
+   is the single highest-value item in the review: a whole passing suite that nothing runs
    automatically. A `macos-latest` workflow running `xcodegen generate && xcodebuild … test`
    is an afternoon's work and would have caught several Tier-1 items as they were introduced.
    Note the hosted test bundle needs a GUI session — GitHub's macOS runners provide one.
