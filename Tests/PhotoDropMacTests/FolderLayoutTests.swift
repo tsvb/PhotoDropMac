@@ -133,6 +133,35 @@ final class FolderLayoutTests: XCTestCase {
                         "Date + description"])
     }
 
+    // MARK: - Applying a layout
+
+    /// One method writes the settings, shared by the inspector and Settings →
+    /// Naming. Two copies of "set these three keys" is how the two surfaces end
+    /// up disagreeing about what a layout means.
+    func testApplyingALayoutWritesAllThreeKeys() throws {
+        let suite = UserDefaults(suiteName: "photodrop.tests.\(UUID().uuidString)")!
+        FolderLayout.dateAndOriginalName.apply(to: suite)
+
+        XCTAssertEqual(suite.string(forKey: IngestPreset.Keys.folder), "{yyyy-MM-dd}")
+        XCTAssertEqual(suite.string(forKey: IngestPreset.Keys.filename), "{OriginalStem}")
+        XCTAssertEqual(suite.object(forKey: IngestPreset.Keys.yearFolder) as? Bool, false,
+                       "the year level is part of the layout — applying one must set it too")
+    }
+
+    /// The picker shows the matching layout, or "Custom". The shipped default is
+    /// deliberately *not* one of the four, so a fresh install reads as Custom
+    /// rather than mislabelling itself as a layout it isn't.
+    func testTheShippedDefaultIsNotOneOfTheBuiltInLayouts() {
+        XCTAssertNil(FolderLayout.matching(.default))
+    }
+
+    func testAppliedLayoutsAreRecognisedAfterwards() throws {
+        for layout in FolderLayout.builtIn {
+            XCTAssertEqual(FolderLayout.matching(layout.template), layout,
+                           "\(layout.name) must read back as itself once applied")
+        }
+    }
+
     // MARK: - Round-tripping through a saved preset
 
     /// `IngestPreset` persists the templates. A preset saved before the year

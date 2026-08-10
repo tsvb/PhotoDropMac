@@ -310,9 +310,7 @@ struct NamingPreferences: View {
             Section {
                 ForEach(FolderLayout.builtIn) { layout in
                     LayoutRow(layout: layout, isSelected: FolderLayout.matching(current) == layout) {
-                        folder = layout.template.folder
-                        filename = layout.template.filename
-                        yearFolder = layout.template.yearFolder
+                        layout.apply()
                     }
                 }
             } header: {

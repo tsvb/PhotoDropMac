@@ -14,7 +14,7 @@ import os
 ///   • `[…]` — an optional group: dropped entirely if a *named* token inside
 ///     it resolves empty (so `[_{Description}]` vanishes when there's no
 ///     description). Date tokens are never empty.
-struct NamingTemplate: Sendable, Equatable {
+struct NamingTemplate: Sendable, Hashable {
     var folder: String
     var filename: String
     /// Whether a `{yyyy}` folder is inserted above the rendered day folder.

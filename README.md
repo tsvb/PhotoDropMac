@@ -166,7 +166,7 @@ The destination layout is `{root}[/{yyyy}]/{day-folder}/{filename}.{ext}` — th
 
 ### Layouts
 
-Settings → Naming offers four starting points. Picking one fills in the templates below it, which stay editable — a layout is a shortcut, never a mode. They set the *shape* only; the destination folder is always the one you choose.
+Pick one from the **Layout** menu in the inspector, beside the destination it shapes — where photos go and how they're arranged under it is one decision. Settings → Naming shows the same four with a sample path and a description each. Picking one fills in the templates, which stay editable; a layout is a shortcut, never a mode, and the menu reads **Custom** once the templates no longer match one. They set the *shape* only — the destination folder is always the one you choose.
 
 | Layout | Produces |
 | --- | --- |

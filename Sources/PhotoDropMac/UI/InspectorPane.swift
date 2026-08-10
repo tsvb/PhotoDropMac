@@ -18,6 +18,23 @@ struct InspectorPane: View {
     @State private var showingSaveDialog = false
     @State private var newPresetName = ""
 
+    /// The layout matching the templates in force, or nil for "Custom".
+    /// Derived rather than stored — a separate "which layout" key could
+    /// disagree with the templates it claims to describe.
+    private var currentTemplate: NamingTemplate {
+        NamingTemplate(folder: folderTemplate, filename: fileTemplate, yearFolder: yearFolder)
+    }
+
+    private var layoutSelection: Binding<FolderLayout?> {
+        Binding(
+            get: { FolderLayout.matching(currentTemplate) },
+            // Picking "Custom" is a no-op: you get there by editing the
+            // templates, and silently rewriting them here would discard the
+            // edits that put you there.
+            set: { $0?.apply() }
+        )
+    }
+
     var body: some View {
         Form {
             Section("Presets") {
@@ -65,6 +82,20 @@ struct InspectorPane: View {
             }
 
             Section("Naming") {
+                // The layout belongs *here*, beside the destination it shapes —
+                // choosing where photos go and choosing how they're arranged
+                // under it is one decision, and it was split across two windows
+                // with half of it buried in Settings.
+                Picker("Layout", selection: layoutSelection) {
+                    ForEach(FolderLayout.builtIn) { layout in
+                        Text(layout.name).tag(FolderLayout?.some(layout))
+                    }
+                    Divider()
+                    // Reached by editing the templates, not by picking it: the
+                    // honest label for "these templates aren't one of the four".
+                    Text("Custom").tag(FolderLayout?.none)
+                }
+
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 8) {
                         templateField(label: "Day folder", text: $folderTemplate,
@@ -74,6 +105,7 @@ struct InspectorPane: View {
                         Button("Reset to defaults") {
                             folderTemplate = NamingTemplate.default.folder
                             fileTemplate = NamingTemplate.default.filename
+                            yearFolder = NamingTemplate.default.yearFolder
                         }
                         .controlSize(.small)
                     }

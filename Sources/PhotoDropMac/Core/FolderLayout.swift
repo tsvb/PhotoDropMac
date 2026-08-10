@@ -12,7 +12,7 @@ import Foundation
 ///
 /// Applying one is just a starting point — the templates remain fully editable
 /// afterwards, so a layout is a shortcut, never a mode.
-struct FolderLayout: Identifiable, Sendable, Equatable {
+struct FolderLayout: Identifiable, Sendable, Hashable {
     var id: String { name }
     let name: String
     /// One line, in the user's terms, of what this produces.
@@ -31,6 +31,18 @@ struct FolderLayout: Identifiable, Sendable, Equatable {
         NamingTemplate.relativeSamplePath(folder: template.folder, filename: template.filename,
                                           yearFolder: template.yearFolder,
                                           context: context, fileExtension: fileExtension)
+    }
+
+    /// Write this layout into the shared settings.
+    ///
+    /// One method, used by both the inspector and Settings → Naming: two copies
+    /// of "set these three keys" is exactly how two surfaces end up disagreeing
+    /// about what a layout means. Mirrors `IngestPreset.apply`, and like it
+    /// writes through `UserDefaults` so every `@AppStorage` reader updates.
+    func apply(to defaults: UserDefaults = .standard) {
+        defaults.set(template.folder, forKey: IngestPreset.Keys.folder)
+        defaults.set(template.filename, forKey: IngestPreset.Keys.filename)
+        defaults.set(template.yearFolder, forKey: IngestPreset.Keys.yearFolder)
     }
 
     // MARK: - The built-ins
