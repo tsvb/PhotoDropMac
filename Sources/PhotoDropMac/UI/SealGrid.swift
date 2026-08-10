@@ -37,38 +37,7 @@ struct SealGrid: View {
     @State private var pulseScale: CGFloat = 1
 
     var body: some View {
-        Canvas { ctx, size in
-            let totalCells = columns * rows
-            let filled = Int((progress.clamped(to: 0...1) * Double(totalCells)).rounded())
-
-            let usable = CGSize(
-                width:  size.width  - pad * 2,
-                height: size.height - pad * 2
-            )
-            let cellW = (usable.width  - cellGap * CGFloat(columns - 1)) / CGFloat(columns)
-            let cellH = (usable.height - cellGap * CGFloat(rows    - 1)) / CGFloat(rows)
-
-            // Background frame (very faint, gives the grid edge presence).
-            let bg = Path(roundedRect: CGRect(origin: .zero, size: size),
-                          cornerRadius: 6)
-            ctx.fill(bg, with: .color(.primary.opacity(0.04)))
-
-            for i in 0..<totalCells {
-                let row = i / columns
-                let col = i % columns
-                let x = pad + CGFloat(col) * (cellW + cellGap)
-                let y = pad + CGFloat(row) * (cellH + cellGap)
-
-                let rect = CGRect(x: x, y: y, width: cellW, height: cellH)
-                let path = Path(roundedRect: rect, cornerRadius: 1.5)
-
-                if i < filled {
-                    ctx.fill(path, with: .color(accent))
-                } else {
-                    ctx.fill(path, with: .color(.primary.opacity(0.10)))
-                }
-            }
-        }
+        Canvas { ctx, size in draw(&ctx, size: size) }
         .scaleEffect(pulse ? pulseScale : 1)
         .onAppear {
             guard pulse else { return }
@@ -85,6 +54,38 @@ struct SealGrid: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Verification progress")
         .accessibilityValue(Text("\(Int(progress * 100)) percent"))
+    }
+
+    /// Split out of `body` with every intermediate annotated — see the note in
+    /// `ApertureMark.draw`. The CI toolchain (Xcode 16.4 / Swift 6.1.2) will not
+    /// type-check these mixed `CGFloat`/`Double`/`Int` Canvas closures in
+    /// reasonable time, while the local one (26.6 / 6.3.3) does; a green build
+    /// here is not evidence of a green build anywhere else.
+    private func draw(_ ctx: inout GraphicsContext, size: CGSize) {
+        let totalCells: Int = columns * rows
+        let clamped: Double = progress.clamped(to: 0...1)
+        let filled: Int = Int((clamped * Double(totalCells)).rounded())
+
+        let usableWidth: CGFloat = size.width - pad * 2
+        let usableHeight: CGFloat = size.height - pad * 2
+        let cellW: CGFloat = (usableWidth - cellGap * CGFloat(columns - 1)) / CGFloat(columns)
+        let cellH: CGFloat = (usableHeight - cellGap * CGFloat(rows - 1)) / CGFloat(rows)
+
+        // Background frame (very faint, gives the grid edge presence).
+        let bg = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 6)
+        ctx.fill(bg, with: .color(.primary.opacity(0.04)))
+
+        for i in 0..<totalCells {
+            let row: Int = i / columns
+            let col: Int = i % columns
+            let x: CGFloat = pad + CGFloat(col) * (cellW + cellGap)
+            let y: CGFloat = pad + CGFloat(row) * (cellH + cellGap)
+
+            let rect = CGRect(x: x, y: y, width: cellW, height: cellH)
+            let path = Path(roundedRect: rect, cornerRadius: 1.5)
+            let colour: Color = i < filled ? accent : .primary.opacity(0.10)
+            ctx.fill(path, with: .color(colour))
+        }
     }
 }
 

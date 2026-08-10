@@ -112,37 +112,8 @@ struct ThumbnailCell: View {
 
     var body: some View {
         VStack(spacing: 3) {
-            ZStack(alignment: .topTrailing) {
-                thumbnail
-                    .frame(height: 104)
-                    .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .grayscale(isSelected ? 0 : 1)      // culled → desaturated…
-                    .opacity(isSelected ? 1 : 0.5)      // …and dimmed
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(isSelected ? accent : Color.primary.opacity(0.12),
-                                          lineWidth: isSelected ? 2.5 : 1)
-                    }
-
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 17))
-                    .foregroundStyle(isSelected ? accent : Color.white.opacity(0.85))
-                    .background(Circle().fill(.black.opacity(0.35)).padding(1))
-                    .shadow(color: .black.opacity(0.45), radius: 1.5, y: 0.5)
-                    .padding(5)
-            }
-            HStack(spacing: 4) {
-                Text(bundle.primary.url.lastPathComponent)
-                    .font(.caption2).lineLimit(1).truncationMode(.middle)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                Text(bundle.primary.url.pathExtension.uppercased())
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 4).padding(.vertical, 1)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 3))
-            }
+            frame
+            caption
         }
         .contentShape(Rectangle())
         .onTapGesture(perform: onToggle)
@@ -158,6 +129,47 @@ struct ThumbnailCell: View {
         .accessibilityAction { onToggle() }
         .task(id: bundle.id) {
             if outcome == nil { outcome = await loader.outcome(for: bundle.primary.url) }
+        }
+    }
+
+    /// Split out of `body`, like the mark views: this cell is instantiated once
+    /// per photo on the card, and it was the last body in the target the type
+    /// checker spent real time on. CI's older toolchain charges far more for the
+    /// same expression than the local one does.
+    private var frame: some View {
+        ZStack(alignment: .topTrailing) {
+            thumbnail
+                .frame(height: 104)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .grayscale(isSelected ? 0 : 1)      // culled → desaturated…
+                .opacity(isSelected ? 1 : 0.5)      // …and dimmed
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(isSelected ? accent : Color.primary.opacity(0.12),
+                                      lineWidth: isSelected ? 2.5 : 1)
+                }
+
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 17))
+                .foregroundStyle(isSelected ? accent : Color.white.opacity(0.85))
+                .background(Circle().fill(.black.opacity(0.35)).padding(1))
+                .shadow(color: .black.opacity(0.45), radius: 1.5, y: 0.5)
+                .padding(5)
+        }
+    }
+
+    private var caption: some View {
+        HStack(spacing: 4) {
+            Text(bundle.primary.url.lastPathComponent)
+                .font(.caption2).lineLimit(1).truncationMode(.middle)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Text(bundle.primary.url.pathExtension.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 3))
         }
     }
 
