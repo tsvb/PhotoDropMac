@@ -118,7 +118,7 @@ is what sends the next agent to the wrong file.
 Ignoring or reordering an item is a legitimate decision; say so in one sentence. Every finding
 below was reproduced against the built binaries.
 
-**S-1 · `XxHash64.hash(fileAt:)` has no regular-file check and no autorelease drain** —
+**S-1 · `XxHash64.hash(fileAt:)` has no regular-file check and no autorelease drain** — **FIXED (`3a6080a`).**
 `Core/Hasher.swift:213-234`. HIGH. Both a security bug and a plain reliability bug:
 - Adversarial: a planted manifest with `"destinations": ["<lib>", "/dev"]` and an entry `zero`
   makes `heal` hash `/dev/zero`. Containment *passes* — `/dev` is the recorded root. Measured:
@@ -131,7 +131,7 @@ below was reproduced against the built binaries.
   verify), `HashCache.swift:164`. Regression-test at least the verify and xattr paths; testing
   only heal leaves the paths the benign memory numbers actually came from.
 
-**S-2 · `heal` is a hash-equality oracle over arbitrary readable files.** MEDIUM.
+**S-2 · `heal` is a hash-equality oracle over arbitrary readable files.** MEDIUM. **FIXED (`56c93fd`).** Both halves: non-regular files are refused at the primitive, and a recorded mirror root is searched only if it carries a `PhotoDrop Manifests/` folder or the user named it (`heal --mirror`). Refused roots are reported.
 `VerifyEngine.swift:116-118` takes mirror roots verbatim from the manifest;
 `HealEngine.swift:74-76` stats and hashes the resolved path. Anyone who can drop one JSON into
 `<lib>/PhotoDrop Manifests/` (shared NAS, synced folder, a library handed over on a drive) can
@@ -142,7 +142,7 @@ check only makes the answer *correct*, and the source-root header only helps if 
 it. Worth considering: refuse non-regular files (also fixes S-1), and gate mirror roots that
 aren't under a destination the *user* configured.
 
-**S-3 · The ingest log contains card filenames verbatim.** MEDIUM. `JobLogger.swift:66` builds
+**S-3 · The ingest log contains card filenames verbatim.** MEDIUM. **FIXED (`3b43537`).** `JobLogger.swift:66` builds
 `lineText` raw and `:70` writes it; text assembled at `IngestEngine.swift:478`. Confirmed
 against a real log: `IMG\x1B[2K\x1B[1A0002.CR2` erases the preceding VERIFY line when the user
 `cat`s the log, and a raw newline forges an entire fabricated log record. Same threat
@@ -157,7 +157,7 @@ message inline, plus `issuesMessage` / `cannotVerifyMessage` constants and three
 execution-level tests. **Read that commit before writing anything else** — it is the clearest
 example of the failure mode this codebase produces and of the test standard that catches it.
 
-**S-5 · Terminal/script filters cover C0+DEL only, not Unicode bidi.** MEDIUM.
+**S-5 · Terminal/script filters cover C0+DEL only, not Unicode bidi.** MEDIUM. **FIXED (`3b43537`).** One definition in `Core/SafeText.swift`, used by all three sinks. `PathPlanner.sanitize` is deliberately unchanged: storage must record the name the file actually has.
 `PhotoDropCLI.swift:313` and `HealEngine.swift:158` both test `< 0x20 || == 0x7F`;
 `PathPlanner.sanitize` (`PathPlanner.swift:104`) trims ends only, so U+202E survives into the
 destination filename, manifest, CSV and reports. Confirmed: a bidi filename produced a **live**
@@ -165,7 +165,7 @@ destination filename, manifest, CSV and reports. Confirmed: a bidi filename prod
 correct so the command is inert — but the script's entire safety model is "a human reviews
 every executable line," and this defeats the review rather than the shell.
 
-**S-6 · ImageIO decodes card bytes in-process, unsandboxed.** MEDIUM — threat model, not a bug
+**S-6 · ImageIO decodes card bytes in-process, unsandboxed.** MEDIUM — threat model, not a bug **RECORDED, not fixed (`f1243f1`)** — see the sandbox section of `CLAUDE.md`.
 list item. `ExifReader.dateTaken` runs for every primary on every scan; `ThumbnailLoader`
 decodes previews. A crafted RAW hitting a CoreGraphics decoder bug gets the user's full
 filesystem access, can write `~/Library/LaunchAgents`, and can rewrite
@@ -173,20 +173,20 @@ filesystem access, can write `~/Library/LaunchAgents`, and can rewrite
 containment. This is the accepted price of the sandbox exemption; it needs an XPC decode helper
 to fix. Record it; reconsider first if the sandbox decision is ever revisited.
 
-**S-7 · `ChildProcess` has no timeout, no output cap, and inherits stdin.** LOW.
+**S-7 · `ChildProcess` has no timeout, no output cap, and inherits stdin.** LOW. **FIXED (`775cdd0`).**
 `ChildProcess.swift:42-90`. A hook that blocks on stdin or a dead mount never returns (leaks a
 detached task per ingest via `Copier.swift:160-166`); a hook streaming gigabytes is drained but
 accumulated unbounded in memory. The Tier-2 fix removed the deadlock; it did not bound the
 resource.
 
-**S-8 · `verify` names a path it never checked.** LOW. `VerifyEngine.swift:73-75` builds issues
+**S-8 · `verify` names a path it never checked.** LOW. **FIXED (`09c7454`).** `VerifyEngine.swift:73-75` builds issues
 from `item.relPath` (the manifest's recorded string) rather than `item.url` (what was actually
 resolved and checked). A manifest entry `"path": "/etc/hosts"` is correctly re-rooted under the
 library, then reported as `MISSING /etc/hosts` — reproduced exactly. For a tool whose product is
 a trustworthy verdict line, printing a system path it did not inspect is a reporting-integrity
 flaw. Printing the resolved URL through `safe` costs nothing.
 
-**S-9 · None of the CLI's security-relevant code is tested.** LOW but structural.
+**S-9 · None of the CLI's security-relevant code is tested.** LOW but structural. **FIXED (`3b43537`, `e50423b`).** `CLIOutput.safe`'s rule moved into `Core/SafeText.swift` (tested directly), and `CLIBlackBoxTests` drives the embedded binary for the exit codes, the JSON shape and the terminal guard.
 `CLIOutput.safe` — the guard keeping card text from driving the terminal — has zero tests, as
 does every exit-code path the launchd agent branches on. `project.yml:71-81` gives the test
 target only `Tests/PhotoDropMacTests` + a dependency on the app; `:85-95` gives `photodrop` sole
