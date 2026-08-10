@@ -104,7 +104,9 @@ enum VerifyEngine {
     static func run(target: URL,
                     isCancelled: () -> Bool = { false },
                     onProgress: (VerifyProgress) -> Void = { _ in }) -> VerifyReport? {
-        let (work, manifestCount, conflicts) = build(target: target)
+        // Verification doesn't read mirrors — it checks the files under `target`
+        // — so the mirror gate is irrelevant here and the refused list is unused.
+        let (work, manifestCount, conflicts, _) = build(target: target)
         var verified = 0
         var issues: [VerifyIssue] = conflicts
         let total = work.count
@@ -145,11 +147,34 @@ enum VerifyEngine {
     /// existing path — so a conflict means either real corruption of a manifest
     /// or a planted one. Either way the library can no longer vouch for that
     /// file, which is exactly what the report should say.
-    static func build(target: URL) -> (items: [WorkItem], manifestCount: Int, conflicts: [VerifyIssue]) {
+    /// **A recorded mirror root is not trusted just because a manifest names it.**
+    /// `destinations[]` is untrusted data, so before this gate anyone who could
+    /// drop one JSON into `<lib>/PhotoDrop Manifests/` — a shared NAS, a synced
+    /// folder, a library handed over on a drive — could name *any* directory as a
+    /// mirror and have `heal` stat and hash files under it, then report whether a
+    /// guessed digest matched. That is a content oracle over everything the user
+    /// can read. Reproduced with a synthetic attacker root and a mode-600 dummy
+    /// file: heal hashed it, named it as the restore source, and `--script`
+    /// emitted a `cp` from it.
+    ///
+    /// A root is searched only if it *looks like a PhotoDrop destination* — every
+    /// root a job writes carries its own `PhotoDrop Manifests/` folder — or if the
+    /// user named it in `allowedMirrorRoots` (the CLI's `--mirror`). The user's
+    /// word is the escape hatch for a mirror written before mirrors carried their
+    /// own manifests; the manifest's word is not.
+    ///
+    /// Refused roots are **returned, not silently dropped**. "We didn't look
+    /// there" is precisely the quiet narrowing that would make a recovery tool
+    /// lie by omission, and the user is the only one who can say whether the root
+    /// is theirs.
+    static func build(target: URL, allowedMirrorRoots: [URL] = [])
+        -> (items: [WorkItem], manifestCount: Int, conflicts: [VerifyIssue], refusedMirrorRoots: [String]) {
+        let allowed = Set(allowedMirrorRoots.map { $0.standardizedFileURL.path })
         // Decode every manifest, then order oldest → newest. This ordering is
         // only for deterministic output — it is explicitly *not* trusted to
         // arbitrate between manifests (see above).
         var loaded: [(createdAt: Date, urlPath: String, root: URL, mirrors: [URL], files: [ManifestEntry])] = []
+        var refused: [String] = []
         for manifestURL in ManifestWriter.manifestURLs(near: target) {
             guard let data = try? Data(contentsOf: manifestURL),
                   let manifest = ManifestWriter.decode(data) else { continue }
@@ -158,7 +183,18 @@ enum VerifyEngine {
             // manifests written before the `destinations` field existed.
             let recorded = manifest.destinations
                 ?? ([manifest.primaryDestination] + (manifest.archiveDestination.map { [$0] } ?? []))
-            let mirrors = recorded.dropFirst().map { URL(fileURLWithPath: $0, isDirectory: true) }
+            var mirrors: [URL] = []
+            for recordedPath in recorded.dropFirst() {
+                let url = URL(fileURLWithPath: recordedPath, isDirectory: true)
+                if isTrustedMirrorRoot(url, allowed: allowed) {
+                    mirrors.append(url)
+                } else if !refused.contains(recordedPath) {
+                    // Reported verbatim: it is the string the user has to
+                    // recognize or disown. Untrusted text — every sink that
+                    // renders it runs it through `SafeText`.
+                    refused.append(recordedPath)
+                }
+            }
             loaded.append((manifest.createdAt, manifestURL.path, root, mirrors, manifest.files))
         }
         loaded.sort { ($0.createdAt, $0.urlPath) < ($1.createdAt, $1.urlPath) }
@@ -200,7 +236,20 @@ enum VerifyEngine {
         // Path-sorted output so progress and the report are deterministic.
         let items = byPath.values.sorted { $0.relPath < $1.relPath }
         let conflicts = conflicted.values.sorted { $0.path < $1.path }
-        return (items, loaded.count, conflicts)
+        return (items, loaded.count, conflicts, refused.sorted())
+    }
+
+    /// See `build`. Trusted iff the user named it, or it carries the manifest
+    /// folder every PhotoDrop destination gets. A missing or unreadable root is
+    /// *not* trusted — an unplugged mirror is refused and reported rather than
+    /// silently searched, which costs nothing (there is nothing there to find)
+    /// and keeps the rule "we only look where PhotoDrop wrote" exact.
+    private static func isTrustedMirrorRoot(_ url: URL, allowed: Set<String>) -> Bool {
+        if allowed.contains(url.standardizedFileURL.path) { return true }
+        var isDirectory: ObjCBool = false
+        let manifests = url.appendingPathComponent(ManifestWriter.folderName, isDirectory: true)
+        return FileManager.default.fileExists(atPath: manifests.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     /// What an xattr verification run concluded.

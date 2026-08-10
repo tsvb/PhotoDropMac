@@ -28,14 +28,27 @@ struct Heal: ParsableCommand {
     @Option(name: .long, help: "Write a reviewable restore script here. PhotoDrop never touches the library itself — you run the script.")
     var script: String?
 
+    /// A manifest's `destinations[]` is untrusted, so a recorded mirror is only
+    /// searched when it carries the `PhotoDrop Manifests/` folder every real
+    /// destination has — otherwise a planted manifest turns `heal` into a content
+    /// oracle over any directory the user can read. This is the escape hatch for
+    /// a mirror written before mirrors carried their own manifests: the *user's*
+    /// word, which is the only trustworthy source here.
+    @Option(name: .long, parsing: .singleValue,
+            help: "Also search this mirror root, even if it carries no PhotoDrop manifest. Repeatable.")
+    var mirror: [String] = []
+
     func run() throws {
         let url = URL(fileURLWithPath: target)
         let showProgress = !json && isatty(FileHandle.standardError.fileDescriptor) != 0
 
-        guard let report = HealEngine.run(target: url, onProgress: { progress in
-            guard showProgress else { return }
-            FileHandle.standardError.write(Data("\r  checking \(progress.checked)/\(progress.total)…".utf8))
-        }) else {
+        guard let report = HealEngine.run(
+            target: url,
+            allowedMirrorRoots: mirror.map { URL(fileURLWithPath: $0, isDirectory: true) },
+            onProgress: { progress in
+                guard showProgress else { return }
+                FileHandle.standardError.write(Data("\r  checking \(progress.checked)/\(progress.total)…".utf8))
+            }) else {
             CLIOutput.error("Heal scan was interrupted.")
             throw ExitCode(2)
         }
@@ -448,7 +461,8 @@ enum CLIOutput {
 
     static func healHuman(_ r: HealReport) -> String {
         guard !r.allHealthy else {
-            return "✓ All \(r.total) file\(r.total == 1 ? "" : "s") healthy."
+            return (["✓ All \(r.total) file\(r.total == 1 ? "" : "s") healthy."] + refusedMirrorNote(r))
+                .joined(separator: "\n")
         }
         var lines = ["⚠ \(r.candidates.count) of \(r.total) files damaged/missing — \(r.recoverable.count) recoverable, \(r.unrecoverable.count) unrecoverable:"]
         for c in r.candidates {
@@ -468,7 +482,20 @@ enum CLIOutput {
                 lines.append("    ↳ UNRECOVERABLE — no healthy mirror copy")
             }
         }
-        return lines.joined(separator: "\n")
+        return (lines + refusedMirrorNote(r)).joined(separator: "\n")
+    }
+
+    /// Recorded mirror roots that were not searched, and why. Never silent: "we
+    /// didn't look there" is the kind of quiet narrowing that makes a recovery
+    /// tool lie by omission, and only the user can say whether the root is theirs.
+    /// The paths come from the manifest, so they are untrusted text.
+    private static func refusedMirrorNote(_ r: HealReport) -> [String] {
+        guard !r.refusedMirrorRoots.isEmpty else { return [] }
+        var lines = ["", "Not searched — these recorded mirror roots carry no PhotoDrop manifest,"]
+        lines.append("so they may not be destinations you configured:")
+        lines += r.refusedMirrorRoots.map { "  \(safe($0))" }
+        lines.append("Pass --mirror <path> to search one you recognize.")
+        return lines
     }
 
     static func healJSON(_ r: HealReport) -> String {
@@ -477,6 +504,7 @@ enum CLIOutput {
             let healthy: Int, total: Int, manifestCount: Int
             let recoverable: Int, unrecoverable: Int, allHealthy: Bool
             let candidates: [CandidateDTO]
+            let refusedMirrorRoots: [String]
         }
         let dto = ReportDTO(
             healthy: r.healthy, total: r.total, manifestCount: r.manifestCount,
@@ -490,7 +518,8 @@ enum CLIOutput {
                 }
                 return CandidateDTO(kind: kind, path: $0.relPath,
                                     badPath: $0.badPath, recoverableFrom: $0.recoverableFrom)
-            }
+            },
+            refusedMirrorRoots: r.refusedMirrorRoots
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

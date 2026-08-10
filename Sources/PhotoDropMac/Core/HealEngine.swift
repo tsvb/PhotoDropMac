@@ -16,6 +16,8 @@ struct HealReport: Sendable {
     let healthy: Int
     let candidates: [HealCandidate]
     let manifestCount: Int
+    /// Recorded mirror roots that were not searched — see `VerifyEngine.build`.
+    var refusedMirrorRoots: [String] = []
 
     var recoverable: [HealCandidate] { candidates.filter { $0.recoverableFrom != nil } }
     var unrecoverable: [HealCandidate] { candidates.filter { $0.recoverableFrom == nil } }
@@ -43,9 +45,11 @@ struct HealReport: Sendable {
 /// not reintroduce a second merge here; extend `build` if this needs more.
 enum HealEngine {
     static func run(target: URL,
+                    allowedMirrorRoots: [URL] = [],
                     isCancelled: () -> Bool = { false },
                     onProgress: (VerifyProgress) -> Void = { _ in }) -> HealReport? {
-        let (items, manifestCount, conflicts) = VerifyEngine.build(target: target)
+        let (items, manifestCount, conflicts, refusedMirrorRoots) =
+            VerifyEngine.build(target: target, allowedMirrorRoots: allowedMirrorRoots)
 
         // Files whose manifests disagree are reported, never healed: with two
         // rival digests on record there is no expected value to restore towards.
@@ -86,7 +90,8 @@ enum HealEngine {
         }
         return HealReport(healthy: healthy,
                           candidates: candidates.sorted { $0.relPath < $1.relPath },
-                          manifestCount: manifestCount)
+                          manifestCount: manifestCount,
+                          refusedMirrorRoots: refusedMirrorRoots)
     }
 
     /// A reviewable restore script for the recoverable candidates. PhotoDrop never

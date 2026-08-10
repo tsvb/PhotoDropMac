@@ -39,6 +39,14 @@ final class ManifestTrustTests: XCTestCase {
             verified: true, partial: false, filesCopied: entries.count, filesSkipped: 0, filesFailed: 0,
             totalBytes: 0, elapsedSeconds: 0, files: entries)
         XCTAssertNotNil(ManifestWriter.write(m, intoRoot: primary, stamp: stamp ?? createdAt))
+        // Give each recorded mirror the manifest folder a real destination has,
+        // so these tests keep exercising containment and comment-escaping rather
+        // than stopping at the mirror-trust gate (`MirrorTrustTests` covers that
+        // separately). A crafted root that *isn't* a PhotoDrop destination is
+        // refused before any of this — a second, independent layer.
+        for mirror in destinations.dropFirst() {
+            XCTAssertNotNil(ManifestWriter.write(m, intoRoot: mirror, stamp: stamp ?? createdAt))
+        }
     }
 
     private func entry(_ path: String, hash: String) -> ManifestEntry {

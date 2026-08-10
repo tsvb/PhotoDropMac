@@ -31,6 +31,14 @@ final class HealEngineTests: XCTestCase {
             verified: true, partial: false, filesCopied: entries.count, filesSkipped: 0, filesFailed: 0,
             totalBytes: 0, elapsedSeconds: 0, files: entries)
         XCTAssertNotNil(ManifestWriter.write(m, intoRoot: primary, stamp: stamp))
+        // Every root a job writes gets its own manifest, and that is what marks a
+        // recorded mirror as a PhotoDrop destination rather than an arbitrary
+        // directory a crafted manifest named — see `VerifyEngine.build`'s mirror
+        // gate, and `MirrorTrustTests` for the gate itself. These fixtures are
+        // real mirrors, so they carry the folder real mirrors carry.
+        for mirror in destinations.dropFirst() {
+            XCTAssertNotNil(ManifestWriter.write(m, intoRoot: mirror, stamp: stamp))
+        }
     }
 
     private func entry(_ path: String, hash: String) -> ManifestEntry {
@@ -182,6 +190,10 @@ final class HealEngineTests: XCTestCase {
             verified: true, partial: false, filesCopied: 0, filesSkipped: 1, filesFailed: 0,
             totalBytes: 0, elapsedSeconds: 0, files: [entry("2026/a.bin", hash: h)])
         XCTAssertNotNil(ManifestWriter.write(second, intoRoot: primary,
+                                             stamp: Date(timeIntervalSince1970: 1_717_000_000)))
+        // mirrorB is a real destination of that second job, so it carries its own
+        // manifest — the mark `VerifyEngine.build`'s mirror gate looks for.
+        XCTAssertNotNil(ManifestWriter.write(second, intoRoot: mirrorB,
                                              stamp: Date(timeIntervalSince1970: 1_717_000_000)))
 
         try FileManager.default.removeItem(at: primary.appendingPathComponent("2026/a.bin"))
