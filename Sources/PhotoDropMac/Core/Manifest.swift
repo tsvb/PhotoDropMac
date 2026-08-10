@@ -155,6 +155,27 @@ enum ManifestWriter {
         return URL(fileURLWithPath: "/" + resolved.dropFirst().joined(separator: "/"))
     }
 
+    /// The library-relative path of a URL produced by `resolve` — **what a report
+    /// must name.**
+    ///
+    /// An absolute entry path is deliberately re-rooted rather than honored
+    /// (`/etc/hosts` under `<lib>` becomes `<lib>/etc/hosts`), but the engines
+    /// used to build their issue list from the manifest's recorded *string*. So a
+    /// manifest naming `/etc/hosts` produced `MISSING /etc/hosts` — reproduced
+    /// exactly — for a file the tool never touched. The verdict line is this
+    /// app's entire product; it may only name paths it actually inspected.
+    ///
+    /// Lexical for the same reason `resolve` is: it has to give the same answer
+    /// for a file that is missing as for one that is present.
+    static func relativePath(of resolved: URL, under root: URL) -> String {
+        guard let rootComponents = lexicallyNormalized(root),
+              let fileComponents = lexicallyNormalized(resolved),
+              fileComponents.count > rootComponents.count,
+              Array(fileComponents.prefix(rootComponents.count)) == rootComponents
+        else { return resolved.path(percentEncoded: false) }
+        return fileComponents.dropFirst(rootComponents.count).joined(separator: "/")
+    }
+
     /// Path components with `.` and `..` resolved textually, without touching the
     /// filesystem. Returns nil if `..` would climb above the filesystem root.
     private static func lexicallyNormalized(_ url: URL) -> [String]? {

@@ -182,8 +182,14 @@ enum VerifyEngine {
                 var mirrors = byPath[key]?.mirrors ?? []
                 let known = Set(mirrors.map(\.path))
                 mirrors += record.mirrors.filter { !known.contains($0.path) }
-                byPath[key] = WorkItem(url: fileURL, relPath: entry.path, name: entry.name,
-                                       expected: expected, mirrors: mirrors)
+                // The *resolved* relative path, never the manifest's string — see
+                // `ManifestWriter.relativePath`. Everything downstream (issues,
+                // heal candidates, the restore script, the mirror lookup) reads
+                // this, so re-rooting has to be reflected here or the report
+                // names a file that was never inspected.
+                byPath[key] = WorkItem(url: fileURL,
+                                       relPath: ManifestWriter.relativePath(of: fileURL, under: record.root),
+                                       name: entry.name, expected: expected, mirrors: mirrors)
             }
         }
 

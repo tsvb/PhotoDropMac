@@ -97,6 +97,31 @@ final class ManifestTrustTests: XCTestCase {
         XCTAssertFalse(report.issues.contains { $0.path.contains("secret") })
     }
 
+    /// S-8 — an issue must name the path that was actually checked.
+    ///
+    /// An absolute entry path is *correctly* re-rooted under the library
+    /// (`/etc/hosts` → `<lib>/etc/hosts`), but the report was built from the
+    /// manifest's recorded string rather than the resolved URL, so a manifest
+    /// naming `/etc/hosts` made `verify` print `MISSING /etc/hosts` — reproduced
+    /// exactly. For a tool whose entire product is a trustworthy verdict line,
+    /// naming a system path it never inspected is a reporting-integrity failure:
+    /// it reads as a claim about that file.
+    func testIssuesNameTheResolvedPathNotTheManifestString() throws {
+        let tmp = try freshTempDir()
+        let library = tmp.appendingPathComponent("library", isDirectory: true)
+        try writeFile("2026/a.bin", content: "keep", in: library)
+
+        try writeManifest(into: library, destinations: [library], [
+            entry("/etc/hosts", hash: String(repeating: "a", count: 16)),
+        ])
+
+        let report = try XCTUnwrap(VerifyEngine.run(target: library))
+        let issue = try XCTUnwrap(report.issues.first)
+        XCTAssertEqual(issue.kind, .missing)
+        XCTAssertEqual(issue.path, "etc/hosts",
+                       "the report must name what was resolved and checked, not the manifest's string")
+    }
+
     func testHealRestoreScriptNeverTargetsOutsideTheLibrary() throws {
         let tmp = try freshTempDir()
         let library = tmp.appendingPathComponent("library", isDirectory: true)
