@@ -96,4 +96,55 @@ final class ChildProcessTests: XCTestCase {
         let out = try await ChildProcess.run(executable: s, arguments: [])
         XCTAssertEqual(out.status, 42, "callers decide what a non-zero exit means")
     }
+
+    // MARK: - S-7: bounded in time, output, and input
+
+    /// The Tier-2 fix removed the deadlock; it did not bound the resource. A hook
+    /// on a dead NFS mount, or one waiting on input, never returns — and `Copier`
+    /// spawns it detached, so that is one leaked task per ingest, forever.
+    func testATimeoutStopsAChildThatNeverExits() async throws {
+        let s = try script("sleep 30")
+        let started = Date()
+        let out = try await ChildProcess.run(executable: s, arguments: [], timeout: 1)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 15, "the timeout did not fire")
+        XCTAssertTrue(out.timedOut)
+        XCTAssertFalse(out.isSuccess, "a killed child never succeeded, whatever its status says")
+    }
+
+    /// …and a child that finishes inside its budget is untouched, with a real
+    /// exit status.
+    func testAChildThatFinishesInTimeIsNotAffectedByTheTimeout() async throws {
+        let s = try script("echo quick; exit 7")
+        let out = try await ChildProcess.run(executable: s, arguments: [], timeout: 30)
+        XCTAssertFalse(out.timedOut)
+        XCTAssertEqual(out.status, 7)
+        XCTAssertEqual(out.stdoutText, "quick")
+    }
+
+    /// Draining unboundedly is still accumulating unboundedly: a hook streaming
+    /// gigabytes to stdout is held in this process's memory in full. Past the cap
+    /// the bytes are read and dropped — reading has to continue or the child
+    /// blocks in `write()`, which is the deadlock this type exists to prevent.
+    func testOutputIsCappedButTheChildStillCompletes() async throws {
+        let s = try script("""
+        i=0
+        while [ $i -lt 4096 ]; do printf '%0512d' $i; i=$((i+1)); done
+        exit 5
+        """)
+        let out = try await ChildProcess.run(executable: s, arguments: [], maxOutputBytes: 64 * 1024)
+        XCTAssertEqual(out.status, 5, "the child ran to completion rather than blocking on a full pipe")
+        XCTAssertTrue(out.truncated)
+        XCTAssertLessThanOrEqual(out.stdout.count, 64 * 1024)
+        XCTAssertGreaterThan(out.stdout.count, 0, "what did fit is still reported")
+    }
+
+    /// stdin is `/dev/null`, not this process's. An inherited descriptor means a
+    /// hook that reads input blocks on whatever the app happened to be attached
+    /// to — in a GUI app, something nobody can type into.
+    func testStdinIsNotInherited() async throws {
+        let s = try script("cat; echo done")
+        let out = try await ChildProcess.run(executable: s, arguments: [], timeout: 10)
+        XCTAssertFalse(out.timedOut, "the child was left waiting on inherited stdin")
+        XCTAssertEqual(out.stdoutText, "done")
+    }
 }

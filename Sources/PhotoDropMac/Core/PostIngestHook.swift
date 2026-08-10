@@ -46,16 +46,25 @@ enum PostIngestHook {
             // Both streams are drained while the hook runs — a hook that prints
             // more than a pipe buffer (`rsync -v`, `exiftool`) used to wedge here
             // forever. See ChildProcess.
+            // An hour, not the shared five-minute default: a hook that rsyncs the
+            // library to a NAS is doing legitimate long work, and killing it
+            // would be worse than the leak. It is still *bounded* — a hook on a
+            // dropped mount used to hang forever, and `Copier` runs this in a
+            // detached task, so that was one leaked task per ingest.
             output = try await ChildProcess.run(
                 executable: URL(fileURLWithPath: scriptPath),
                 arguments: [result.primaryDestination.path(percentEncoded: false)],
-                environment: environment(for: result))
+                environment: environment(for: result),
+                timeout: 3600)
         } catch {
             // Launch failed outright — the path isn't an executable file.
             throw PostIngestHookError(message: error.localizedDescription)
         }
 
         guard output.isSuccess else {
+            if output.timedOut {
+                throw PostIngestHookError(message: "Post-ingest hook was still running after an hour and was stopped.")
+            }
             let text = output.stderrText
             throw PostIngestHookError(message: text.isEmpty
                 ? "Post-ingest hook exited with status \(output.status)."
