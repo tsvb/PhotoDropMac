@@ -45,6 +45,76 @@ struct MainView: View {
         NamingTemplate(folder: templateFolder, filename: templateFilename)
     }
 
+    /// Extracted from `body`.
+    ///
+    /// `body` measured **3.4 s** to type-check with the toolbar inline — under
+    /// the compiler's hard limit locally, and exactly the shape that tips over
+    /// it on a slower toolchain: `ApertureMark` did, on CI, with a build that
+    /// was green on this machine. A view whose compilability depends on the host
+    /// is not compilable.
+    /// Also extracted from `body` — an inline `Binding(get:set:)` with a
+    /// ternary inside a `.sheet(item:)` is another expression the type checker
+    /// charges a lot for.
+    private var completionSheetBinding: Binding<CopyResult?> {
+        Binding<CopyResult?>(
+            get: {
+                guard copier.state.shouldPresentCompletionSummary(showSetting: showCompletionSheet)
+                else { return nil }
+                return completionResult
+            },
+            set: { newValue in
+                if newValue == nil { copier.reset() }
+            }
+        )
+    }
+
+    @ToolbarContentBuilder
+    private var mainToolbar: some ToolbarContent {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Picker("Preview", selection: $previewMode) {
+                    Image(systemName: "list.bullet")
+                        .accessibilityLabel("Tree preview")
+                        .tag(PreviewMode.tree)
+                    Image(systemName: "square.grid.2x2")
+                        .accessibilityLabel("Grid preview")
+                        .tag(PreviewMode.grid)
+                }
+                .pickerStyle(.segmented)
+                // `.help` is the tooltip (NSAccessibilityHelp) — a different
+                // attribute from the label VoiceOver announces. An
+                // image-only control needs both.
+                .help("Tree or grid preview")
+                .accessibilityLabel("Preview mode")
+
+                Button {
+                    chooseVerifyTarget()
+                } label: {
+                    Label("Verify Library", systemImage: "checkmark.shield")
+                }
+                .help("Re-verify a library folder against its manifest")
+                .accessibilityLabel("Verify library")
+                .disabled(copier.isRunning || verifier.isRunning)
+
+                Button {
+                    watcher.rescan()
+                    planner.setSource(source, description: descriptionText, template: template)
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .help("Rescan cards and preview")
+                .accessibilityLabel("Refresh")
+                .disabled(copier.isRunning)
+
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Label("Toggle Inspector", systemImage: "sidebar.right")
+                }
+                .help("Toggle inspector")
+                .accessibilityLabel("Toggle inspector")
+            }
+    }
+
     var body: some View {
         NavigationSplitView {
             Sidebar(selection: $selectedSourceID)
@@ -59,51 +129,7 @@ struct MainView: View {
             )
             .navigationTitle(source?.label ?? "PhotoDrop")
             .navigationSubtitle(detailSubtitle)
-            .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Picker("Preview", selection: $previewMode) {
-                        Image(systemName: "list.bullet")
-                            .accessibilityLabel("Tree preview")
-                            .tag(PreviewMode.tree)
-                        Image(systemName: "square.grid.2x2")
-                            .accessibilityLabel("Grid preview")
-                            .tag(PreviewMode.grid)
-                    }
-                    .pickerStyle(.segmented)
-                    // `.help` is the tooltip (NSAccessibilityHelp) — a different
-                    // attribute from the label VoiceOver announces. An
-                    // image-only control needs both.
-                    .help("Tree or grid preview")
-                    .accessibilityLabel("Preview mode")
-
-                    Button {
-                        chooseVerifyTarget()
-                    } label: {
-                        Label("Verify Library", systemImage: "checkmark.shield")
-                    }
-                    .help("Re-verify a library folder against its manifest")
-                    .accessibilityLabel("Verify library")
-                    .disabled(copier.isRunning || verifier.isRunning)
-
-                    Button {
-                        watcher.rescan()
-                        planner.setSource(source, description: descriptionText, template: template)
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    .help("Rescan cards and preview")
-                    .accessibilityLabel("Refresh")
-                    .disabled(copier.isRunning)
-
-                    Button {
-                        showInspector.toggle()
-                    } label: {
-                        Label("Toggle Inspector", systemImage: "sidebar.right")
-                    }
-                    .help("Toggle inspector")
-                    .accessibilityLabel("Toggle inspector")
-                }
-            }
+            .toolbar { mainToolbar }
             .inspector(isPresented: $showInspector) {
                 InspectorPane(
                     description: $descriptionText,
@@ -113,14 +139,7 @@ struct MainView: View {
                 )
                 .inspectorColumnWidth(min: 280, ideal: 320, max: 420)
             }
-            .sheet(item: Binding<CopyResult?>(
-                get: { copier.state.shouldPresentCompletionSummary(showSetting: showCompletionSheet) ? completionResult : nil },
-                set: { newValue in
-                    if newValue == nil {
-                        copier.reset()
-                    }
-                }
-            )) { result in
+            .sheet(item: completionSheetBinding) { result in
                 CompletionSheet(result: result, onDismiss: { copier.reset() })
             }
         }
@@ -186,42 +205,12 @@ struct MainView: View {
                 copier.reset()
             }
         }
-        .sheet(isPresented: $showVerifySheet) {
-            VerifySheet(verifier: verifier) {
-                showVerifySheet = false
-                verifier.reset()
-            }
-        }
-        .alert(
-            "Not enough space",
-            isPresented: Binding(
-                get: { preflightMessage != nil },
-                set: { if !$0 { preflightMessage = nil } }
-            ),
-            presenting: preflightMessage
-        ) { _ in
-            Button("Ingest Anyway") {
-                preflightMessage = nil
-                launchIngest(selectedYearGroups())
-            }
-            Button("Cancel", role: .cancel) { preflightMessage = nil }
-        } message: { message in
-            Text(message)
-        }
-        // No "Ingest Anyway": with overlapping trees there is no version of
-        // proceeding that copies anything.
-        .alert(
-            "These folders overlap",
-            isPresented: Binding(
-                get: { topologyRefusal != nil },
-                set: { if !$0 { topologyRefusal = nil } }
-            ),
-            presenting: topologyRefusal
-        ) { _ in
-            Button("OK", role: .cancel) { topologyRefusal = nil }
-        } message: { message in
-            Text(message + "\n\nChoose a destination outside the card, and destinations that don’t contain one another.")
-        }
+        .modifier(SheetsAndAlerts(
+            showVerifySheet: $showVerifySheet,
+            verifier: verifier,
+            preflightMessage: $preflightMessage,
+            topologyRefusal: $topologyRefusal,
+            onIngestAnyway: { launchIngest(selectedYearGroups()) }))
     }
 
     private var canStartIngest: Bool {
@@ -619,6 +608,61 @@ private struct IncompleteScanBanner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.yellow.opacity(0.15))
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// The verify sheet and the two ingest alerts.
+///
+/// Extracted from `MainView.body` for the same reason as `mainToolbar` and
+/// `ApertureMark.draw`: `body` measured **3.4 s** to type-check as one
+/// expression — under the compiler's hard ceiling on this machine and over it on
+/// another, which is exactly how `ApertureMark` built green here and failed CI.
+/// A view whose compilability depends on the host is not compilable.
+private struct SheetsAndAlerts: ViewModifier {
+    @Binding var showVerifySheet: Bool
+    let verifier: Verifier
+    @Binding var preflightMessage: String?
+    @Binding var topologyRefusal: String?
+    let onIngestAnyway: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+    .sheet(isPresented: $showVerifySheet) {
+        VerifySheet(verifier: verifier) {
+            showVerifySheet = false
+            verifier.reset()
+        }
+    }
+    .alert(
+        "Not enough space",
+        isPresented: Binding(
+            get: { preflightMessage != nil },
+            set: { if !$0 { preflightMessage = nil } }
+        ),
+        presenting: preflightMessage
+    ) { _ in
+        Button("Ingest Anyway") {
+            preflightMessage = nil
+            onIngestAnyway()
+        }
+        Button("Cancel", role: .cancel) { preflightMessage = nil }
+    } message: { message in
+        Text(message)
+    }
+    // No "Ingest Anyway": with overlapping trees there is no version of
+    // proceeding that copies anything.
+    .alert(
+        "These folders overlap",
+        isPresented: Binding(
+            get: { topologyRefusal != nil },
+            set: { if !$0 { topologyRefusal = nil } }
+        ),
+        presenting: topologyRefusal
+    ) { _ in
+        Button("OK", role: .cancel) { topologyRefusal = nil }
+    } message: { message in
+        Text(message + "\n\nChoose a destination outside the card, and destinations that don’t contain one another.")
+    }
     }
 }
 

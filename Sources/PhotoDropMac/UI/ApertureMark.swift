@@ -30,68 +30,75 @@ struct ApertureMark: View {
     private let twist = 0.20
 
     var body: some View {
-        Canvas { ctx, size in
-            let cx = size.width / 2
-            let cy = size.height / 2
-            let rOuter = min(size.width, size.height) / 2 - 1
-            let rInner = rOuter * 0.40
+        Canvas { ctx, size in draw(&ctx, size: size) }
+            .overlay { centerLabel }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Verification progress")
+            .accessibilityValue(Text("\(Int(progress * 100)) percent"))
+    }
 
-            // Lens barrel.
-            ctx.stroke(
-                Path(ellipseIn: CGRect(
-                    x: cx - rOuter, y: cy - rOuter,
-                    width: rOuter * 2, height: rOuter * 2
-                )),
-                with: .color(.primary.opacity(0.12)),
-                lineWidth: 1
-            )
+    /// Split out of `body`, with every intermediate typed.
+    ///
+    /// As one expression this was marginal for the type checker: it compiled
+    /// locally and failed on CI's toolchain with "unable to type-check this
+    /// expression in reasonable time". Canvas closures full of unannotated
+    /// `CGFloat`/`Double` arithmetic are exactly the shape that goes
+    /// superlinear, and "it builds on my machine" is not a property worth
+    /// keeping. Same reason `MainView`'s menu-command handlers live in their own
+    /// `ViewModifier`.
+    private func draw(_ ctx: inout GraphicsContext, size: CGSize) {
+        let cx: CGFloat = size.width / 2
+        let cy: CGFloat = size.height / 2
+        let rOuter: CGFloat = min(size.width, size.height) / 2 - 1
+        let rInner: CGFloat = rOuter * 0.40
+        let oR: CGFloat = rOuter - 1.5
 
-            let filled = closed
-                ? bladeCount
-                : Int((progress.clamped(to: 0...1) * Double(bladeCount)).rounded())
+        // Lens barrel.
+        let barrel = CGRect(x: cx - rOuter, y: cy - rOuter, width: rOuter * 2, height: rOuter * 2)
+        ctx.stroke(Path(ellipseIn: barrel), with: .color(.primary.opacity(0.12)), lineWidth: 1)
 
-            let oR = rOuter - 1.5
-            for i in 0..<bladeCount {
-                let a0 = Double(i)     / Double(bladeCount) * 2 * .pi - .pi / 2
-                let a1 = Double(i + 1) / Double(bladeCount) * 2 * .pi - .pi / 2
+        let clamped: Double = progress.clamped(to: 0...1)
+        let filled: Int = closed ? bladeCount : Int((clamped * Double(bladeCount)).rounded())
 
-                // Each blade is a sheared wedge between the barrel (oR) and the
-                // central opening (rInner); the twist on the inner edge leans
-                // the blades like a real stopping-down iris.
-                var blade = Path()
-                blade.move(to:    CGPoint(x: cx + cos(a0)         * oR,     y: cy + sin(a0)         * oR))
-                blade.addLine(to: CGPoint(x: cx + cos(a0 + twist) * rInner, y: cy + sin(a0 + twist) * rInner))
-                blade.addLine(to: CGPoint(x: cx + cos(a1 + twist) * rInner, y: cy + sin(a1 + twist) * rInner))
-                blade.addLine(to: CGPoint(x: cx + cos(a1)         * oR,     y: cy + sin(a1)         * oR))
-                blade.closeSubpath()
+        for i in 0..<bladeCount {
+            let step: Double = 2 * .pi / Double(bladeCount)
+            let a0: Double = Double(i) * step - .pi / 2
+            let a1: Double = Double(i + 1) * step - .pi / 2
 
-                let isFilled = i < filled
-                ctx.fill(
-                    blade,
-                    with: .color(isFilled ? accent.opacity(0.92) : .primary.opacity(0.07))
-                )
-                ctx.stroke(
-                    blade,
-                    with: .color(isFilled ? accent.opacity(0.45) : .primary.opacity(0.10)),
-                    lineWidth: 0.5
-                )
-            }
+            // Each blade is a sheared wedge between the barrel (oR) and the
+            // central opening (rInner); the twist on the inner edge leans the
+            // blades like a real stopping-down iris.
+            var blade = Path()
+            blade.move(to:    point(cx: cx, cy: cy, angle: a0, radius: oR))
+            blade.addLine(to: point(cx: cx, cy: cy, angle: a0 + twist, radius: rInner))
+            blade.addLine(to: point(cx: cx, cy: cy, angle: a1 + twist, radius: rInner))
+            blade.addLine(to: point(cx: cx, cy: cy, angle: a1, radius: oR))
+            blade.closeSubpath()
+
+            let isFilled: Bool = i < filled
+            let fill: Color = isFilled ? accent.opacity(0.92) : .primary.opacity(0.07)
+            let edge: Color = isFilled ? accent.opacity(0.45) : .primary.opacity(0.10)
+            ctx.fill(blade, with: .color(fill))
+            ctx.stroke(blade, with: .color(edge), lineWidth: 0.5)
         }
-        .overlay {
-            if closed {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(accent)
-            } else {
-                Text("\(Int(progress * 100))")
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
+    }
+
+    private func point(cx: CGFloat, cy: CGFloat, angle: Double, radius: CGFloat) -> CGPoint {
+        CGPoint(x: cx + CGFloat(cos(angle)) * radius, y: cy + CGFloat(sin(angle)) * radius)
+    }
+
+    @ViewBuilder
+    private var centerLabel: some View {
+        if closed {
+            Image(systemName: "checkmark")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(accent)
+        } else {
+            Text("\(Int(progress * 100))")
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Verification progress")
-        .accessibilityValue(Text("\(Int(progress * 100)) percent"))
     }
 }
 
