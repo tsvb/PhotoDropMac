@@ -254,6 +254,44 @@ struct IngestPreferences: View {
     }
 }
 
+/// One selectable layout. Its own view for the reason `ApertureMark.draw` and
+/// `MainView.detailColumn` are: a nested `HStack`/`VStack` inside a `ForEach`
+/// inside a `Form` is the shape the type checker charges superlinearly for, and
+/// CI's older toolchain charges several times what this machine does — it has
+/// already turned that difference into three build failures.
+private struct LayoutRow: View {
+    let layout: FolderLayout
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    .accessibilityHidden(true)
+                details
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(layout.name)
+            Text("…/" + layout.samplePath())
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Text(layout.detail)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
 struct NamingPreferences: View {
     @AppStorage("photodrop.template.folder") private var folder = NamingTemplate.default.folder
     @AppStorage("photodrop.template.filename") private var filename = NamingTemplate.default.filename
@@ -271,32 +309,11 @@ struct NamingPreferences: View {
             // so the two can never disagree.
             Section {
                 ForEach(FolderLayout.builtIn) { layout in
-                    Button {
+                    LayoutRow(layout: layout, isSelected: FolderLayout.matching(current) == layout) {
                         folder = layout.template.folder
                         filename = layout.template.filename
                         yearFolder = layout.template.yearFolder
-                    } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Image(systemName: FolderLayout.matching(current) == layout
-                                  ? "largecircle.fill.circle" : "circle")
-                                .foregroundStyle(FolderLayout.matching(current) == layout
-                                                 ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                                .accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(layout.name)
-                                Text("…/" + layout.samplePath())
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                Text(layout.detail)
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(FolderLayout.matching(current) == layout ? [.isButton, .isSelected] : .isButton)
                 }
             } header: {
                 Text("Layout")
