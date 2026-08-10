@@ -285,6 +285,13 @@ final class TierCTests: XCTestCase {
     /// `Bundle.main.url(forAuxiliaryExecutable:)` unchecked, which is a
     /// constructed path, not an existence claim — unlike the fallback branch,
     /// which did check `isExecutableFile`.
+    ///
+    /// **And then CI proved the API itself unusable.** On macOS 15 / Xcode 16.4
+    /// — inside the deployment range — `url(forAuxiliaryExecutable:)` returned
+    /// nil for a genuinely embedded bundle, so this test and
+    /// `testTheTestHostBundleCarriesTheEmbeddedCLI` both failed there while
+    /// passing on macOS 26. `resolve` now composes the candidate paths itself.
+    /// This is the whole argument for running CI on an older toolchain.
     func testResolveRejectsAPathThatIsNotExecutable() throws {
         let tmp = try freshTempDir()
         let bundleURL = tmp.appendingPathComponent("Fake.app", isDirectory: true)
