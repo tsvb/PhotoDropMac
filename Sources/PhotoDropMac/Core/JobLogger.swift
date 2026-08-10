@@ -72,7 +72,15 @@ enum JobLogger {
             let kind = entry.kind.label.padding(toLength: 8, withPad: " ", startingAt: 0)
             // Keep the full 16-char hash in the on-disk log even though the UI
             // now renders a compact signature from `entry.signature`.
-            var lineText = entry.line
+            // The line carries card-authored filenames verbatim, and this file is
+            // what the user reads afterwards to reconstruct what happened to
+            // their photos. Confirmed against a real log: a file named
+            // `IMG\u{1B}[2K\u{1B}[1A0002.CR2` erased the preceding VERIFY line
+            // when the log was `cat`ed, and a raw newline in a name forged an
+            // entire fabricated record — right kind, right timestamp shape.
+            // `CLIOutput.safe` and `HealEngine.comment` already guarded their
+            // sinks; this was the one that was missed, and it is the durable one.
+            var lineText = SafeText.display(entry.line)
             if let signature = entry.signature {
                 lineText += "  [\(String(format: "%016llx", signature))]"
             }

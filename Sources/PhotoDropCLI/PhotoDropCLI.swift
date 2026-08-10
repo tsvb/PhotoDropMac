@@ -412,8 +412,8 @@ enum CLIOutput {
         FileHandle.standardError.write(Data((message + "\n").utf8))
     }
 
-    /// Escapes C0 control characters and DEL so filename-derived text can't drive
-    /// the terminal.
+    /// Neutralizes filename-derived text so it can't drive the terminal or
+    /// reorder the verdict line.
     ///
     /// Filenames come off the card verbatim (`ManifestEntry.name`) and manifest
     /// paths come out of an untrusted JSON, while this CLI writes its progress
@@ -422,23 +422,11 @@ enum CLIOutput {
     /// summary line that is the tool's entire output, which for a verification
     /// tool means forging its verdict. Everything printed below that can carry
     /// card- or manifest-derived text goes through this.
-    static func safe(_ s: String) -> String {
-        var out = ""
-        for scalar in s.unicodeScalars {
-            switch scalar {
-            case "\n": out += "\\n"
-            case "\r": out += "\\r"
-            case "\t": out += "\\t"
-            default:
-                if scalar.value < 0x20 || scalar.value == 0x7F {
-                    out += String(format: "\\x%02X", scalar.value)
-                } else {
-                    out.unicodeScalars.append(scalar)
-                }
-            }
-        }
-        return out
-    }
+    ///
+    /// The rule itself lives in `SafeText` (Core) so the log, the restore script
+    /// and this share one definition — and so it is covered by the test target,
+    /// which cannot see `Sources/PhotoDropCLI`.
+    static func safe(_ s: String) -> String { SafeText.display(s) }
 
     /// Why there was nothing to check.
     ///

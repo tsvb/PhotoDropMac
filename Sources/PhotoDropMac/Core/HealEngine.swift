@@ -131,8 +131,15 @@ enum HealEngine {
             // is reachable from a card.) Emit these commented out instead, and
             // keep the invariant that every executable line is a generated
             // mkdir/cp pair.
-            guard ![dir, from, c.badPath].contains(where: hasControlCharacters) else {
-                lines.append("# SKIPPED — control characters in path; restore this one by hand:")
+            //
+            // The test is `SafeText.containsDangerousControls`, which is wider
+            // than the C0+DEL check this used to make: a bidi override defeats
+            // the same review without being a control character at all. Measured
+            // with the old check, a filename containing U+202E produced a **live**
+            // `mkdir -p … && cp -p …` line — correctly quoted, and displayed to
+            // the reviewer with its components reordered.
+            guard ![dir, from, c.badPath].contains(where: SafeText.containsDangerousControls) else {
+                lines.append("# SKIPPED — unreviewable characters in path; restore this one by hand:")
                 lines.append("#   from: \(comment(from))")
                 lines.append("#   to:   \(comment(c.badPath))")
                 continue
@@ -154,36 +161,14 @@ enum HealEngine {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private static func hasControlCharacters(_ s: String) -> Bool {
-        s.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7F }
-    }
-
     /// Renders untrusted text safe to sit in a `#` comment.
     ///
     /// A shell comment ends at the first newline, so an unescaped newline here
     /// would turn the rest of the value into executable script lines. That is
     /// reachable from a card: `PathPlanner.sanitize` trims whitespace only at the
     /// ends of a name, so a file named `IMG⏎rm -rf ~⏎#.DNG` carries its interior
-    /// newlines all the way into the manifest and out to this comment. Control
-    /// characters are escaped rather than dropped so the comment still tells the
-    /// user what the odd filename actually contains.
-    private static func comment(_ s: String) -> String {
-        var out = ""
-        for scalar in s.unicodeScalars {
-            switch scalar {
-            case "\n": out += "\\n"
-            case "\r": out += "\\r"
-            case "\t": out += "\\t"
-            default:
-                // C0 controls and DEL — includes ESC, which would otherwise let a
-                // filename rewrite the terminal when the script is `cat`ed.
-                if scalar.value < 0x20 || scalar.value == 0x7F {
-                    out += String(format: "\\x%02X", scalar.value)
-                } else {
-                    out.unicodeScalars.append(scalar)
-                }
-            }
-        }
-        return out
-    }
+    /// newlines all the way into the manifest and out to this comment. Escaped
+    /// rather than dropped, so the comment still tells the user what the odd
+    /// filename actually contains — including that it holds an override.
+    private static func comment(_ s: String) -> String { SafeText.display(s) }
 }
