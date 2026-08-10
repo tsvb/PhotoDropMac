@@ -29,6 +29,33 @@ struct YearGroup: Identifiable, Hashable, Sendable {
     var bundleCount: Int { folders.reduce(0) { $0 + $1.bundleCount } }
 }
 
+/// Counts for the *selected* subset of a plan.
+///
+/// The contact sheet lets the user deselect shots before ingest, and
+/// `MainView.selectedYearGroups()` filters the plan accordingly — but every
+/// count on screen was computed from the unfiltered plan. Deselect 400 of 500,
+/// switch to the tree, and it read "500 files" beside a button that would copy
+/// 100. One helper so the preview header, the detail subtitle and the ingest
+/// button cannot drift apart again.
+enum SelectionSummary {
+    struct Counts: Equatable, Sendable {
+        var files: Int
+        var bytes: Int64
+        var bundles: Int
+    }
+
+    static func of(yearGroups: [YearGroup], deselected: Set<AssetBundle.ID>) -> Counts {
+        var counts = Counts(files: 0, bytes: 0, bundles: 0)
+        for bundle in yearGroups.lazy.flatMap({ $0.folders }).flatMap(\.bundles)
+        where !deselected.contains(bundle.id) {
+            counts.files += bundle.fileCount
+            counts.bytes += bundle.totalSize
+            counts.bundles += 1
+        }
+        return counts
+    }
+}
+
 enum PathPlanner {
     static func plan(bundles: [AssetBundle], description: String, template: NamingTemplate, cardLabel: String) -> [YearGroup] {
         guard !bundles.isEmpty else { return [] }

@@ -202,10 +202,7 @@ struct MainView: View {
     }
 
     private var selectedBundleCount: Int {
-        planner.yearGroups
-            .flatMap { $0.folders.flatMap(\.bundles) }
-            .lazy.filter { !deselectedIDs.contains($0.id) }
-            .count
+        SelectionSummary.of(yearGroups: planner.yearGroups, deselected: deselectedIDs).bundles
     }
 
     private func startIngest() {
@@ -288,15 +285,28 @@ struct MainView: View {
     // has been scanned and a destination is set, start the ingest through the
     // normal path so progress shows in this window.
     private func tryAutoIngest() {
-        guard autoIngestPending,
-              !planner.isScanning,
-              planner.totalFiles > 0,
-              !primaryDest.isEmpty,
-              !copier.isRunning
-        else { return }
-        autoIngestPending = false
-        coordinator.pendingOneClickCardID = nil
-        startIngest()
+        switch AutoIngestGate.decide(pending: autoIngestPending,
+                                     isScanning: planner.isScanning,
+                                     totalFiles: planner.totalFiles,
+                                     hasDestination: !primaryDest.isEmpty,
+                                     copierIsRunning: copier.isRunning) {
+        case .idle, .wait:
+            return
+        case .abandon:
+            // Disarm. This used to fall out of a `guard` with the flag still set
+            // and only one retry trigger (the end of a scan), so one-clicking a
+            // card with no recognized photos left the request armed — and the
+            // *next* card inserted, hours later, was ingested with no user
+            // action at all. Clearing the coordinator field also matters: it is
+            // what makes a second click on the same card a change `onChange` can
+            // see, so re-clicking after fixing the destination works.
+            autoIngestPending = false
+            coordinator.pendingOneClickCardID = nil
+        case .start:
+            autoIngestPending = false
+            coordinator.pendingOneClickCardID = nil
+            startIngest()
+        }
     }
 
     // Re-verify an existing library against its manifest. Accepts a library
@@ -334,6 +344,13 @@ struct MainView: View {
             if planner.isScanning {
                 return "\(size) · Scanning…"
             } else if planner.totalFiles > 0 {
+                // The *selected* count: the contact sheet can deselect most of a
+                // card, and a subtitle that keeps reporting everything found
+                // contradicts the button next to it.
+                let selected = SelectionSummary.of(yearGroups: planner.yearGroups, deselected: deselectedIDs)
+                if selected.files < planner.totalFiles {
+                    return "\(size) · \(selected.files.formatted()) of \(planner.totalFiles.formatted()) photos selected"
+                }
                 return "\(size) · \(planner.totalFiles.formatted()) photos"
             } else {
                 return size
@@ -415,24 +432,30 @@ struct DetailPane: View {
             ProgressPane(
                 progress: progress,
                 log: copier.log,
+                verifying: copier.isVerifyingCurrentJob,
                 onCancel: { copier.cancel() }
             )
-        case .cancelled:
+        case .cancelled(let result):
             ContentUnavailableView {
                 Label("Ingest cancelled", systemImage: "xmark.octagon")
             } description: {
                 Text(cancelledDescription)
             } actions: {
+                // The receipt for what *did* land. A cancel deliberately leaves
+                // those files in place, so the manifest and log are the only
+                // record of which ones they were.
+                JobArtifactButtons(result: result)
                 Button("Reset") { copier.reset() }
                     .buttonStyle(.borderedProminent)
             }
-        case .failed(let msg):
+        case .failed(let msg, let result):
             ContentUnavailableView {
                 Label("Ingest failed", systemImage: "exclamationmark.triangle.fill")
                     .symbolRenderingMode(.multicolor)
             } description: {
                 Text(failedDescription(msg))
             } actions: {
+                JobArtifactButtons(result: result)
                 Button("Reset") { copier.reset() }
                     .buttonStyle(.borderedProminent)
             }
@@ -510,7 +533,7 @@ struct DetailPane: View {
                 }
                 switch previewMode {
                 case .tree:
-                    PreviewTree(yearGroups: planner.yearGroups)
+                    PreviewTree(yearGroups: planner.yearGroups, deselected: deselectedIDs)
                 case .grid:
                     ContactSheet(yearGroups: planner.yearGroups, deselectedIDs: $deselectedIDs, loader: loader)
                 }
@@ -542,5 +565,29 @@ private struct IncompleteScanBanner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.yellow.opacity(0.15))
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Whether a pending one-click ingest request should start, keep waiting, or be
+/// given up on.
+///
+/// Pulled out of `MainView.tryAutoIngest` so the decision can be tested: the
+/// original was a `guard` chain that returned without clearing the request on
+/// *any* failure, which armed an ingest that a later, unrelated card could fire.
+/// The distinction that matters is between "not yet" (a scan is still running)
+/// and "never" (the card holds nothing, no destination is set, a job is already
+/// running) — a guard chain cannot express it, which is why it got this wrong.
+enum AutoIngestGate {
+    enum Decision: Equatable { case idle, wait, start, abandon }
+
+    static func decide(pending: Bool,
+                       isScanning: Bool,
+                       totalFiles: Int,
+                       hasDestination: Bool,
+                       copierIsRunning: Bool) -> Decision {
+        guard pending else { return .idle }
+        if isScanning { return .wait }
+        guard totalFiles > 0, hasDestination, !copierIsRunning else { return .abandon }
+        return .start
     }
 }

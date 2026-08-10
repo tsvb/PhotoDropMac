@@ -11,10 +11,28 @@ enum CopierState: Equatable {
     /// window between the user hitting Cancel and the engine writing its
     /// manifest for the bundles that already landed.
     case cancelled(CopyResult?)
-    case failed(String)
+    /// Carries the message *and* the receipt. A halted job still wrote a
+    /// `partial: true` manifest and a log, and `IngestEngine` returned both URLs
+    /// — this used to collapse to a bare string, so the one terminal state where
+    /// the user most needs the record was the only one that offered none, while
+    /// the halt notification told them to "see the app for details" that did not
+    /// exist. `nil` is for failures that never started a job (no photos to copy).
+    case failed(String, CopyResult?)
 }
 
 extension CopierState {
+    /// The job's receipt, whatever the outcome. Every terminal state that has one
+    /// exposes it the same way, so the UI can offer Open Log / Export Manifest
+    /// from all three rather than only from success.
+    var result: CopyResult? {
+        switch self {
+        case .completed(let result):      return result
+        case .cancelled(let result):      return result
+        case .failed(_, let result):      return result
+        case .idle, .running:             return nil
+        }
+    }
+
     /// Whether the completion-summary sheet should be presented for this state,
     /// honouring the user's "Show completion summary" preference. A finish that
     /// had failures is always surfaced, so disabling the summary can never
@@ -112,6 +130,12 @@ final class Copier {
         completedBundles = 0
     }
 
+    /// Whether the job now running (or the one that just ran) hash-verifies each
+    /// copy. The progress pane's trust badge reads this rather than the
+    /// preference, because flipping the setting mid-copy does not change what
+    /// this job did.
+    private(set) var isVerifyingCurrentJob: Bool = true
+
     func start(
         yearGroups: [YearGroup],
         primaryDestination: URL,
@@ -125,6 +149,7 @@ final class Copier {
         cardLabel: String
     ) {
         cancel()                          // abort any in-flight run (trips its flag)
+        isVerifyingCurrentJob = verify
         let flag = CancellationFlag()
         cancelFlag = flag
         log.removeAll()
@@ -133,7 +158,7 @@ final class Copier {
 
         let allBundles = yearGroups.flatMap { $0.folders.flatMap { $0.bundles } }
         guard !allBundles.isEmpty else {
-            state = .failed("No photos to copy.")
+            state = .failed("No photos to copy.", nil)
             return
         }
 
@@ -177,7 +202,7 @@ final class Copier {
             if result.cancelled {
                 self.state = .cancelled(result)
             } else if result.halted {
-                self.state = .failed("Halted: \(result.haltReason ?? "error"). See log.")
+                self.state = .failed("Halted: \(result.haltReason ?? "error"). See log.", result)
                 if self.postsNotifications { Notifier.notifyHalt(reason: result.haltReason ?? "error") }
             } else {
                 self.state = .completed(result)

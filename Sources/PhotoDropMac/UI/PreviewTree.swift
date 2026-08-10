@@ -2,6 +2,11 @@ import SwiftUI
 
 struct PreviewTree: View {
     let yearGroups: [YearGroup]
+    /// Bundles the user deselected in the contact sheet. The tree still lists
+    /// every discovered file — the plan is the plan — but the header must count
+    /// what will actually be copied, or it contradicts the Ingest button beside
+    /// it.
+    let deselected: Set<AssetBundle.ID>
 
     var body: some View {
         List {
@@ -25,9 +30,11 @@ struct PreviewTree: View {
     }
 
     private var summary: String {
-        let files = yearGroups.reduce(0) { $0 + $1.totalFiles }
-        let bytes = yearGroups.reduce(0) { $0 + $1.totalBytes }
-        return "\(files.formatted()) files · \(bytes.formatted(.byteCount(style: .file)))"
+        let counts = SelectionSummary.of(yearGroups: yearGroups, deselected: deselected)
+        let base = "\(counts.files.formatted()) files · \(counts.bytes.formatted(.byteCount(style: .file)))"
+        guard !deselected.isEmpty else { return base }
+        let total = yearGroups.reduce(0) { $0 + $1.totalFiles }
+        return base + " · \(total - counts.files) deselected"
     }
 }
 

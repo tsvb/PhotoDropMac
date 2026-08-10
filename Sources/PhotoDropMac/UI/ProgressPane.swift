@@ -3,7 +3,18 @@ import SwiftUI
 struct ProgressPane: View {
     let progress: CopyProgress
     let log: [LogEntry]
+    /// Whether *this job* hash-verifies each copy. The badge below used to be
+    /// hard-coded to VERIFIED and driven off bytes copied, with the flag never
+    /// passed in — so turning verification off in Settings changed nothing on the
+    /// app's most prominent surface. Same dishonesty the completion text was
+    /// fixed for, left standing where more people would see it.
+    let verifying: Bool
     let onCancel: () -> Void
+
+    /// Pure, so the claim can be tested rather than eyeballed.
+    static func trustCaption(verifying: Bool) -> String {
+        verifying ? "VERIFIED" : "COPIED"
+    }
 
     @AppStorage("photodrop.verificationStyle") private var verificationStyle = VerificationStyle.steady
 
@@ -85,7 +96,7 @@ struct ProgressPane: View {
                     SealGrid(progress: progress.percent, accent: verificationStyle.resolvedAccent)
                         .frame(width: 52, height: 52)
                 }
-                Text("VERIFIED")
+                Text(Self.trustCaption(verifying: verifying))
                     .font(.system(size: 9, weight: .semibold))
                     .tracking(0.5)
                     .foregroundStyle(.tertiary)
@@ -195,6 +206,7 @@ struct LogView: View {
             LogEntry(timestamp: .now, kind: .verified, line: "DSCF1839.RAF → 20260417_120002_DSCF1839.RAF", signature: 0xA3F7_8C12_45D9_7FA3),
             LogEntry(timestamp: .now, kind: .skipped, line: "DSCF1840.RAF — already present as 20260417_120004_DSCF1840.RAF", signature: nil),
         ],
+        verifying: true,
         onCancel: {}
     )
     .frame(width: 760, height: 460)
