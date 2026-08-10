@@ -207,13 +207,50 @@ private func rotl(_ x: UInt64, _ r: Int) -> UInt64 {
 
 // MARK: - File streaming
 
+/// Why a file could not be hashed, as distinct from an I/O error.
+enum HashError: Error, Sendable {
+    /// The path is not a regular file — a device, FIFO, socket or directory.
+    case notARegularFile(URL)
+}
+
 extension XxHash64 {
     /// Stream-hash the contents of `url` in fixed-size chunks without loading
     /// the whole file into memory. Intended for multi-GB source files.
+    ///
+    /// **Only regular files are hashed, and the check happens before `open`.**
+    /// Every path that reaches here is untrusted: manifest entries name the file
+    /// and a manifest's `destinations[]` names the root it resolves under, so
+    /// containment (`ManifestWriter.resolve`) proves only that the entry stayed
+    /// inside its *recorded* root — and a recorded root can be anywhere. A
+    /// planted manifest with `"destinations": ["<lib>", "/dev"]` and an entry
+    /// `zero` therefore passed every existing check and had `heal` read
+    /// `/dev/zero`: measured still running at 12 s and **1,896 MB RSS**, killed
+    /// by hand. The same shape reaches `verify` through any non-regular file
+    /// sitting at a recorded path. The check precedes `open(2)` because opening a
+    /// FIFO for reading *blocks* until a writer appears — an `fstat` on the
+    /// descriptor would never run. The descriptor is re-checked after the open
+    /// anyway, so swapping the path between the two only costs a refusal.
+    ///
+    /// **Each chunk is released as it is consumed.** `read(upToCount:)` returns
+    /// an autoreleased `Data`; with no pool inside the loop every chunk survived
+    /// to the end of the hash. No attacker needed — verifying one 3 GiB file
+    /// peaked at **1,876 MiB RSS**, so an ordinary nightly verify over large
+    /// video or RAW could put the machine under memory pressure.
     static func hash(fileAt url: URL, bufferSize: Int = 1 << 20, bypassCache: Bool = false) throws -> UInt64 {
         precondition(bufferSize > 0, "bufferSize must be positive")
+
+        var pathInfo = stat()
+        guard stat(url.path, &pathInfo) == 0, (pathInfo.st_mode & S_IFMT) == S_IFREG else {
+            throw HashError.notARegularFile(url)
+        }
+
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
+
+        var openInfo = stat()
+        guard fstat(handle.fileDescriptor, &openInfo) == 0, (openInfo.st_mode & S_IFMT) == S_IFREG else {
+            throw HashError.notARegularFile(url)
+        }
 
         // F_NOCACHE makes reads on this descriptor bypass the unified buffer
         // cache and come from the device. Copy verification uses it so a
@@ -226,9 +263,13 @@ extension XxHash64 {
 
         var hasher = XxHash64()
         while true {
-            let chunk = try handle.read(upToCount: bufferSize) ?? Data()
-            if chunk.isEmpty { break }
-            chunk.withUnsafeBytes { hasher.update($0) }
+            let more = try autoreleasepool { () -> Bool in
+                let chunk = try handle.read(upToCount: bufferSize) ?? Data()
+                if chunk.isEmpty { return false }
+                chunk.withUnsafeBytes { hasher.update($0) }
+                return true
+            }
+            if !more { break }
         }
         return hasher.finalize()
     }
