@@ -257,9 +257,53 @@ struct IngestPreferences: View {
 struct NamingPreferences: View {
     @AppStorage("photodrop.template.folder") private var folder = NamingTemplate.default.folder
     @AppStorage("photodrop.template.filename") private var filename = NamingTemplate.default.filename
+    @AppStorage("photodrop.template.yearFolder") private var yearFolder = NamingTemplate.default.yearFolder
+
+    private var current: NamingTemplate {
+        NamingTemplate(folder: folder, filename: filename, yearFolder: yearFolder)
+    }
 
     var body: some View {
         Form {
+            // Layouts are a starting point, not a mode: applying one fills in
+            // the fields below, which stay editable. Nothing records "which
+            // layout is selected" — the selection is derived from the templates,
+            // so the two can never disagree.
+            Section {
+                ForEach(FolderLayout.builtIn) { layout in
+                    Button {
+                        folder = layout.template.folder
+                        filename = layout.template.filename
+                        yearFolder = layout.template.yearFolder
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: FolderLayout.matching(current) == layout
+                                  ? "largecircle.fill.circle" : "circle")
+                                .foregroundStyle(FolderLayout.matching(current) == layout
+                                                 ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(layout.name)
+                                Text("…/" + layout.samplePath())
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                Text(layout.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(FolderLayout.matching(current) == layout ? [.isButton, .isSelected] : .isButton)
+                }
+            } header: {
+                Text("Layout")
+            } footer: {
+                Text("A starting point — the templates below stay editable, and the destination folder is always the one you choose.")
+            }
+
             Section {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Day folder").font(.caption).foregroundStyle(.secondary)
@@ -275,15 +319,21 @@ struct NamingPreferences: View {
                         .font(.system(.body, design: .monospaced))
                         .textFieldStyle(.roundedBorder)
                 }
+                // The year level was unconditional, which made
+                // `{root}/2026-05-28/IMG_0001.jpg` impossible to express however
+                // the templates were written. It defaults to on, so an existing
+                // library keeps landing exactly where it always has.
+                Toggle("Group inside a year folder", isOn: $yearFolder)
                 Button("Reset to defaults") {
                     folder = NamingTemplate.default.folder
                     filename = NamingTemplate.default.filename
+                    yearFolder = NamingTemplate.default.yearFolder
                 }
                 .controlSize(.small)
             } header: {
                 Text("Templates")
             } footer: {
-                Text("The year is always the top folder. The original file extension is kept automatically.")
+                Text("The original file extension is kept automatically. A “/” in the day-folder template nests further subfolders.")
             }
 
             Section("Preview") {
@@ -340,7 +390,7 @@ struct NamingPreferences: View {
     // Renders the current templates against a fixed sample, exactly as the copy
     // engine would. Shared with the inspector's naming preview.
     private var previewPath: String {
-        NamingTemplate.samplePath(folder: folder, filename: filename)
+        NamingTemplate.samplePath(folder: folder, filename: filename, yearFolder: yearFolder)
     }
 
     private var unknownTokens: [String] {

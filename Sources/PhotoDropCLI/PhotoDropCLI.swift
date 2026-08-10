@@ -8,7 +8,7 @@ struct PhotoDropCommand: AsyncParsableCommand {
         commandName: "photodrop",
         abstract: "Verify and ingest photo libraries from the command line.",
         version: "0.1.3",
-        subcommands: [Verify.self, Ingest.self, Heal.self]
+        subcommands: [Verify.self, Ingest.self, Heal.self, Layouts.self]
     )
 }
 
@@ -105,6 +105,25 @@ struct Heal: ParsableCommand {
     }
 }
 
+// MARK: - layouts
+
+/// Lists the built-in folder layouts and exactly what each produces. The sample
+/// paths are rendered by the same code the copy engine uses, so this cannot
+/// advertise a shape the ingest wouldn't build.
+struct Layouts: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "List the built-in folder layouts usable with `ingest --layout`."
+    )
+
+    func run() throws {
+        for layout in FolderLayout.builtIn {
+            print(layout.name)
+            print("    …/\(layout.samplePath())")
+            print("    \(layout.detail)")
+        }
+    }
+}
+
 // MARK: - ingest
 
 struct Ingest: AsyncParsableCommand {
@@ -138,6 +157,12 @@ struct Ingest: AsyncParsableCommand {
 
     @Option(name: .long, help: "File-name stem template.")
     var fileTemplate: String?
+
+    @Option(name: .long, help: "Apply a named folder layout (see `photodrop layouts`). Individual template options override it.")
+    var layout: String?
+
+    @Flag(inversion: .prefixedNo, help: "Put a year folder above the day folder (default on).")
+    var yearFolder: Bool?
 
     @Option(name: .long, help: "Executable to run after a clean ingest (the app's post-ingest hook, for headless runs).")
     var postIngestHook: String?
@@ -186,9 +211,22 @@ struct Ingest: AsyncParsableCommand {
             archiveURLs = []
         }
 
+        // Precedence, narrowest wins: an explicit template option, then a named
+        // layout, then the preset, then the shipped default.
+        let namedLayout: FolderLayout?
+        if let layout {
+            namedLayout = FolderLayout.builtIn.first { $0.name.caseInsensitiveCompare(layout) == .orderedSame }
+            guard namedLayout != nil else {
+                CLIOutput.error("No layout named “\(CLIOutput.safe(layout))”. Run `photodrop layouts` to list them.")
+                throw ExitCode(2)
+            }
+        } else {
+            namedLayout = nil
+        }
         let template = NamingTemplate(
-            folder: folderTemplate ?? loadedPreset?.folderTemplate ?? NamingTemplate.default.folder,
-            filename: fileTemplate ?? loadedPreset?.fileTemplate ?? NamingTemplate.default.filename
+            folder: folderTemplate ?? namedLayout?.template.folder ?? loadedPreset?.folderTemplate ?? NamingTemplate.default.folder,
+            filename: fileTemplate ?? namedLayout?.template.filename ?? loadedPreset?.fileTemplate ?? NamingTemplate.default.filename,
+            yearFolder: yearFolder ?? namedLayout?.template.yearFolder ?? loadedPreset?.yearFolder ?? NamingTemplate.default.yearFolder
         )
         let doVerify = verify ?? loadedPreset?.verifyCopies ?? true
 

@@ -9,6 +9,7 @@ struct InspectorPane: View {
     @AppStorage("photodrop.ejectAfterIngest") private var ejectWhenDone: Bool = false
     @AppStorage("photodrop.template.folder") private var folderTemplate = NamingTemplate.default.folder
     @AppStorage("photodrop.template.filename") private var fileTemplate = NamingTemplate.default.filename
+    @AppStorage("photodrop.template.yearFolder") private var yearFolder = NamingTemplate.default.yearFolder
     @Binding var description: String
     let canStart: Bool
     let onIngest: () -> Void
@@ -80,7 +81,8 @@ struct InspectorPane: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Folder structure")
-                        Text(NamingTemplate.samplePath(folder: folderTemplate, filename: fileTemplate))
+                        Text(NamingTemplate.samplePath(folder: folderTemplate, filename: fileTemplate,
+                                                       yearFolder: yearFolder))
                             .font(.system(.caption2, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)

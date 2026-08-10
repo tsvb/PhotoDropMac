@@ -17,6 +17,7 @@ struct MainView: View {
     @AppStorage("photodrop.ejectAfterIngest") private var ejectAfterIngest: Bool = false
     @AppStorage("photodrop.template.folder") private var templateFolder = NamingTemplate.default.folder
     @AppStorage("photodrop.template.filename") private var templateFilename = NamingTemplate.default.filename
+    @AppStorage("photodrop.template.yearFolder") private var templateYearFolder = NamingTemplate.default.yearFolder
     @AppStorage("photodrop.showCompletionSheet") private var showCompletionSheet: Bool = true
 
     @State private var selectedSourceID: DetectedDrive.ID?
@@ -42,7 +43,7 @@ struct MainView: View {
     }
 
     private var template: NamingTemplate {
-        NamingTemplate(folder: templateFolder, filename: templateFilename)
+        NamingTemplate(folder: templateFolder, filename: templateFilename, yearFolder: templateYearFolder)
     }
 
     /// Extracted from `body`.
@@ -166,6 +167,7 @@ struct MainView: View {
             descriptionText: descriptionText,
             templateFolder: templateFolder,
             templateFilename: templateFilename,
+            templateYearFolder: templateYearFolder,
             pendingOneClickCardID: coordinator.pendingOneClickCardID,
             isScanning: planner.isScanning,
             onSourceChanged: {
@@ -682,6 +684,7 @@ private struct PlanningHandlers: ViewModifier {
     let descriptionText: String
     let templateFolder: String
     let templateFilename: String
+    let templateYearFolder: Bool
     let pendingOneClickCardID: DetectedDrive.ID?
     let isScanning: Bool
 
@@ -697,6 +700,7 @@ private struct PlanningHandlers: ViewModifier {
             .onChange(of: descriptionText) { _, new in onDescriptionChanged(new) }
             .onChange(of: templateFolder) { _, _ in onTemplateChanged() }
             .onChange(of: templateFilename) { _, _ in onTemplateChanged() }
+            .onChange(of: templateYearFolder) { _, _ in onTemplateChanged() }
             .onChange(of: pendingOneClickCardID) { _, id in
                 guard let id else { return }
                 onOneClickRequested(id)

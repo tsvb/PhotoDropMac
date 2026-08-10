@@ -1,11 +1,16 @@
 import Foundation
 
 struct DestinationFolder: Identifiable, Hashable, Sendable {
-    let id: String         // e.g. "2026/2026-04-17"
+    let id: String         // e.g. "2026/2026-04-17", or "2026-04-17" with no year level
     let year: Int
     let dayDate: Date
     let dayName: String    // "2026-04-17" or "2026-04-17_Wedding"
     let bundles: [AssetBundle]
+
+    /// The path below the destination root, exactly as `CopyPlan` will build
+    /// it. The identity and the path are deliberately the same string: two
+    /// folders are the same folder precisely when they land in the same place.
+    var relativePath: String { id }
 
     // Primaries-only count — useful for copies where only the RAW matters.
     var bundleCount: Int { bundles.count }
@@ -86,7 +91,10 @@ enum PathPlanner {
 
         // Group by (year, rendered leaf). The folder template defines the
         // grouping: the default day template groups by day, but e.g.
-        // `{yyyy-MM}` groups by month. Year is always the top level.
+        // `{yyyy-MM}` groups by month. The year is a level only when
+        // `template.yearFolder` — but it stays part of the *grouping key* either
+        // way, so two same-named day folders from different years can never be
+        // merged into one preview row.
         struct FolderKey: Hashable { let year: Int; let leaf: String }
         let grouped = Dictionary(grouping: bundles) { bundle -> FolderKey in
             FolderKey(year: cal.component(.year, from: bundle.primary.dateTaken), leaf: leaf(for: bundle))
@@ -96,7 +104,8 @@ enum PathPlanner {
             // Representative date for sorting: the latest capture in the group.
             let dayDate = dayBundles.map(\.primary.dateTaken).max() ?? Date()
             return DestinationFolder(
-                id: "\(key.year)/\(key.leaf)",
+                // Must equal what CopyPlan.destinationDirectory builds.
+                id: template.yearFolder ? "\(key.year)/\(key.leaf)" : key.leaf,
                 year: key.year,
                 dayDate: dayDate,
                 dayName: key.leaf,

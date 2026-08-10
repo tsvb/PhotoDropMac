@@ -144,7 +144,12 @@ enum CopyPlan {
             originalStem: bundle.primary.url.deletingPathExtension().lastPathComponent,
             cardLabel: PathPlanner.sanitize(cardLabel)
         )
-        // A "/" in the folder template nests subfolders below the (fixed) year.
+        // A "/" in the folder template nests subfolders below the year — and
+        // the year itself is now optional (`template.yearFolder`). Whatever this
+        // decides, `PathPlanner.plan` must decide identically: the preview tree
+        // and the copy are computed by different code from the same template,
+        // and a preview that shows one tree while the bytes go to another is the
+        // exact dishonesty this app exists not to commit.
         let components = PathPlanner.sanitizedComponents(TemplateRenderer.render(template.folder, context))
         // Never produce a nameless folder — fall back to the ISO date if the
         // template renders nothing usable.
@@ -152,7 +157,9 @@ enum CopyPlan {
             ? [String(format: "%04d-%02d-%02d", year, c.month ?? 1, c.day ?? 1)]
             : components
 
-        var dir = destinationRoot.appendingPathComponent(String(year), isDirectory: true)
+        var dir = template.yearFolder
+            ? destinationRoot.appendingPathComponent(String(year), isDirectory: true)
+            : destinationRoot
         for component in safeComponents {
             dir = dir.appendingPathComponent(component, isDirectory: true)
         }

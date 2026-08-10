@@ -18,10 +18,13 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
     var fileTemplate: String
     var verifyCopies: Bool
     var ejectAfterIngest: Bool
+    /// Whether a `{yyyy}` level sits above the day folder — see
+    /// `NamingTemplate.yearFolder`.
+    var yearFolder: Bool
 
     init(id: UUID = UUID(), name: String, primaryDestination: String, archiveDestination: String,
          extraArchiveDestinations: String = "", folderTemplate: String, fileTemplate: String,
-         verifyCopies: Bool, ejectAfterIngest: Bool) {
+         verifyCopies: Bool, ejectAfterIngest: Bool, yearFolder: Bool = true) {
         self.id = id
         self.name = name
         self.primaryDestination = primaryDestination
@@ -31,6 +34,7 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
         self.fileTemplate = fileTemplate
         self.verifyCopies = verifyCopies
         self.ejectAfterIngest = ejectAfterIngest
+        self.yearFolder = yearFolder
     }
 
     // Decode tolerantly: presets saved before mirror destinations existed have
@@ -47,6 +51,11 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
         fileTemplate = try c.decode(String.self, forKey: .fileTemplate)
         verifyCopies = try c.decode(Bool.self, forKey: .verifyCopies)
         ejectAfterIngest = try c.decode(Bool.self, forKey: .ejectAfterIngest)
+        // Presets saved before the year level was optional describe a layout
+        // that always had one. Defaulting to `true` keeps such a preset pointing
+        // at the same folders it always did; defaulting to `false` would quietly
+        // restructure someone's library the next time they applied it.
+        yearFolder = try c.decodeIfPresent(Bool.self, forKey: .yearFolder) ?? true
     }
 
     // The `@AppStorage` keys a preset mirrors (must match the declarations in
@@ -59,6 +68,7 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
         static let filename = "photodrop.template.filename"
         static let verify = "photodrop.verifyCopies"
         static let eject = "photodrop.ejectAfterIngest"
+        static let yearFolder = "photodrop.template.yearFolder"
     }
 
     /// Snapshot the current settings into a named preset, honouring the same
@@ -72,7 +82,8 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
             folderTemplate: defaults.string(forKey: Keys.folder) ?? NamingTemplate.default.folder,
             fileTemplate: defaults.string(forKey: Keys.filename) ?? NamingTemplate.default.filename,
             verifyCopies: defaults.object(forKey: Keys.verify) as? Bool ?? true,
-            ejectAfterIngest: defaults.object(forKey: Keys.eject) as? Bool ?? false
+            ejectAfterIngest: defaults.object(forKey: Keys.eject) as? Bool ?? false,
+            yearFolder: defaults.object(forKey: Keys.yearFolder) as? Bool ?? true
         )
     }
 
@@ -93,6 +104,7 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
         defaults.set(fileTemplate, forKey: Keys.filename)
         defaults.set(verifyCopies, forKey: Keys.verify)
         defaults.set(ejectAfterIngest, forKey: Keys.eject)
+        defaults.set(yearFolder, forKey: Keys.yearFolder)
     }
 }
 

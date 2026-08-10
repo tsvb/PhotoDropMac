@@ -147,6 +147,7 @@ Preferences are plain `@AppStorage` keys (no central store). Defaults:
 | `photodrop.notifyOnCompletion` | Bool | `true` | Post a Notification Center banner on finish when the app isn't frontmost. |
 | `photodrop.template.folder` | String | `{yyyy-MM-dd}[_{Description}]` | Day-folder name template. |
 | `photodrop.template.filename` | String | `{yyyyMMdd_HHmmss}_{OriginalStem}` | Primary filename template (extension auto-appended). |
+| `photodrop.template.yearFolder` | Bool | `true` | Whether a `{yyyy}` folder sits above the day folder. |
 | `photodrop.verificationStyle` | enum | `steady` | App theme (Steady / Ledger / Pressroom). |
 | `photodrop.menuBar.visibility` | enum | `always` | Menu bar item: Always / With card / Hidden. |
 | `photodrop.menuBar.autoOpenWindow` | Bool | `true` | Open the window when a card arrives. |
@@ -161,7 +162,20 @@ Preferences are plain `@AppStorage` keys (no central store). Defaults:
 
 ## Naming templates
 
-The destination layout is always `{root}/{yyyy}/{day-folder}/{filename}.{ext}` — the year is the fixed top level and the original extension is always re-appended. The **day-folder** and **filename** are templates you control in Settings → Naming.
+The destination layout is `{root}[/{yyyy}]/{day-folder}/{filename}.{ext}` — the original extension is always re-appended, and the **day-folder** and **filename** are templates you control in Settings → Naming, as is whether the year level appears at all.
+
+### Layouts
+
+Settings → Naming offers four starting points. Picking one fills in the templates below it, which stay editable — a layout is a shortcut, never a mode. They set the *shape* only; the destination folder is always the one you choose.
+
+| Layout | Produces |
+| --- | --- |
+| **Date + original name** | `…/2026-05-28/IMG_0001.jpg` |
+| **Date + timestamped name** | `…/2026-05-28/20260528_143022_IMG_0001.jpg` |
+| **Year / date + original name** | `…/2026/2026-05-28/IMG_0001.jpg` |
+| **Date + description** | `…/2026-05-28_Wedding/IMG_0001.jpg` |
+
+From the command line: `photodrop layouts` lists them, and `photodrop ingest --layout "Date + original name"` applies one.
 
 Template syntax:
 
@@ -212,11 +226,18 @@ against the checksum stamped into its own extended attribute, so it works on any
 reorganization or a lost manifest — best-effort, since exFAT, some cloud sync and `cp -X` strip
 xattrs. `--json` emits a machine-readable report, including counts of what could *not* be examined.
 
+### `photodrop layouts`
+
+Lists the built-in folder layouts and the sample path each produces. The samples are rendered by the
+same code the copy engine uses, so this cannot advertise a shape the ingest wouldn't build.
+
 ### `photodrop ingest --from <card> --to <library> [--archive <mirror>]… [options]`
 
 A headless ingest: the same scan, plan, dedup, tee-hash verification and mirroring as the app.
-`--to` must already exist. Other options: `--preset <name>`, `--[no-]verify`, `--[no-]eject`,
-`--description`, `--folder-template`, `--file-template`, `--post-ingest-hook <path>`.
+`--to` must already exist. Other options: `--preset <name>`, `--layout <name>`,
+`--[no-]year-folder`, `--[no-]verify`, `--[no-]eject`, `--description`, `--folder-template`,
+`--file-template`, `--post-ingest-hook <path>`. Naming precedence, narrowest first: an explicit
+`--folder-template`/`--file-template`, then `--layout`, then `--preset`, then the default.
 
 **SIGINT, SIGTERM and SIGHUP are all graceful cancels** — the job stops at the next file boundary and
 still writes its manifest and log for what landed. A second signal exits immediately.

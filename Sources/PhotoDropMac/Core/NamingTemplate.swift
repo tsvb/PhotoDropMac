@@ -17,6 +17,17 @@ import os
 struct NamingTemplate: Sendable, Equatable {
     var folder: String
     var filename: String
+    /// Whether a `{yyyy}` folder is inserted above the rendered day folder.
+    ///
+    /// This used to be unconditional — the year was a fixed top level and the
+    /// folder template only ever described what sat *below* it. That made the
+    /// most obvious layout of all, `{root}/2026-05-28/IMG_0001.jpg`,
+    /// inexpressible no matter what you typed. It stays **on** by default: an
+    /// existing library must keep landing exactly where it always has.
+    ///
+    /// With it off, depth is entirely the template author's business —
+    /// `{yyyy}/{MM}/{yyyy-MM-dd}` nests three levels, `{yyyy-MM-dd}` nests one.
+    var yearFolder: Bool = true
 
     static let `default` = NamingTemplate(
         folder: "{yyyy-MM-dd}[_{Description}]",
@@ -41,8 +52,11 @@ struct NamingTemplate: Sendable, Equatable {
         TokenHelp(token: "[…]", meaning: "Optional — dropped if a named token inside is empty"),
     ]
 
-    /// A fixed sample capture used to preview templates in the UI.
-    private static var sampleContext: TemplateContext {
+    /// A fixed sample capture used to preview templates in the UI. Internal so
+    /// `FolderLayout` renders its advertised sample through the same renderer
+    /// the engine uses — an advertised path that doesn't match what the copy
+    /// does would be a lie exactly where the user is choosing what to trust.
+    static var sampleContext: TemplateContext {
         var c = DateComponents()
         c.year = 2026; c.month = 5; c.day = 28
         c.hour = 19; c.minute = 55; c.second = 10
@@ -60,14 +74,25 @@ struct NamingTemplate: Sendable, Equatable {
     /// exactly as the copy engine would (render → sanitize). Shown live as the
     /// user edits, in both Settings → Naming and the inspector, so the two can't
     /// drift. Pure.
-    static func samplePath(folder: String, filename: String) -> String {
-        let context = sampleContext
-        let leaf = PathPlanner.sanitize(TemplateRenderer.render(folder, context))
+    static func samplePath(folder: String, filename: String, yearFolder: Bool = true) -> String {
+        "…/" + relativeSamplePath(folder: folder, filename: filename,
+                                  yearFolder: yearFolder, context: sampleContext)
+    }
+
+    /// The sample path relative to the destination root, built the way
+    /// `CopyPlan.destinationDirectory` builds a real one: render → sanitize,
+    /// year level only when asked for.
+    static func relativeSamplePath(folder: String, filename: String, yearFolder: Bool,
+                                   context: TemplateContext, fileExtension: String = "DNG") -> String {
+        let leaf = PathPlanner.sanitizedComponents(TemplateRenderer.render(folder, context))
         let stem = PathPlanner.sanitize(TemplateRenderer.render(filename, context))
-        let year = Calendar.current.component(.year, from: context.date)
-        let safeLeaf = leaf.isEmpty ? "2026-05-28" : leaf
+        let safeLeaf = leaf.isEmpty
+            ? [ISO8601DateFormatter.sampleDay(context.date)]
+            : leaf
         let safeStem = stem.isEmpty ? "20260528_195510_L1031253" : stem
-        return "…/\(year)/\(safeLeaf)/\(safeStem).DNG"
+        let year = Calendar.current.component(.year, from: context.date)
+        let components = (yearFolder ? [String(year)] : []) + safeLeaf
+        return (components + ["\(safeStem).\(fileExtension)"]).joined(separator: "/")
     }
 }
 
@@ -249,5 +274,16 @@ enum TemplateRenderer {
             }
             return formatter.string(from: date)
         }
+    }
+}
+
+extension ISO8601DateFormatter {
+    /// `yyyy-MM-dd` for a date, used only as the fallback folder name when a
+    /// template renders nothing usable. Matches `CopyPlan.destinationDirectory`.
+    static func sampleDay(_ date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let c = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 1, c.day ?? 1)
     }
 }
