@@ -136,6 +136,11 @@ final class Copier {
     /// this job did.
     private(set) var isVerifyingCurrentJob: Bool = true
 
+    /// Where this copier announces that it has a job in flight, so code that
+    /// owns no view state — the app delegate, deciding whether it is safe to
+    /// quit — can find it. Set by whoever constructs the copier.
+    @ObservationIgnored weak var registry: JobRegistry?
+
     func start(
         yearGroups: [YearGroup],
         primaryDestination: URL,
@@ -150,6 +155,7 @@ final class Copier {
     ) {
         cancel()                          // abort any in-flight run (trips its flag)
         isVerifyingCurrentJob = verify
+        registry?.runningCopier = self
         let flag = CancellationFlag()
         cancelFlag = flag
         log.removeAll()
@@ -159,6 +165,7 @@ final class Copier {
         let allBundles = yearGroups.flatMap { $0.folders.flatMap { $0.bundles } }
         guard !allBundles.isEmpty else {
             state = .failed("No photos to copy.", nil)
+            registry?.runningCopier = nil
             return
         }
 
@@ -199,6 +206,7 @@ final class Copier {
             // discarding it here would throw away the very receipt the engine
             // stayed alive to write.
             guard let self, self.cancelFlag === flag else { return }
+            if self.registry?.runningCopier === self { self.registry?.runningCopier = nil }
             if result.cancelled {
                 self.state = .cancelled(result)
             } else if result.halted {
@@ -210,6 +218,29 @@ final class Copier {
                 self.runPostIngestHookIfConfigured(result)
             }
         }
+    }
+
+    /// Awaits the in-flight job, if any. The task always returns a `CopyResult`
+    /// and always writes the manifest and log, so waiting is what turns "the
+    /// process is going away" into "the job has a receipt".
+    func waitForCompletion() async {
+        await task?.value
+    }
+
+    /// Stop for termination: a graceful cancel, then wait for the engine to
+    /// finish unwinding.
+    ///
+    /// Quitting used to go straight to `NSApp.terminate(nil)`. `FileCopier`'s
+    /// partial cleanup is a Swift `catch`, which process death skips, and the
+    /// half-written file it leaves is invisible to everything afterwards: it is
+    /// not in the manifest (written after the loop), it was never xattr-stamped,
+    /// and on a re-ingest its size differs so dedup misses it and `CopyPlan`
+    /// pushes the *real* file to `…_1`. This is the same choice the CLI makes
+    /// for SIGTERM — stop at a file boundary and still write the record.
+    func stopForTermination() async {
+        guard isRunning else { return }
+        cancel()
+        await waitForCompletion()
     }
 
     private func applyProgress(_ progress: CopyProgress, from flag: CancellationFlag) {

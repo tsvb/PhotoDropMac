@@ -345,7 +345,17 @@ struct MenuBarPreferences: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                // The menu-bar icon is the host that detects card arrivals, so
+                // with the menu bar hidden this toggle cannot do anything. It
+                // used to render plainly enabled in all three modes, which is a
+                // setting that lies about itself.
                 Toggle("Auto-open window when a card arrives", isOn: $autoOpenWindow)
+                    .disabled(!MenuBarAutoOpen.isAvailable(for: visibility))
+                if !MenuBarAutoOpen.isAvailable(for: visibility) {
+                    Text("Needs the menu-bar icon — it is what notices a card arriving while the window is closed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {

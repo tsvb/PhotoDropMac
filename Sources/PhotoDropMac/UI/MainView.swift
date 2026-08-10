@@ -5,8 +5,8 @@ import UniformTypeIdentifiers
 struct MainView: View {
     @Environment(DriveWatcher.self) private var watcher
     @Environment(AppCoordinator.self) private var coordinator
+    @Environment(Copier.self) private var copier
     @State private var planner = IngestPlanner()
-    @State private var copier = Copier()
     @State private var verifier = Verifier()
     @State private var presetStore = PresetStore()
 
