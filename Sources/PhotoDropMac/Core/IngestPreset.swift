@@ -102,6 +102,14 @@ struct IngestPreset: Codable, Identifiable, Hashable, Sendable {
 @Observable
 final class PresetStore {
     private(set) var presets: [IngestPreset] = []
+    /// Why the last save didn't land, or nil.
+    ///
+    /// The write was a `try?`, so a preset saved into an unwritable location
+    /// appeared in the list, appeared to persist, and was gone at the next
+    /// launch — the list is in memory, the file never happened. Saying nothing
+    /// is worse than an error here: the user goes on believing the preset
+    /// exists.
+    private(set) var lastError: String?
     @ObservationIgnored private let storeURL: URL
 
     init(storeURL: URL = PresetStore.defaultURL) {
@@ -124,11 +132,18 @@ final class PresetStore {
     }
 
     func save() {
-        guard let data = try? JSONEncoder().encode(presets) else { return }
-        try? FileManager.default.createDirectory(
-            at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: storeURL, options: [.atomic])
+        do {
+            let data = try JSONEncoder().encode(presets)
+            try FileManager.default.createDirectory(
+                at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: storeURL, options: [.atomic])
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
+
+    func clearError() { lastError = nil }
 
     nonisolated static var defaultURL: URL {
         let fm = FileManager.default

@@ -31,6 +31,7 @@ struct PhotoDropMacApp: App {
         }
         .defaultSize(width: 1020, height: 700)
         .windowToolbarStyle(.unified)
+        .commands { PhotoDropCommands(coordinator: coordinator) }
 
         // Default (.always) keeps the menu bar — and its card-arrival auto-open —
         // alive exactly as before. .withCard shows it only while a card is
@@ -66,6 +67,32 @@ struct PhotoDropMacApp: App {
         case .always:   return true
         case .withCard: return !watcher.drives.isEmpty
         case .hidden:   return false
+        }
+    }
+}
+
+/// Menu items for the actions that previously lived only in the toolbar.
+///
+/// Without these, Refresh / Verify Library / Toggle Inspector / Cancel were
+/// unreachable from the menu bar — and therefore from Help-menu search and from
+/// anyone driving the app by keyboard. The commands go through `AppCoordinator`
+/// because a `Commands` builder is scene-scoped and cannot see window state.
+struct PhotoDropCommands: Commands {
+    let coordinator: AppCoordinator
+
+    var body: some Commands {
+        CommandGroup(after: .toolbar) {
+            Button("Refresh") { coordinator.requestRefresh() }
+                .keyboardShortcut("r")
+            Button("Toggle Inspector") { coordinator.requestToggleInspector() }
+                .keyboardShortcut("i", modifiers: [.command, .option])
+            Divider()
+        }
+        CommandMenu("Ingest") {
+            Button("Verify Library…") { coordinator.requestVerifyLibrary() }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+            Button("Cancel Ingest") { coordinator.requestCancel() }
+                .keyboardShortcut(".", modifiers: .command)
         }
     }
 }

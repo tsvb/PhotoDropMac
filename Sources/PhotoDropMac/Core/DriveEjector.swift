@@ -56,3 +56,17 @@ enum DriveEjector {
         }
     }
 }
+
+/// How an eject is reported to the user.
+///
+/// The sidebar's eject button was `Task { try? await DriveEjector.eject(…) }` —
+/// neither outcome reported. Eject is the one irreversible act in this app, and
+/// "did it work?" is the entire question; `IngestEngine` already logs its own
+/// eject failures, so this was the sink that was missed.
+enum EjectOutcome {
+    /// The card label is card-authored text going into an alert, so it is
+    /// neutralized like every other sink — see `SafeText`.
+    static func failureMessage(card: String, error: String) -> String {
+        "Couldn’t eject \(SafeText.display(card)): \(SafeText.display(error))"
+    }
+}

@@ -11,6 +11,31 @@ enum Notifier {
         UserDefaults.standard.object(forKey: "photodrop.notifyOnCompletion") as? Bool ?? true
     }
 
+    /// Key for "the system refused us permission to post banners".
+    ///
+    /// Authorization was requested lazily inside `post`, with the result
+    /// discarded by a `try?`. Two consequences, both silent: the prompt appeared
+    /// at the worst possible moment — deliberately while the app is *not*
+    /// frontmost, since that is the only time a banner is posted — and if the
+    /// user said no, the Settings toggle read checked forever while nothing was
+    /// ever delivered.
+    static let deniedKey = "photodrop.notify.authorizationDenied"
+
+    static var authorizationDenied: Bool {
+        UserDefaults.standard.bool(forKey: deniedKey)
+    }
+
+    /// Ask now, in context — called when the user turns the setting on, while
+    /// they are looking at Settings and can answer the prompt. Records the
+    /// answer so the toggle can stop claiming something that will not happen.
+    @discardableResult
+    static func requestAuthorization() async -> Bool {
+        let granted = (try? await UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound])) ?? false
+        UserDefaults.standard.set(!granted, forKey: deniedKey)
+        return granted
+    }
+
     @MainActor
     static func notifyCompletion(result: CopyResult) {
         guard enabled, !NSApp.isActive else { return }
@@ -45,7 +70,13 @@ enum Notifier {
         Task {
             let center = UNUserNotificationCenter.current()
             guard let granted = try? await center.requestAuthorization(options: [.alert, .sound]),
-                  granted else { return }
+                  granted else {
+                // Record the refusal so Settings can say so, rather than leaving
+                // a checked toggle that never produces a banner.
+                UserDefaults.standard.set(true, forKey: deniedKey)
+                return
+            }
+            UserDefaults.standard.set(false, forKey: deniedKey)
             let content = UNMutableNotificationContent()
             content.title = title
             content.body = body

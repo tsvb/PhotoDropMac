@@ -108,7 +108,7 @@ struct ThumbnailCell: View {
     let isSelected: Bool
     let onToggle: () -> Void
 
-    @State private var image: Image?
+    @State private var outcome: ThumbnailLoader.Outcome?
 
     var body: some View {
         VStack(spacing: 3) {
@@ -157,15 +157,25 @@ struct ThumbnailCell: View {
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction { onToggle() }
         .task(id: bundle.id) {
-            if image == nil { image = await loader.image(for: bundle.primary.url) }
+            if outcome == nil { outcome = await loader.outcome(for: bundle.primary.url) }
         }
     }
 
     @ViewBuilder
     private var thumbnail: some View {
-        if let image {
+        switch outcome {
+        case .image(let image):
             image.resizable().aspectRatio(contentMode: .fill)
-        } else {
+        case .undecodable:
+            // A file ImageIO can't preview. Saying so beats a spinner that never
+            // stops — and the decode is not retried on every reappearance.
+            Rectangle().fill(.quaternary)
+                .overlay {
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+        case nil:
             Rectangle().fill(.quaternary)
                 .overlay { ProgressView().controlSize(.small) }
         }

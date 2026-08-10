@@ -154,7 +154,12 @@ final class IngestPlannerTests: XCTestCase {
         planner.setSource(drive(at: card), description: "", template: .default)
         try await waitForScan(planner)
 
+        // Replanning is debounced — it used to run synchronously on the main
+        // actor for every keystroke, rebuilding the whole plan per character.
+        // `replanNow()` is what `startIngest` calls, so the plan can never be one
+        // debounce interval stale when the copy begins.
         planner.updateDescription("Beach Day")
+        planner.replanNow()
         XCTAssertFalse(planner.isScanning, "changing the description must not re-read the card")
         let folder = planner.yearGroups.first?.folders.first?.dayName
         XCTAssertEqual(folder?.hasSuffix("_Beach_Day"), true, "got \(folder ?? "nil")")

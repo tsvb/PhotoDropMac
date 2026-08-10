@@ -131,6 +131,14 @@ struct InspectorPane: View {
         } message: {
             Text("Saves the current destinations, naming templates, and verify/eject options.")
         }
+        // A preset that didn't reach disk looked identical to one that did, and
+        // was gone at the next launch. See `PresetStore.lastError`.
+        .alert("Couldn’t save the preset", isPresented: Binding(
+            get: { presetStore.lastError != nil },
+            set: { if !$0 { presetStore.clearError() } }
+        )) {
+            Button("OK", role: .cancel) { presetStore.clearError() }
+        } message: { Text(presetStore.lastError ?? "") }
     }
 
     // How many independent verified copies this configuration will write:
@@ -190,6 +198,7 @@ private struct ExtraDestinationsEditor: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Remove this copy")
+                .accessibilityLabel("Remove this copy")
             }
         }
         Button {
@@ -259,6 +268,7 @@ struct PathField: View {
             }
             .buttonStyle(.bordered)
             .help("Choose folder…")
+            .accessibilityLabel("Choose folder")
         }
     }
 

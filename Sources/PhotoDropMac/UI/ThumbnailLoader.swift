@@ -39,11 +39,29 @@ struct LRUCache<Key: Hashable, Value> {
 /// an embedded preview when the file has one (fast for JPEG and most RAW). The
 /// actor coordinates a bounded in-memory cache and de-dupes in-flight requests
 /// for the same URL; the decode itself runs detached so several thumbnails
-/// decode concurrently. SwiftUI's lazy grid only asks for visible cells, which
-/// keeps the number of concurrent decodes bounded without an explicit semaphore.
+/// decode concurrently.
+///
+/// **Failures are cached too.** A file ImageIO cannot decode returned nil and
+/// nothing was recorded, so `ContactSheet` spun a `ProgressView` forever and
+/// re-attempted the decode every time the cell scrolled back into view — the
+/// most expensive possible response to a file that will never decode. The cache
+/// therefore stores an `Outcome`, and the grid can say "no preview" instead of
+/// pretending to still be working.
+///
+/// Concurrency is bounded by what SwiftUI's lazy grid asks for plus the
+/// in-flight de-dup below. (This comment used to claim an explicit bound; there
+/// was no semaphore then and there is none now. Better to describe what actually
+/// limits it.)
 actor ThumbnailLoader {
-    private var cache: LRUCache<URL, Image>
-    private var inFlight: [URL: Task<Image?, Never>] = [:]
+    /// A decode that finished, one way or the other.
+    enum Outcome: Sendable, Equatable {
+        case image(Image)
+        /// ImageIO could not produce a preview. Terminal — do not retry.
+        case undecodable
+    }
+
+    private var cache: LRUCache<URL, Outcome>
+    private var inFlight: [URL: Task<Outcome, Never>] = [:]
     private let maxPixel: CGFloat
 
     /// `cacheLimit` bounds resident thumbnails so a large card can't grow memory
@@ -54,17 +72,22 @@ actor ThumbnailLoader {
     }
 
     func image(for url: URL) async -> Image? {
+        if case .image(let image) = await outcome(for: url) { return image }
+        return nil
+    }
+
+    func outcome(for url: URL) async -> Outcome {
         if let cached = cache.value(for: url) { return cached }
         if let existing = inFlight[url] { return await existing.value }
 
         let maxPixel = self.maxPixel
         let task = Task.detached(priority: .utility) {
-            ThumbnailLoader.decode(url: url, maxPixel: maxPixel)
+            ThumbnailLoader.decode(url: url, maxPixel: maxPixel).map(Outcome.image) ?? .undecodable
         }
         inFlight[url] = task
         let result = await task.value
         inFlight[url] = nil
-        if let result { cache.insert(result, for: url) }
+        cache.insert(result, for: url)
         return result
     }
 

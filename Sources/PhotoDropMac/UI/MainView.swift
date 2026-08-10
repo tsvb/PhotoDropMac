@@ -62,11 +62,19 @@ struct MainView: View {
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Picker("Preview", selection: $previewMode) {
-                        Image(systemName: "list.bullet").tag(PreviewMode.tree)
-                        Image(systemName: "square.grid.2x2").tag(PreviewMode.grid)
+                        Image(systemName: "list.bullet")
+                            .accessibilityLabel("Tree preview")
+                            .tag(PreviewMode.tree)
+                        Image(systemName: "square.grid.2x2")
+                            .accessibilityLabel("Grid preview")
+                            .tag(PreviewMode.grid)
                     }
                     .pickerStyle(.segmented)
+                    // `.help` is the tooltip (NSAccessibilityHelp) — a different
+                    // attribute from the label VoiceOver announces. An
+                    // image-only control needs both.
                     .help("Tree or grid preview")
+                    .accessibilityLabel("Preview mode")
 
                     Button {
                         chooseVerifyTarget()
@@ -74,6 +82,7 @@ struct MainView: View {
                         Label("Verify Library", systemImage: "checkmark.shield")
                     }
                     .help("Re-verify a library folder against its manifest")
+                    .accessibilityLabel("Verify library")
                     .disabled(copier.isRunning || verifier.isRunning)
 
                     Button {
@@ -83,6 +92,7 @@ struct MainView: View {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
                     .help("Rescan cards and preview")
+                    .accessibilityLabel("Refresh")
                     .disabled(copier.isRunning)
 
                     Button {
@@ -91,6 +101,7 @@ struct MainView: View {
                         Label("Toggle Inspector", systemImage: "sidebar.right")
                     }
                     .help("Toggle inspector")
+                    .accessibilityLabel("Toggle inspector")
                 }
             }
             .inspector(isPresented: $showInspector) {
@@ -144,6 +155,27 @@ struct MainView: View {
         .onChange(of: planner.isScanning) { _, _ in
             tryAutoIngest()
         }
+        // Menu commands. A `Commands` builder is scene-scoped and can't reach
+        // this view's state, so it posts tickets on the coordinator and the
+        // window performs them — see `PhotoDropCommands`. Grouped in one
+        // modifier: four more `.onChange`s inline pushed this chain past what
+        // the type checker will do in reasonable time.
+        .modifier(MenuCommandHandlers(
+            coordinator: coordinator,
+            onRefresh: {
+                guard !copier.isRunning else { return }
+                watcher.rescan()
+                planner.setSource(source, description: descriptionText, template: template)
+            },
+            onVerifyLibrary: {
+                guard !copier.isRunning, !verifier.isRunning else { return }
+                chooseVerifyTarget()
+            },
+            onToggleInspector: { showInspector.toggle() },
+            onCancel: {
+                guard copier.isRunning else { return }
+                copier.cancel()
+            }))
         .onChange(of: copier.state) { _, newState in
             // Summary suppressed for a completion → return to the idle preview
             // instead of lingering in the completed state (mirrors dismissing the
@@ -207,6 +239,10 @@ struct MainView: View {
 
     private func startIngest() {
         guard source != nil, !primaryDest.isEmpty else { return }
+        // Flush any debounced replan first: pressing Ingest immediately after
+        // typing a description must copy into the folder the user just named,
+        // not the one from before the last keystroke.
+        planner.replanNow()
         let groups = selectedYearGroups()
         guard !groups.isEmpty else { return }
         let primaryURL = URL(fileURLWithPath: primaryDest, isDirectory: true)
@@ -386,6 +422,7 @@ struct Sidebar: View {
 struct SidebarRow: View {
     let card: DetectedDrive
     @AppStorage("photodrop.verificationStyle") private var theme = VerificationStyle.steady
+    @State private var ejectError: String?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -406,15 +443,32 @@ struct SidebarRow: View {
             Spacer(minLength: 0)
             Button {
                 let mountPoint = card.mountPoint
-                Task { try? await DriveEjector.eject(mountPoint: mountPoint) }
+                let label = card.label
+                Task {
+                    do {
+                        try await DriveEjector.eject(mountPoint: mountPoint)
+                    } catch {
+                        // Reported, not swallowed: this is the one irreversible
+                        // action in the app, and a failed eject that says nothing
+                        // leaves the user pulling a mounted card.
+                        ejectError = EjectOutcome.failureMessage(
+                            card: label, error: error.localizedDescription)
+                    }
+                }
             } label: {
                 Image(systemName: "eject.fill")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help("Eject \(card.label)")
+            .accessibilityLabel("Eject \(card.label)")
         }
         .padding(.vertical, 2)
+        .alert("Eject failed", isPresented: Binding(
+            get: { ejectError != nil }, set: { if !$0 { ejectError = nil } }
+        )) {
+            Button("OK", role: .cancel) { ejectError = nil }
+        } message: { Text(ejectError ?? "") }
     }
 }
 
@@ -565,6 +619,23 @@ private struct IncompleteScanBanner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.yellow.opacity(0.15))
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Delivers `AppCoordinator`'s menu tickets to the window.
+private struct MenuCommandHandlers: ViewModifier {
+    let coordinator: AppCoordinator
+    let onRefresh: () -> Void
+    let onVerifyLibrary: () -> Void
+    let onToggleInspector: () -> Void
+    let onCancel: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: coordinator.refreshTicket) { _, _ in onRefresh() }
+            .onChange(of: coordinator.verifyTicket) { _, _ in onVerifyLibrary() }
+            .onChange(of: coordinator.inspectorTicket) { _, _ in onToggleInspector() }
+            .onChange(of: coordinator.cancelTicket) { _, _ in onCancel() }
     }
 }
 

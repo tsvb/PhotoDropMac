@@ -191,6 +191,23 @@ struct IngestPreferences: View {
 
             Section {
                 Toggle("Notify when finished", isOn: $notifyOnCompletion)
+                    // Ask while the user is here and can answer. Authorization
+                    // used to be requested from `post`, i.e. deliberately while
+                    // the app was not frontmost, and the answer was discarded.
+                    .onChange(of: notifyOnCompletion) { _, isOn in
+                        guard isOn else { return }
+                        Task { await Notifier.requestAuthorization() }
+                    }
+                if notifyOnCompletion, Notifier.authorizationDenied {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                            .accessibilityHidden(true)
+                        Text("macOS is blocking PhotoDrop’s notifications, so this does nothing until you allow them in System Settings › Notifications.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             } footer: {
                 Text("Posts a notification when an ingest completes while PhotoDrop is in the background.")
             }
@@ -209,6 +226,7 @@ struct IngestPreferences: View {
                     }
                     .buttonStyle(.bordered)
                     .help("Choose script…")
+                    .accessibilityLabel("Choose script")
                     if !postIngestScript.isEmpty {
                         Button("Clear") { postIngestScript = "" }
                             .controlSize(.small)
@@ -393,6 +411,7 @@ private struct SettingsPathRow: View {
             }
             .buttonStyle(.bordered)
             .help("Choose folder…")
+            .accessibilityLabel("Choose folder")
         }
     }
 

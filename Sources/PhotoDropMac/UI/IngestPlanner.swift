@@ -23,6 +23,14 @@ final class IngestPlanner {
     @ObservationIgnored private var lastTemplate: NamingTemplate = .default
     @ObservationIgnored private var lastCardLabel: String = ""
     @ObservationIgnored private var scanTask: Task<Void, Never>?
+    @ObservationIgnored private var replanTask: Task<Void, Never>?
+
+    /// How long an edit settles before the plan is recomputed. Replanning is
+    /// O(bundles) — sanitize, render two templates and regroup every bundle —
+    /// and it ran synchronously on the main actor for *every keystroke* in the
+    /// description field. On a full card that is the whole plan rebuilt per
+    /// character typed. Short enough that the preview still feels live.
+    @ObservationIgnored var replanDelay: Duration = .milliseconds(150)
 
     // `totalFiles` includes companions — the UI uses it for the
     // "X files · Y GB" header, which should reflect everything that
@@ -72,16 +80,39 @@ final class IngestPlanner {
     }
 
     func updateDescription(_ description: String) {
+        guard description != lastDescription else { return }
         lastDescription = description
-        replan()
+        scheduleReplan()
     }
 
     func updateTemplate(_ template: NamingTemplate) {
+        guard template != lastTemplate else { return }
         lastTemplate = template
-        replan()
+        scheduleReplan()
+    }
+
+    /// Coalesces a burst of edits into one replan. Cancelling the previous task
+    /// is what makes it a debounce rather than a queue.
+    private func scheduleReplan() {
+        replanTask?.cancel()
+        let delay = replanDelay
+        replanTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.replan()
+        }
     }
 
     private func replan() {
         yearGroups = PathPlanner.plan(bundles: bundles, description: lastDescription, template: lastTemplate, cardLabel: lastCardLabel)
+    }
+
+    /// Flush a pending debounce immediately — used before an ingest starts, so
+    /// the job is planned from what the user last typed rather than from a plan
+    /// that is one debounce interval stale.
+    func replanNow() {
+        replanTask?.cancel()
+        replanTask = nil
+        replan()
     }
 }

@@ -10,6 +10,25 @@ import Observation
 final class AppCoordinator {
     // Set by the menu bar's one-click action; consumed (and cleared) by MainView.
     var pendingOneClickCardID: DetectedDrive.ID?
+
+    /// Menu commands, as monotonically increasing tickets.
+    ///
+    /// The app had no `.commands` block at all, so Refresh, Verify Library,
+    /// Toggle Inspector and Cancel existed only as toolbar buttons — unreachable
+    /// from the menu bar, from the Help menu's search, and from anyone driving
+    /// the app by keyboard alone. `Commands` is built at scene scope and cannot
+    /// reach the window's view state, so each command bumps a counter that
+    /// `MainView` observes. A counter rather than a flag because two Refreshes
+    /// in a row must both be delivered.
+    private(set) var refreshTicket = 0
+    private(set) var verifyTicket = 0
+    private(set) var inspectorTicket = 0
+    private(set) var cancelTicket = 0
+
+    func requestRefresh()          { refreshTicket += 1 }
+    func requestVerifyLibrary()    { verifyTicket += 1 }
+    func requestToggleInspector()  { inspectorTicket += 1 }
+    func requestCancel()           { cancelTicket += 1 }
 }
 
 // How the MenuBarExtra is shown. Persisted via @AppStorage as its rawValue.
