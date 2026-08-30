@@ -146,16 +146,37 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 ditto "$APP" "$STAGE/$APP_NAME.app"
 
-if command -v create-dmg >/dev/null 2>&1; then
-  create-dmg \
-    --volname "$APP_NAME" \
-    --app-drop-link 450 150 \
-    --icon "$APP_NAME.app" 150 150 \
-    "$DMG" "$STAGE"
-else
-  # Zero-dependency fallback: add an Applications symlink and compress.
-  ln -s /Applications "$STAGE/Applications"
+# The fallback is reached when create-dmg is missing *or* when it fails. It
+# drives Finder over AppleEvents to place the icons, which needs a Finder that
+# will answer: from a background shell, an ssh session or CI it returns
+# `Finder got an error: AppleEvent timed out. (-1712)` and exits non-zero.
+# Under `set -e` that used to abort the release *after* the app was already
+# notarized and stapled — the expensive, irreversible half — over icon
+# placement. A plain disk image is a complete, shippable artifact; prettiness is
+# not worth losing the release for.
+#
+# create-dmg leaves its scratch `rw.*.dmg` and a half-built $DMG behind when it
+# dies, so both are cleared before the retry. $STAGE survives a failed attempt
+# intact: the only thing create-dmg writes there is the removal of .DS_Store.
+dmg_fallback() {
+  echo "▸ Building DMG with hdiutil (no Finder required)"
+  rm -f "$BUILD_DIR"/rw.*.dmg "$DMG"
+  ln -sf /Applications "$STAGE/Applications"
   hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+}
+
+if command -v create-dmg >/dev/null 2>&1; then
+  if ! create-dmg \
+        --volname "$APP_NAME" \
+        --app-drop-link 450 150 \
+        --icon "$APP_NAME.app" 150 150 \
+        "$DMG" "$STAGE"; then
+    echo "⚠ create-dmg failed (commonly a Finder AppleEvent timeout when not run" >&2
+    echo "  from a foreground GUI session). Falling back to a plain disk image." >&2
+    dmg_fallback
+  fi
+else
+  dmg_fallback
 fi
 
 # ── 5. Notarize the DMG and wait for the verdict ────────────────────────────
