@@ -482,6 +482,89 @@ final class OppositionFixTests: XCTestCase {
         XCTAssertEqual(TemplateRenderer.unknownTokens(in: "{CamraModel}"), ["CamraModel"])
     }
 
+    /// A `UserDefaults` suite of its own per test, torn down by *name* — the
+    /// suite object itself cannot be captured into the main-actor teardown
+    /// closure under strict concurrency.
+    private func isolatedDefaults() throws -> (UserDefaults, String) {
+        let name = "photodrop.tests.cardhistory.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock {
+            UserDefaults.standard.removePersistentDomain(forName: name)
+        }
+        return (defaults, name)
+    }
+
+    // MARK: - F13 · the app remembers which cards it has done
+
+    /// At 2am, six cards into a wedding, "did I already do this one?" had no
+    /// answer short of re-inserting the card and waiting out a full index build
+    /// and source-hash pass — which is both slow and exactly when a person
+    /// guesses instead.
+    func testCardHistoryAnswersWhetherACardWasAlreadyIngested() throws {
+        let (defaults, _) = try isolatedDefaults()
+
+        XCTAssertNil(CardHistory.entry(forVolumeID: "vol-A", in: defaults))
+
+        CardHistory.record(CardHistoryEntry(volumeID: "vol-A", label: "UNTITLED",
+                                            ingestedAt: Date(), filesLanded: 482,
+                                            manifestPath: "/lib/PhotoDrop Manifests/ingest-1.json"),
+                           in: defaults)
+        let entry = try XCTUnwrap(CardHistory.entry(forVolumeID: "vol-A", in: defaults))
+        XCTAssertEqual(entry.filesLanded, 482)
+        XCTAssertNil(CardHistory.entry(forVolumeID: "vol-B", in: defaults),
+                     "the second shooter's card is a different card")
+    }
+
+    /// Keyed on the volume UUID, not the label — cards ship and reformat as
+    /// UNTITLED, and a label collision would make two cards look like one.
+    func testTwoCardsWithTheSameLabelAreRememberedSeparately() throws {
+        let (defaults, _) = try isolatedDefaults()
+
+        CardHistory.record(CardHistoryEntry(volumeID: "vol-A", label: "UNTITLED",
+                                            ingestedAt: Date(), filesLanded: 100,
+                                            manifestPath: nil), in: defaults)
+        CardHistory.record(CardHistoryEntry(volumeID: "vol-B", label: "UNTITLED",
+                                            ingestedAt: Date(), filesLanded: 200,
+                                            manifestPath: nil), in: defaults)
+
+        XCTAssertEqual(CardHistory.entry(forVolumeID: "vol-A", in: defaults)?.filesLanded, 100)
+        XCTAssertEqual(CardHistory.entry(forVolumeID: "vol-B", in: defaults)?.filesLanded, 200)
+    }
+
+    /// Re-ingesting the same card replaces its entry rather than accumulating
+    /// one per run, and the newest is what the sidebar shows.
+    func testReingestingACardUpdatesItsEntryInPlace() throws {
+        let (defaults, _) = try isolatedDefaults()
+
+        CardHistory.record(CardHistoryEntry(volumeID: "vol-A", label: "CARD",
+                                            ingestedAt: Date(timeIntervalSince1970: 1),
+                                            filesLanded: 10, manifestPath: nil), in: defaults)
+        CardHistory.record(CardHistoryEntry(volumeID: "vol-A", label: "CARD",
+                                            ingestedAt: Date(), filesLanded: 20,
+                                            manifestPath: nil), in: defaults)
+
+        XCTAssertEqual(CardHistory.all(in: defaults).count, 1)
+        XCTAssertEqual(CardHistory.entry(forVolumeID: "vol-A", in: defaults)?.filesLanded, 20)
+    }
+
+    // MARK: - F14 · a mirror that isn't mounted is warned about once
+
+    /// The travel case: laptop in the field, NAS at home. Nothing pre-flighted
+    /// it, so every bundle failed at `createDirectory` — 2,000 log lines to say
+    /// one thing — and the resulting `filesFailed` blocked the auto-eject over a
+    /// library that was in fact complete.
+    func testAnUnmountedMirrorIsWarnedAboutBeforeTheJobStarts() throws {
+        let tmp = try freshTempDir("UnreachableMirror")
+        let present = tmp.appendingPathComponent("SSD", isDirectory: true)
+        try FileManager.default.createDirectory(at: present, withIntermediateDirectories: true)
+        let absent = tmp.appendingPathComponent("NAS-Photos", isDirectory: true)
+
+        XCTAssertNil(PreflightCheck.unreachableMirrors(archives: [present]))
+        let warning = try XCTUnwrap(PreflightCheck.unreachableMirrors(archives: [present, absent]))
+        XCTAssertTrue(warning.contains("NAS-Photos"))
+        XCTAssertFalse(warning.contains("SSD"), "only the unreachable one is named")
+    }
+
     // MARK: - Manifest fixture
 
     /// Writes a manifest into `PhotoDrop Manifests/` the way a job would, so the

@@ -528,6 +528,14 @@ struct SidebarRow: View {
     @AppStorage("photodrop.verificationStyle") private var theme = VerificationStyle.steady
     @State private var ejectError: String?
 
+    /// Whether this card has been ingested before, and when.
+    ///
+    /// Read here rather than passed in because it changes only when a job
+    /// finishes, and the row is rebuilt then anyway. See `CardHistory`.
+    private var history: CardHistoryEntry? {
+        CardHistory.entry(forVolumeID: card.id)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: card.isEjectable ? "sdcard.fill" : "folder.fill")
@@ -550,6 +558,15 @@ struct SidebarRow: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .truncationMode(.head)
+                // The answer to "did I already do this one?", which previously
+                // could only be got by re-inserting the card and waiting out a
+                // full index build and source-hash pass.
+                if let history {
+                    Text(CardHistory.describe(history))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
             // No eject for a folder: `DriveEjector` unmounts the volume the path
@@ -580,6 +597,14 @@ struct SidebarRow: View {
             }
         }
         .padding(.vertical, 2)
+        .contextMenu {
+            if let history, let manifestPath = history.manifestPath {
+                Button("Show Last Manifest in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting(
+                        [URL(fileURLWithPath: manifestPath)])
+                }
+            }
+        }
         .alert("Eject failed", isPresented: Binding(
             get: { ejectError != nil }, set: { if !$0 { ejectError = nil } }
         )) {

@@ -214,6 +214,18 @@ final class Copier {
                 if self.postsNotifications { Notifier.notifyHalt(reason: result.haltReason ?? "error") }
             } else {
                 self.state = .completed(result)
+                // Remember that this card has been done. Recorded only on a clean
+                // completion: a halted or cancelled job leaves the card as
+                // unfinished business, and a sidebar row claiming otherwise is
+                // worse than no row at all. See `CardHistory` for the 2am problem
+                // this exists to solve.
+                CardHistory.record(CardHistoryEntry(
+                    volumeID: sourceVolumeID,
+                    label: cardLabel,
+                    ingestedAt: Date(),
+                    filesLanded: result.filesCopied + result.filesSkipped,
+                    manifestPath: result.manifestURL?.path
+                ), in: self.defaults)
                 if self.postsNotifications { Notifier.notifyCompletion(result: result) }
                 self.runPostIngestHookIfConfigured(result)
             }

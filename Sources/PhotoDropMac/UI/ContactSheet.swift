@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 enum PreviewMode: String, CaseIterable, Identifiable {
     case tree, grid
@@ -16,7 +17,42 @@ struct ContactSheet: View {
 
     @AppStorage("photodrop.verificationStyle") private var theme = VerificationStyle.steady
 
+    /// The cell the keyboard is on.
+    ///
+    /// The grid was a `LazyVGrid` of tap-gesture views: reachable by VoiceOver
+    /// (the cells carry button traits and an accessibility action) but inert to
+    /// plain keyboard, so culling 2,000 frames meant 2,000 mouse clicks. Arrow
+    /// keys move, space toggles — the two gestures every culling tool in this
+    /// category uses.
+    @FocusState private var focusedID: AssetBundle.ID?
+
     private let columns = [GridItem(.adaptive(minimum: 118, maximum: 168), spacing: 10)]
+
+    /// Move the focus by `offset` positions through `orderedBundles`, clamped at
+    /// both ends. Clamped rather than wrapped: wrapping from the last frame of a
+    /// shoot back to the first is disorienting when you are working through a
+    /// day in order.
+    private func moveFocus(by offset: Int) {
+        let bundles = allBundles
+        guard !bundles.isEmpty else { return }
+        guard let current = focusedID,
+              let index = bundles.firstIndex(where: { $0.id == current }) else {
+            focusedID = bundles.first?.id
+            return
+        }
+        let next = min(max(index + offset, 0), bundles.count - 1)
+        focusedID = bundles[next].id
+    }
+
+    /// How many cells sit on a row, for up/down movement.
+    ///
+    /// The grid is `.adaptive`, so the real count depends on the rendered width,
+    /// which a `View` cannot ask for without a `GeometryReader` around the whole
+    /// scroll view. This is a deliberate approximation: up/down moves by a
+    /// typical row, and a user who lands one cell off corrects with one press.
+    /// The alternative — threading a geometry read through the grid — costs more
+    /// in layout churn than the imprecision costs in keystrokes.
+    private let approximateColumnsPerRow = 6
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,8 +73,11 @@ struct ContactSheet: View {
                                             loader: loader,
                                             accent: theme.resolvedAccent,
                                             isSelected: isSelected(bundle.id),
+                                            isFocused: focusedID == bundle.id,
                                             onToggle: { toggle(bundle.id) }
                                         )
+                                        .focusable()
+                                        .focused($focusedID, equals: bundle.id)
                                     }
                                 }
                                 .padding(.horizontal)
@@ -51,6 +90,34 @@ struct ContactSheet: View {
                 }
                 .padding(.vertical, 8)
             }
+        }
+        // Arrow keys move, space toggles. `.onMoveCommand` receives the arrows
+        // only while something inside is focused, which is why the cells are
+        // `.focusable()`; the first Tab into the grid lands on the first cell.
+        .onMoveCommand { direction in
+            switch direction {
+            case .left:  moveFocus(by: -1)
+            case .right: moveFocus(by: 1)
+            case .up:    moveFocus(by: -approximateColumnsPerRow)
+            case .down:  moveFocus(by: approximateColumnsPerRow)
+            @unknown default: break
+            }
+        }
+        .onKeyPress(.space) {
+            guard let focusedID else { return .ignored }
+            toggle(focusedID)
+            return .handled
+        }
+        // Return does what a double-click would: reveal the original on the card,
+        // which is the only way to look at a frame larger than 104pt. A real
+        // loupe is a bigger piece of work; this at least stops the grid being a
+        // dead end when the user cannot tell whether a shot is sharp.
+        .onKeyPress(.return) {
+            guard let focusedID,
+                  let bundle = allBundles.first(where: { $0.id == focusedID })
+            else { return .ignored }
+            NSWorkspace.shared.activateFileViewerSelecting([bundle.primary.url])
+            return .handled
         }
     }
 
@@ -69,6 +136,10 @@ struct ContactSheet: View {
                 .disabled(deselectedIDs.isEmpty)
             Button("Select None") { deselectedIDs = Set(all.map(\.id)) }
                 .disabled(selected.isEmpty)
+            Text("↑↓←→ move · space toggles · ⏎ reveals")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .help("The grid is keyboard-operable")
         }
     }
 
@@ -90,6 +161,8 @@ struct ContactSheet: View {
         .background(.bar)
     }
 
+    /// Every bundle in display order — which is both what the summary bar counts
+    /// and the order the arrow keys walk.
     private var allBundles: [AssetBundle] {
         yearGroups.flatMap { $0.folders.flatMap(\.bundles) }
     }
@@ -106,6 +179,7 @@ struct ThumbnailCell: View {
     let loader: ThumbnailLoader
     let accent: Color
     let isSelected: Bool
+    var isFocused: Bool = false
     let onToggle: () -> Void
 
     @State private var outcome: ThumbnailLoader.Outcome?
@@ -118,6 +192,15 @@ struct ThumbnailCell: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onToggle)
         .help(bundle.primary.url.lastPathComponent)
+        // A visible focus ring, so keyboard position is legible. `.focusable`
+        // alone draws nothing on a custom view.
+        .overlay {
+            if isFocused {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(-3)
+            }
+        }
         // VoiceOver: present each cell as a selectable button so the culling
         // grid is operable without sighted tapping. The selection state is
         // conveyed as the value, and "activate" toggles it.
