@@ -38,6 +38,29 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     /// for a mirror with `primaryFailures == 0` is the "one mirror was offline,
     /// your library is fine" case, which must not be reported as a failed job.
     let failuresByDestination: [String: Int]
+    /// Every bundle that failed, with the destination it failed at and why.
+    ///
+    /// `CopyResult` carried counts alone, and the per-file reasons existed only
+    /// as log lines — which the detail pane stops rendering the moment a job
+    /// leaves `.running`, and which `Copier.reset()` clears on dismiss. So the
+    /// entire in-app account of a run that lost 40 of 500 files was "40 files
+    /// failed — see log for details", and dismissing the sheet destroyed the
+    /// detail. A failure the user cannot read is a failure they cannot act on.
+    ///
+    /// Bounded: a job whose destination went away fails every remaining bundle,
+    /// and a 2,000-entry array behind a `Hashable` result that crosses actor
+    /// boundaries is not worth the fidelity. `failuresByDestination` keeps the
+    /// true count; this keeps the readable evidence.
+    let failedFiles: [FailedFile]
+    /// Folders under the primary root that already held this card's photos, when
+    /// they are *not* the folders this job planned to write.
+    ///
+    /// Distinguishes "this card is already in your library" from "this card is
+    /// already in your library, under a different name than the one you just
+    /// typed". Both produce `filesCopied == 0`, and the second used to be
+    /// reported as the first — so a corrected description looked like it had
+    /// been applied when nothing had moved.
+    let duplicatesFoundElsewhere: [String]
     let totalBytes: Int64
     let elapsedSeconds: Double
     let primaryDestination: URL
@@ -66,6 +89,22 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     var primaryFailures: Int {
         failuresByDestination[primaryDestination.path(percentEncoded: false)] ?? 0
     }
+
+    /// One bundle's failure at one destination.
+    struct FailedFile: Sendable, Equatable, Hashable, Identifiable {
+        var id: String { "\(destination)|\(name)" }
+        /// The source file's name, which is what the user recognizes — the
+        /// destination name may have been templated into something else.
+        let name: String
+        /// The destination root it failed at, so a mirror-only failure is
+        /// legible as such.
+        let destination: String
+        let reason: String
+    }
+
+    /// The cap on `failedFiles`. Past this the list is truncated and
+    /// `failuresByDestination` remains the authority on how many there were.
+    static let maxRecordedFailures = 200
 
     /// Destinations other than the primary that had at least one failure.
     var failedMirrors: [String] {
@@ -156,6 +195,11 @@ final class IngestEngine {
     /// two lists differ in length, so the "this volume does not support checksum
     /// attributes" notice named a different mirror than the one it was about.
     private var resolvedRoots: [URL] = []
+    /// See `CopyResult.failedFiles`. Capped at `CopyResult.maxRecordedFailures`.
+    private var failedFiles: [CopyResult.FailedFile] = []
+    /// Folders under the primary root where duplicates were found that this job
+    /// would have filed somewhere else. See `CopyResult.duplicatesFoundElsewhere`.
+    private var duplicatesFoundElsewhere: Set<String> = []
 
     init(bundles: [AssetBundle],
          description: String,
@@ -194,6 +238,14 @@ final class IngestEngine {
 
     func run() async -> CopyResult {
         totalBundles = bundles.count
+
+        // Hold the machine awake for the whole job, including the tail: the
+        // manifest write, the volume barrier and the eject all still have to
+        // happen after the last byte. Released by `deinit` when this scope ends,
+        // on every path out including a throw or a cancel.
+        let awake = PowerAssertion(reason: "PhotoDrop is copying photos from a card")
+        defer { awake.release() }
+
         let perDestinationBytes = bundles.reduce(Int64(0)) { $0 + $1.totalSize }
         // Primary at index 0, then each archive mirror. Deduped by filesystem
         // identity: writing one folder twice makes pass 2 collide with pass 1's
@@ -312,6 +364,7 @@ final class IngestEngine {
                     break outer
                 } catch let err as FileCopierError {
                     log(.error, rootLabel(d, of: allRoots) + err.description)
+                    recordFailure(bundle: plansPerRoot[d][i], root: allRoots[d], reason: err.description)
                     if d == 0 { primaryOK = false }
                     // A mismatch means the bytes on disk are not the bytes we
                     // read: stop the whole job, at every destination.
@@ -320,11 +373,30 @@ final class IngestEngine {
                         haltReason = "verification mismatch"
                         break outer
                     }
+                    // **The source going away is a job-level fault, not a
+                    // per-bundle one.** A bumped reader, a bus-powered drive
+                    // losing power to idle sleep, or someone pulling the wrong
+                    // card at bundle 100 of 2000 produced 1,900 identical
+                    // "could not be opened" lines — 5,700 with mirrors — and a
+                    // user with no way to tell from the log what had happened.
+                    // Every remaining bundle is guaranteed to fail for the same
+                    // reason, so stop and say so once.
+                    if isSourceSide(err), sourceIsGone() {
+                        log(.error, "The source is no longer readable — the card may have been removed "
+                                  + "or the drive may have gone to sleep. Stopping here; "
+                                  + "\(bundleCount - i - 1) bundle(s) were not copied.")
+                        haltReason = "the card was removed"
+                        failuresByRoot[d] += 1
+                        filesFailed += 1
+                        break outer
+                    }
                     failuresByRoot[d] += 1
                     filesFailed += 1
                     continue
                 } catch {
                     log(.error, rootLabel(d, of: allRoots) + "Bundle failed: \(error.localizedDescription)")
+                    recordFailure(bundle: plansPerRoot[d][i], root: allRoots[d],
+                                  reason: error.localizedDescription)
                     if d == 0 { primaryOK = false }
                     failuresByRoot[d] += 1
                     filesFailed += 1
@@ -510,6 +582,8 @@ final class IngestEngine {
             filesSkipped: filesSkipped,
             filesFailed: filesFailed,
             failuresByDestination: failuresByDestination,
+            failedFiles: failedFiles,
+            duplicatesFoundElsewhere: duplicatesFoundElsewhere.sorted(),
             totalBytes: landedBytes,
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
@@ -545,6 +619,8 @@ final class IngestEngine {
             filesSkipped: 0,
             filesFailed: 0,
             failuresByDestination: [:],
+            failedFiles: [],
+            duplicatesFoundElsewhere: [],
             totalBytes: 0,
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
@@ -588,6 +664,44 @@ final class IngestEngine {
         return BundlePlan(bundle: plan.bundle, files: files)
     }
 
+    /// Is this error about a file on the *source*, rather than a destination?
+    ///
+    /// Compared by path components against the source root — never by string
+    /// prefix, for the reason `DestinationTopology` spells out: `/Volumes/CARD2`
+    /// is not inside `/Volumes/CARD`.
+    private func isSourceSide(_ err: FileCopierError) -> Bool {
+        guard let mountPoint = sourceMountPoint else { return false }
+        let root = URL(fileURLWithPath: mountPoint, isDirectory: true)
+            .standardizedFileURL.pathComponents
+        let file = err.url.standardizedFileURL.pathComponents
+        guard file.count > root.count else { return false }
+        return Array(file.prefix(root.count)) == root
+    }
+
+    /// Has the source stopped being readable altogether?
+    ///
+    /// Checked only after a source-side failure, so the cost is paid once per
+    /// fault rather than once per file. `isReadableFile` as well as existence:
+    /// an unmounted volume can leave its mount point behind as an empty,
+    /// unreadable directory.
+    private func sourceIsGone() -> Bool {
+        guard let mountPoint = sourceMountPoint else { return false }
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: mountPoint, isDirectory: &isDirectory), isDirectory.boolValue,
+              fm.isReadableFile(atPath: mountPoint) else { return true }
+        return (try? fm.contentsOfDirectory(atPath: mountPoint)) == nil
+    }
+
+    private func recordFailure(bundle: BundlePlan, root: URL, reason: String) {
+        guard failedFiles.count < CopyResult.maxRecordedFailures else { return }
+        failedFiles.append(CopyResult.FailedFile(
+            name: bundle.bundle.primary.url.lastPathComponent,
+            destination: root.path(percentEncoded: false),
+            reason: reason
+        ))
+    }
+
     /// Prefixes a log line with the destination it concerns, but only when there
     /// is more than one — a single-destination job reads better unadorned.
     private func rootLabel(_ d: Int, of roots: [URL]) -> String {
@@ -625,6 +739,30 @@ final class IngestEngine {
                 if let existingDuplicate {
                     log(.skipped, "\(file.source.lastPathComponent) — already present as \(existingDuplicate.url.lastPathComponent)")
                     skippedInBundle += 1
+                    // **Where** the duplicate lives, when that is not where this
+                    // job would have put it.
+                    //
+                    // Dedup matches content anywhere under the root — deliberately,
+                    // so a renamed earlier import is still found. The consequence
+                    // is the most likely shoot-day misstep in the app: ingest a
+                    // card with the description blank, realise you wanted
+                    // "Smith Wedding", type it, ingest again. Every file matches
+                    // its twin in the old folder, nothing is copied, the new
+                    // folder is never created, and the sheet says "Everything was
+                    // already there — nothing new to copy." The user reads that as
+                    // done and reformats the card, and the library is organised
+                    // under a name they explicitly rejected.
+                    //
+                    // Only the primary root is tracked: a mirror lagging behind is
+                    // a different situation with its own reporting.
+                    if d == 0 {
+                        let foundIn = existingDuplicate.url.deletingLastPathComponent()
+                        let plannedIn = file.destination.deletingLastPathComponent()
+                        if foundIn.standardizedFileURL != plannedIn.standardizedFileURL,
+                           let rel = Self.relative(foundIn.path(percentEncoded: false), under: root) {
+                            duplicatesFoundElsewhere.insert(rel)
+                        }
+                    }
                     bundleManifest.append(ManifestEntry(
                         name: file.source.lastPathComponent,
                         path: relativePath(of: existingDuplicate.url, under: root),

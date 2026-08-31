@@ -134,6 +134,12 @@ struct LogView: View {
                                 .foregroundStyle(color(for: entry.kind))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                                // Selectable: an error message the user can read
+                                // but not copy cannot be pasted into a search, a
+                                // note, or a bug report. It was plain `Text`, so
+                                // even while the job was running the one place
+                                // the reason existed was unselectable.
+                                .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             if let signature = entry.signature {
                                 VerifiedSignature(hash: signature)

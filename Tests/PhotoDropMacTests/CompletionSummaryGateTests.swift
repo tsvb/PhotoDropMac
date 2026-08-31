@@ -9,7 +9,7 @@ final class CompletionSummaryGateTests: XCTestCase {
     private func completed(failed: Int) -> CopierState {
         .completed(CopyResult(
             bundleCount: 1, filesCopied: 3, filesSkipped: 0, filesFailed: failed,
-            failuresByDestination: failed > 0 ? ["/tmp/lib": failed] : [:],
+            failuresByDestination: failed > 0 ? ["/tmp/lib": failed] : [:], failedFiles: [], duplicatesFoundElsewhere: [],
             totalBytes: 100, elapsedSeconds: 1,
             primaryDestination: URL(fileURLWithPath: "/tmp/lib"),
             logURL: nil, manifestURL: nil, manifestFailures: [], wasEjected: false, halted: false,

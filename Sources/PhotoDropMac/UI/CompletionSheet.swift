@@ -44,6 +44,10 @@ struct CompletionSheet: View {
             stats
                 .padding(.vertical, 6)
 
+            // The reasons, not just the count. Kept collapsed so a clean run is
+            // unchanged and a failed one is one click from being actionable.
+            FailureList(failures: result.failedFiles, totalFailures: result.filesFailed)
+
             HStack(spacing: 10) {
                 if let logURL = result.logURL {
                     Button("Open Log") {
@@ -138,7 +142,21 @@ struct CompletionSheet: View {
 
         var base: String
         if result.filesCopied == 0, result.filesSkipped > 0 {
-            base = "Everything was already there — nothing new to copy."
+            // Name the folder the photos are actually in when it isn't the one
+            // this job planned. "Everything was already there" is true and
+            // useless if the user just corrected the description and is waiting
+            // to see the new folder appear.
+            if !result.duplicatesFoundElsewhere.isEmpty {
+                let names = result.duplicatesFoundElsewhere.prefix(3).map { "“\($0)”" }
+                let list = names.joined(separator: ", ")
+                let more = result.duplicatesFoundElsewhere.count > names.count
+                    ? " (and \(result.duplicatesFoundElsewhere.count - names.count) more)" : ""
+                base = "These photos are already in your library, filed under \(list)\(more)"
+                    + " — not under the folder name this ingest would have used. "
+                    + "Nothing was copied. Rename the existing folder in Finder if you want the new name."
+            } else {
+                base = "Everything was already there — nothing new to copy."
+            }
         } else if result.filesCopied > 0, result.filesSkipped > 0 {
             base = "\(result.filesCopied) copied, \(result.filesSkipped) already present."
         } else if result.filesCopied > 0 {
@@ -236,6 +254,12 @@ private func previewResult(copied: Int, skipped: Int, failed: Int, ejected: Bool
         bundleCount: copied + skipped + failed,
         filesCopied: copied, filesSkipped: skipped, filesFailed: failed,
         failuresByDestination: failed > 0 ? ["/Users/you/Pictures/Library": failed] : [:],
+        failedFiles: failed > 0 ? (1...failed).map {
+            CopyResult.FailedFile(name: "IMG_\(1000 + $0).CR2",
+                                  destination: "/Users/you/Pictures/Library",
+                                  reason: "Write failed: No space left on device")
+        } : [],
+        duplicatesFoundElsewhere: [],
         totalBytes: 26_400_000_000, elapsedSeconds: 642,
         primaryDestination: URL(fileURLWithPath: "/Users/you/Pictures/Library"),
         logURL: log ? URL(fileURLWithPath: "/tmp/ingest.log") : nil,

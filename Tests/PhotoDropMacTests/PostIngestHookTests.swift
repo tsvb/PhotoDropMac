@@ -17,7 +17,7 @@ final class PostIngestHookTests: XCTestCase {
     private func result(primary: URL, copied: Int = 3, skipped: Int = 0, failed: Int = 0,
                         bytes: Int64 = 1234) -> CopyResult {
         CopyResult(bundleCount: copied, filesCopied: copied, filesSkipped: skipped, filesFailed: failed,
-                   failuresByDestination: [:],
+                   failuresByDestination: [:], failedFiles: [], duplicatesFoundElsewhere: [],
                    totalBytes: bytes, elapsedSeconds: 1, primaryDestination: primary,
                    logURL: nil, manifestURL: nil, manifestFailures: [], wasEjected: false, halted: false,
                    haltReason: nil, cancelled: false)

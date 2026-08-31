@@ -21,6 +21,19 @@ enum FileCopierError: Error, CustomStringConvertible {
     case open(URL, any Error)
     case destinationExists(URL)
 
+    /// The file this error is about. `read` and `open` can name either side of a
+    /// copy, which is why callers deciding "did the *source* go away?" have to
+    /// compare this against the source root rather than switch on the case.
+    var url: URL {
+        switch self {
+        case let .verificationMismatch(file, _, _): return file
+        case let .read(url, _):                     return url
+        case let .write(url, _):                    return url
+        case let .open(url, _):                     return url
+        case let .destinationExists(url):           return url
+        }
+    }
+
     var description: String {
         switch self {
         case .verificationMismatch(let f, let e, let a):

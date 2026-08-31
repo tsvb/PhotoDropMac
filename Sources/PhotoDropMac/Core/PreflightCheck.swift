@@ -21,6 +21,64 @@ enum PreflightCheck {
         return problems.map(\.message).joined(separator: "\n\n")
     }
 
+    /// Returns a human-readable refusal if a configured destination folder does
+    /// not exist, or `nil` if every root is present.
+    ///
+    /// **Not overridable, for the same reason as `topologyRefusal`.** The CLI has
+    /// always refused a `--to` that doesn't exist, and the reasoning is recorded:
+    /// `FileCopier` creates intermediate directories, so a typo'd destination
+    /// materializes a whole new library tree and exits 0 with a manifest
+    /// attesting to it. The GUI had no equivalent check anywhere on the path —
+    /// `spaceWarning` skips a root whose volume won't resolve, and
+    /// `DestinationTopology` accepts not-yet-existing paths by design (the
+    /// unplugged-drive case) — so a destination the user renamed in Finder since
+    /// picking it, or a share mounted somewhere other than `/Volumes`, silently
+    /// became a *second* empty library: the dedup index found nothing, the whole
+    /// card was re-copied, the sheet reported everything verified, and the card
+    /// ejected. `/Volumes/X` survived only because that directory is root-owned.
+    ///
+    /// A path that exists but is not a directory is refused for the same reason:
+    /// `createDirectory` would fail on every single file.
+    ///
+    /// This deliberately does **not** offer to create the folder. Choosing a
+    /// destination is the user's decision and a typo is indistinguishable from an
+    /// intent to create; the folder picker is right there.
+    static func missingDestinations(primary: URL, archives: [URL]) -> String? {
+        let fm = FileManager.default
+        var missing: [String] = []
+        var notFolders: [String] = []
+        for root in [primary] + archives {
+            var isDirectory: ObjCBool = false
+            if !fm.fileExists(atPath: root.path, isDirectory: &isDirectory) {
+                missing.append(root.path)
+            } else if !isDirectory.boolValue {
+                notFolders.append(root.path)
+            }
+        }
+        guard !missing.isEmpty || !notFolders.isEmpty else { return nil }
+
+        var parts: [String] = []
+        if !missing.isEmpty {
+            let list = missing.map { "“\($0)”" }.joined(separator: "\n")
+            parts.append("""
+            \(missing.count == 1 ? "This destination folder doesn’t exist" : "These destination folders don’t exist"):
+
+            \(list)
+
+            PhotoDrop won’t create it — a mistyped or moved destination would become a second, empty library and the ingest would report success over it. Check the volume is mounted, or choose the folder again.
+            """)
+        }
+        if !notFolders.isEmpty {
+            let list = notFolders.map { "“\($0)”" }.joined(separator: "\n")
+            parts.append("""
+            \(notFolders.count == 1 ? "This destination is a file, not a folder" : "These destinations are files, not folders"):
+
+            \(list)
+            """)
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
     /// Returns a human-readable warning if a destination volume looks too full,
     /// or `nil` if everything fits (or can't be checked).
     static func spaceWarning(plannedBytes: Int64, primary: URL, archives: [URL]) -> String? {

@@ -244,6 +244,19 @@ struct MainView: View {
         guard !groups.isEmpty else { return }
         let primaryURL = URL(fileURLWithPath: primaryDest, isDirectory: true)
 
+        // A destination that doesn't exist is refused before anything else: the
+        // copier creates intermediate directories, so a moved or mistyped folder
+        // becomes a whole new empty library, the dedup index finds nothing, the
+        // entire card is re-copied, and the job reports success and ejects. The
+        // CLI has always refused this; the GUI never did.
+        if let refusal = PreflightCheck.missingDestinations(
+            primary: primaryURL,
+            archives: archiveDestinations
+        ) {
+            topologyRefusal = refusal
+            return
+        }
+
         // Overlapping trees are refused, with no "Ingest Anyway": the job would
         // copy nothing, report success, and eject the card. Checked here so the
         // user hears it before pressing Ingest; `IngestEngine` enforces it again
@@ -281,9 +294,17 @@ struct MainView: View {
             description: descriptionText,
             verify: verifyCopies,
             // Never eject on the strength of a partial view of the card. If the
-            // scan couldn't open every folder, what it missed exists *only* on the
-            // card, and ejecting is the step that puts it out of reach.
-            ejectAfter: ejectAfterIngest && planner.scanWasComplete,
+            // scan couldn't open every folder, or found files it can't ingest,
+            // what it missed exists *only* on the card, and ejecting is the step
+            // that puts it out of reach.
+            //
+            // A cull counts as a partial view too. Deselected bundles are filtered
+            // out before the engine ever sees them, so `filesFailed` is honestly 0
+            // and the engine's own gate opens — but the frames the user
+            // deselected are still on the card, and ejecting is this app's "the
+            // card is finished" gesture. The next thing that happens to a finished
+            // card is a format.
+            ejectAfter: ejectAfterIngest && planner.scanWasComplete && deselectedIDs.isEmpty,
             sourceMountPoint: source.mountPoint,
             sourceVolumeID: source.id,
             template: template,
