@@ -8,8 +8,8 @@
   <img alt="Platform: macOS 14+" src="https://img.shields.io/badge/macOS-14%2B-111111?logo=apple&logoColor=white">
   <img alt="Swift 6.0" src="https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white">
   <img alt="UI: SwiftUI" src="https://img.shields.io/badge/UI-SwiftUI-0A84FF">
-  <img alt="Status: early (0.1.3)" src="https://img.shields.io/badge/status-early%20(0.1.3)-blue">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
+  <a href="https://github.com/tsvb/PhotoDropMac/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tsvb/PhotoDropMac/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 </div>
@@ -44,7 +44,13 @@ The whole flow is built to be trustworthy and legible: it tells you what was pre
 
 ## Download and install
 
-Grab the latest **`PhotoDropMac-<version>.dmg`** from the [Releases](https://github.com/tsvb/PhotoDropMac/releases) page, open it, and drag **PhotoDropMac** to your Applications folder. The build is signed with a Developer ID and notarized by Apple, so it opens with no "unidentified developer" warning. The first time you launch it, macOS may ask you to confirm — click **Open**.
+Grab the latest **`PhotoDropMac-<version>.dmg`** from the [Releases](https://github.com/tsvb/PhotoDropMac/releases) page, open it, and **drag PhotoDrop to your Applications folder**.
+
+The build is signed with a Developer ID and notarized by Apple, and the notarization ticket is stapled to the app *before* it goes into the DMG — so it should open with **no Gatekeeper dialog at all**, even offline. If you do see an "unidentified developer" warning, something is wrong with that download; please [report it](https://github.com/tsvb/PhotoDropMac/issues/new) rather than working around it.
+
+Do drag it out of the DMG before running it. macOS *app translocation* runs an app launched from a disk image at a randomized read-only path, which stops it finding the `photodrop` tool bundled inside it. Moving it to Applications in Finder clears that.
+
+There is no automatic update check — the app makes no network connections at all ([why](PRIVACY.md)). **Help → Check for Updates…** opens the Releases page in your browser.
 
 To build from source instead, see [Build and run](#build-and-run). Maintainers cutting a release: see [RELEASING.md](RELEASING.md).
 

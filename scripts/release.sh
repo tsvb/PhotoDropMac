@@ -215,11 +215,44 @@ else
   git tag -a "$TAG" -m "$APP_NAME $VERSION (build $BUILD)"
 fi
 
+# ── 9. Publish, or say loudly that nothing is published ─────────────────────
+# The manual "push it yourself" step below was missed once already: v0.2.1 was
+# built, committed and tagged locally while GitHub still showed 0.2.0 as the
+# latest release, so the fix in it shipped to nobody. A release that no user can
+# download is the same as no release, and a script that ends by printing a
+# reminder is not a mechanism.
+#
+# PUBLISH=1 does the whole thing; otherwise the state is reported rather than
+# implied, and the exit is non-zero so a CI or wrapper invocation cannot mistake
+# "built but unpublished" for "released".
+if [[ "${PUBLISH:-0}" == "1" ]]; then
+  echo "▸ Pushing $TAG and publishing the release"
+  git push origin HEAD --follow-tags
+  NOTES_ARG=(--generate-notes)
+  if [[ -f CHANGELOG.md ]]; then
+    # Cut the section for this version out of the changelog, so the published
+    # notes and the repo's record are the same text rather than two accounts.
+    if NOTES="$(awk -v v="## [$VERSION]" '
+          index($0, v) == 1 { grabbing = 1; next }
+          grabbing && /^## \[/ { exit }
+          grabbing { print }' CHANGELOG.md)" && [[ -n "${NOTES// /}" ]]; then
+      NOTES_ARG=(--notes "$NOTES")
+    fi
+  fi
+  gh release create "$TAG" "$DMG" --title "$APP_NAME $VERSION" "${NOTES_ARG[@]}"
+  echo "✓ Published: $(gh release view "$TAG" --json url -q .url)"
+else
+  echo ""
+  echo "⚠ NOT PUBLISHED. The DMG exists and $TAG is tagged locally; no user can get it."
+  echo "  Publish with:   PUBLISH=1 $0 $VERSION"
+  echo "  Or by hand:     git push origin HEAD --follow-tags \\"
+  echo "                  && gh release create $TAG '$DMG' --title '$APP_NAME $VERSION' --notes-file CHANGELOG.md"
+fi
+
 echo ""
 echo "✓ Done: $DMG"
-echo "  Tagged $TAG locally — push it yourself when you are ready:"
-echo "    git push origin main --follow-tags"
 echo "  Spot-check the embedded CLI is hardened:"
 echo "    codesign -dvvv '$APP/Contents/MacOS/photodrop' 2>&1 | grep -E 'Authority|flags'"
-echo "  Simulate a clean download (should open with no Gatekeeper dialog):"
+echo "  Simulate a clean download (should open with NO Gatekeeper dialog at all —"
+echo "  a prompt here means the staple did not take):"
 echo "    SPOT=\"\$(mktemp -d)\"; cp -R '$APP' \"\$SPOT/\"; xattr -w com.apple.quarantine '0081;0;Safari;' \"\$SPOT/$APP_NAME.app\"; open \"\$SPOT/$APP_NAME.app\""

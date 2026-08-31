@@ -1,8 +1,12 @@
 # PhotoDropMac — handover to a fresh Ultracode session
 
-Repo: `/Users/tim/claude/PhotoDropMac`. Branch `fix/tier-1-data-safety` at `5d79c22`, working
-tree clean, nothing pushed. Read `CLAUDE.md` — it is dense and load-bearing, and accurate except
-where §7 says otherwise.
+> **Internal working document, kept for its reasoning.** It records the state of
+> a review session as it stood at the time and is superseded wherever it
+> disagrees with `CLAUDE.md` or the code. The branch and commit it names are
+> historical.
+
+Read `CLAUDE.md` — it is dense and load-bearing, and accurate except where §7
+says otherwise.
 
 ---
 

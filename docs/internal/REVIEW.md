@@ -1,3 +1,8 @@
+> **Internal working document.** A point-in-time critical review, kept for its
+> reasoning. Superseded by `HANDOFF.md` wherever the two disagree, and by
+> `CLAUDE.md` and the code wherever those do. Counts and line numbers in it are
+> historical.
+
 # PhotoDropMac — critical review
 
 **Date:** 2026-08-06 · **Reviewed at:** `dff7ed0` · **Baseline then:** 132 tests, 0 failures
@@ -25,7 +30,7 @@ and the gradient tracks distance from the original copy engine.
 What is genuinely good, with evidence:
 
 - **`FileCopier`** puts overwrite-refusal at the syscall — `open(O_WRONLY|O_CREAT|O_EXCL)`
-  ([FileCopier.swift:76](Sources/PhotoDropMac/Core/FileCopier.swift:76)) — rather than a prior
+  ([FileCopier.swift:76](../../Sources/PhotoDropMac/Core/FileCopier.swift:76)) — rather than a prior
   `fileExists` check, and removes its own partial on *any* throw (`:130`). `flushToDisk`
   **throws** on `fsync` failure instead of `try?`-ing it (`:139`). This is the best code here.
 - **`IngestEngine.swift:213`** writes `flushed = FileCopier.fullSyncVolume(at: root) && flushed`
@@ -33,7 +38,7 @@ What is genuinely good, with evidence:
   A real bug avoided on purpose.
 - **`ManifestWriter.resolve`** uses *lexical* normalization, not `standardizedFileURL`, because
   the latter is existence-dependent and would silently drop exactly the missing files `heal`
-  exists to find ([Manifest.swift:123](Sources/PhotoDropMac/Core/Manifest.swift:123)). The
+  exists to find ([Manifest.swift:123](../../Sources/PhotoDropMac/Core/Manifest.swift:123)). The
   reasoning is written down at the definition.
 - **`DestinationIndex.swift:78`** reconstructs paths from `dir` because `FileManager` resolves
   `/var → /private/var`, which would make the collision set never string-match a planned
@@ -77,7 +82,7 @@ which is what makes the rest of this document durable rather than a snapshot.
 > described in place below.
 
 ### T1-1 · Mirror destinations do not fail independently · CONFIRMED → **FIXED**
-[IngestEngine.swift:167](Sources/PhotoDropMac/Core/IngestEngine.swift:167) —
+[IngestEngine.swift:167](../../Sources/PhotoDropMac/Core/IngestEngine.swift:167) —
 `for d in allRoots.indices { try await copyBundle(...) }` sits inside one `do`, so a throw at
 `d=1` never attempts `d=2`.
 
@@ -89,7 +94,7 @@ Worst case is the 3-2-1 scenario the feature is sold on: a NAS drops offline mid
 external SSD — which is fine — receives nothing at all.
 
 **Shipped:** each destination now has its own `do/catch` inside the bundle loop
-([IngestEngine.swift:177](Sources/PhotoDropMac/Core/IngestEngine.swift:177)). `CopyResult` gained
+([IngestEngine.swift:177](../../Sources/PhotoDropMac/Core/IngestEngine.swift:177)). `CopyResult` gained
 `failuresByDestination`, plus `primaryFailures` / `failedMirrors`; `CompletionSheet` keys its alarm
 hero on `primaryFailures` and reports a failed mirror as *"Library complete — a mirror fell
 behind"*, naming the mirror. Log lines are prefixed with the destination when there is more than
@@ -97,7 +102,7 @@ one. Regression: `testFailingMirrorDoesNotStarveTheNextMirror`,
 `testPrimaryFailureIsStillReportedAgainstThePrimary`.
 
 ### T1-2 · Primary == archive reports a successful ingest as a total failure · CONFIRMED → **FIXED**
-[ArchiveDestinations.swift:20](Sources/PhotoDropMac/Core/ArchiveDestinations.swift:20) dedupes
+[ArchiveDestinations.swift:20](../../Sources/PhotoDropMac/Core/ArchiveDestinations.swift:20) dedupes
 archives against *each other*, by raw string, and never against the primary.
 
 > **Probe:** archive set to the primary path. All 3 photos landed correctly and verified — and
@@ -116,9 +121,9 @@ can reintroduce it, and logs when it drops one. Verified end-to-end: `photodrop 
 --archive X` now exits 0 with 3 copied, 0 failed.
 
 ### T1-3 · `heal` trusts a planted manifest that `verify` correctly rejects · CONFIRMED → **FIXED**
-[HealEngine.swift:58](Sources/PhotoDropMac/Core/HealEngine.swift:58) does
+[HealEngine.swift:58](../../Sources/PhotoDropMac/Core/HealEngine.swift:58) does
 `byPath[fileURL.path] = Item(...)` unconditionally after an oldest→newest sort — newest wins.
-[VerifyEngine.swift:119](Sources/PhotoDropMac/Core/VerifyEngine.swift:119) refuses to do this,
+[VerifyEngine.swift:119](../../Sources/PhotoDropMac/Core/VerifyEngine.swift:119) refuses to do this,
 and explains why at length.
 
 > **Probe:** tamper with a file, drop `ingest-20990101-000000-000.json` recording the tampered
@@ -136,7 +141,7 @@ bytes hash to the expected digest), so heal lost no recovery ability. Verified e
 planted-manifest library now reports CONFLICT and exits 1.
 
 ### T1-4 · Cancelling an ingest destroys the integrity record · CONFIRMED → **FIXED**
-[IngestEngine.swift:202](Sources/PhotoDropMac/Core/IngestEngine.swift:202) returns `nil` on
+[IngestEngine.swift:202](../../Sources/PhotoDropMac/Core/IngestEngine.swift:202) returns `nil` on
 cancel — before the manifest write, the log write, and `cache.save()`, and without rolling back.
 
 > **Probe:** cancel after 3 of 8 bundles. **3 files on disk, 0 manifests.** Those photos have
@@ -155,9 +160,9 @@ Regression: `testCancellationStillWritesAManifestForWhatLanded` asserts the mani
 marked partial, matches what's on disk, and re-verifies clean.
 
 ### T1-5 · `verifiedBundles` counts bundles that were never verified · CONFIRMED → **FIXED**
-[IngestEngine.swift:172](Sources/PhotoDropMac/Core/IngestEngine.swift:172) increments
+[IngestEngine.swift:172](../../Sources/PhotoDropMac/Core/IngestEngine.swift:172) increments
 unconditionally; `verify` is never consulted.
-[MainView.swift:412](Sources/PhotoDropMac/UI/MainView.swift:412) then renders
+[MainView.swift:412](../../Sources/PhotoDropMac/UI/MainView.swift:412) then renders
 *"The N already-verified bundles are safe on disk."*
 
 > **Probe:** ingest with `verify: false`, cancel. `verifiedBundles=3`, and **zero** `.verified`
@@ -180,10 +185,10 @@ disk" only when something was actually hash-checked, otherwise "N completed bund
 > cases in `CopyPlanTests`, unreadable-target cases in `XattrTests`, exit-code
 > branching in `ScheduledVerificationTests`, schema validation in
 > `ManifestTrustTests`. The child-process fix is shared:
-> [`ChildProcess`](Sources/PhotoDropMac/Core/ChildProcess.swift).
+> [`ChildProcess`](../../Sources/PhotoDropMac/Core/ChildProcess.swift).
 
 ### T2-1 · Mirror filenames diverge from the primary, silently breaking `heal` · CONFIRMED → **FIXED**
-[IngestEngine.swift:149](Sources/PhotoDropMac/Core/IngestEngine.swift:149) computes
+[IngestEngine.swift:149](../../Sources/PhotoDropMac/Core/IngestEngine.swift:149) computes
 `existingPaths` and `planBatch` independently per root, so `_1` disambiguation is per-root.
 
 > **Probe:** pre-seed a colliding name in the primary only. Primary wrote
@@ -198,7 +203,7 @@ everywhere. Regression: `testMirrorUsesTheSameFilenameAsThePrimary` and
 
 ### T2-2 · An all-duplicate re-ingest writes a manifest that attests to nothing · CONFIRMED → **FIXED**
 `DestinationIndex.findDuplicate` computes the source digest and returns only the URL;
-[IngestEngine.swift:320](Sources/PhotoDropMac/Core/IngestEngine.swift:320) then records
+[IngestEngine.swift:320](../../Sources/PhotoDropMac/Core/IngestEngine.swift:320) then records
 `xxhash64: nil`, and `VerifyEngine.build:115` skips nil-digest entries.
 
 > **Probe:** ingest twice. Second manifest: 3 entries, **all 3 with no digest**. `verify` →
@@ -212,7 +217,7 @@ records it. Verified end-to-end: a second `photodrop ingest` of the same card no
 `testSkippedFilesRecordTheDigestTheDedupMatchedOn`.
 
 ### T2-3 · `PostIngestHook` deadlocks on a chatty hook · CONFIRMED → **FIXED**
-[PostIngestHook.swift:51](Sources/PhotoDropMac/Core/PostIngestHook.swift:51) sets
+[PostIngestHook.swift:51](../../Sources/PhotoDropMac/Core/PostIngestHook.swift:51) sets
 `standardOutput = Pipe()` and never reads it; stderr drains only inside `terminationHandler`,
 which by definition runs after exit.
 
@@ -222,7 +227,7 @@ which by definition runs after exit.
 
 Any hook that runs `rsync -v` or `exiftool` trips this.
 
-**Shipped:** a shared [`ChildProcess`](Sources/PhotoDropMac/Core/ChildProcess.swift) runner starts
+**Shipped:** a shared [`ChildProcess`](../../Sources/PhotoDropMac/Core/ChildProcess.swift) runner starts
 both drains *before* `run()` and completes only once both hit EOF; it also closes the write ends
 if the spawn fails, so reader threads can't be stranded. `PostIngestHook`, `DriveEjector` and
 `ScheduledVerification` all use it. Regression: two tests race a ~1 MiB-of-output hook against a
@@ -243,7 +248,7 @@ before trimming, and both companion forms go through it. Regression: four tests 
 `CopyPlanTests`, including the disambiguated case.
 
 ### T2-5 · `verify --xattr` exits 0 on an unreadable or nonexistent target · CONFIRMED → **FIXED**
-[VerifyEngine.swift:149](Sources/PhotoDropMac/Core/VerifyEngine.swift:149) returns an empty
+[VerifyEngine.swift:149](../../Sources/PhotoDropMac/Core/VerifyEngine.swift:149) returns an empty
 report, indistinguishable from "nothing stamped".
 
 > **Probe:** against a nonexistent path *and* a `chmod 000` directory, both printed
@@ -256,7 +261,7 @@ exits 2 with a specific message. Verified end-to-end: nonexistent → 2, `chmod 
 readable-but-unstamped → 0. Regression: four tests in `XattrTests`.
 
 ### T2-6 · The nightly agent cries wolf on a missing manifest · CONFIRMED → **FIXED**
-[ScheduledVerification.swift:55](Sources/PhotoDropMac/Core/ScheduledVerification.swift:55)
+[ScheduledVerification.swift:55](../../Sources/PhotoDropMac/Core/ScheduledVerification.swift:55)
 builds `… verify … --json || osascript -e 'display notification "Verification found issues"'`.
 Measured: `verify` exits **2** when no manifest exists — identical treatment to exit 1
 (real corruption).
@@ -271,9 +276,9 @@ non-zero exit, so a healthy library adds nothing to the log at all. Regression: 
 `ScheduledVerificationTests`, one asserting the old `--json ||` shape is gone.
 
 ### T2-7 · The scheduled-verify toggle can lie in both directions · CONFIRMED (inspection) → **FIXED**
-`isInstalled` ([:47](Sources/PhotoDropMac/Core/ScheduledVerification.swift:47)) only stats the
+`isInstalled` ([:47](../../Sources/PhotoDropMac/Core/ScheduledVerification.swift:47)) only stats the
 plist and never asks launchd whether the job is loaded. If `bootstrap` throws,
-[SettingsView.swift:97](Sources/PhotoDropMac/UI/SettingsView.swift:97) sets `enabled = false`
+[SettingsView.swift:97](../../Sources/PhotoDropMac/UI/SettingsView.swift:97) sets `enabled = false`
 but never calls `uninstall()` — the orphan plist stays in `~/Library/LaunchAgents` and may load
 at next login, running verifications the user believes are off. Separately,
 `SettingsView.swift:81` re-applies only on `enabled`/`schedule`, so editing `binaryPath` or
@@ -291,7 +296,7 @@ block the main thread on two `waitUntilExit()` calls.
 **Shipped:** every item below, except the one already marked MITIGATED, which needed no change.
 
 - **`heal --script` overwrites its output path** with `write(toFile:atomically:)`
-  ([PhotoDropCLI.swift:51](Sources/PhotoDropCLI/PhotoDropCLI.swift:51)) — the exact behavior
+  ([PhotoDropCLI.swift:51](../../Sources/PhotoDropCLI/PhotoDropCLI.swift:51)) — the exact behavior
   `JobStamp.claimUniqueName` exists to prevent everywhere else. **Fixed** with `O_EXCL` and a clear refusal rather than the claim's rename-and-continue: the path is the user's explicit choice, so quietly writing somewhere else would be the greater surprise.
 - **`schemaID` is write-only.** `ManifestWriter.decode` never checks `schema`, so any
   structurally-valid JSON is accepted as a PhotoDrop manifest. Versioning that isn't. **Fixed** — `decode` rejects an unrecognized schema, so a future format is ignored rather than misread.
@@ -318,9 +323,9 @@ block the main thread on two `waitUntilExit()` calls.
 
 ## Tier 3 — Process (highest leverage per hour) · **ALL FIXED**
 
-> **Shipped:** CI on every push and PR ([.github/workflows/ci.yml](.github/workflows/ci.yml)) —
+> **Shipped:** CI on every push and PR ([.github/workflows/ci.yml](../../.github/workflows/ci.yml)) —
 > full suite, both schemes, a hermeticity assertion, and a doc-link check
-> ([scripts/check-doc-links.sh](scripts/check-doc-links.sh), which reproduced all 13 broken
+> ([scripts/check-doc-links.sh](../../scripts/check-doc-links.sh), which reproduced all 13 broken
 > CLAUDE.md links on its first run; they are now fixed). `release.sh` gained a test gate, a
 > clean-tree refusal, version write-back and an annotated tag, plus a staged copy for
 > `create-dmg`. The suite is hermetic via `Copier.hermetic(in:)` — measured 0 files added to
@@ -334,11 +339,11 @@ block the main thread on two `waitUntilExit()` calls.
    automatically. A `macos-latest` workflow running `xcodegen generate && xcodebuild … test`
    is an afternoon's work and would have caught several Tier-1 items as they were introduced.
    Note the hosted test bundle needs a GUI session — GitHub's macOS runners provide one.
-2. **`release.sh` never runs the tests** — [:67](scripts/release.sh:67) `xcodegen` →
-   [:74](scripts/release.sh:74) `archive`, straight through to a notarized DMG. Add a test gate
+2. **`release.sh` never runs the tests** — [:67](../../scripts/release.sh:67) `xcodegen` →
+   [:74](../../scripts/release.sh:74) `archive`, straight through to a notarized DMG. Add a test gate
    before the archive step.
-3. **`XCTSkip` on a poll-loop timeout** ([CopierManifestTests.swift:66](Tests/PhotoDropMacTests/CopierManifestTests.swift:66),
-   [VerifierTests.swift:63](Tests/PhotoDropMacTests/VerifierTests.swift:63)) converts a real
+3. **`XCTSkip` on a poll-loop timeout** ([CopierManifestTests.swift:66](../../Tests/PhotoDropMacTests/CopierManifestTests.swift:66),
+   [VerifierTests.swift:63](../../Tests/PhotoDropMacTests/VerifierTests.swift:63)) converts a real
    failure into a green skip on a loaded machine. The §1.2 rollback regression — the most
    important test in the suite — can stop running and nothing reports it. Replace with
    `XCTFail`, or an `XCTestExpectation` with a generous timeout.
@@ -355,10 +360,10 @@ block the main thread on two `waitUntilExit()` calls.
    that matter: `IngestEngine`'s halt / cancel / archive-failure paths, `DestinationIndex.build`
    and `buildIncremental`, the `HashCache` actor itself (only `matches` is tested), and
    `ScheduledVerification`'s install/uninstall. The CLI (365 LOC) is **structurally untestable**
-   — [project.yml:76](project.yml:76) binds the test target to the app only — so the documented
+   — [project.yml:76](../../project.yml:76) binds the test target to the app only — so the documented
    exit-code contract is unverified. The probes written for this review cover several of these
    and can be promoted.
-6. **`release.sh` DMG branch is likely broken.** [:116](scripts/release.sh:116) passes the
+6. **`release.sh` DMG branch is likely broken.** [:116](../../scripts/release.sh:116) passes the
    `.app` where `create-dmg` expects a source *folder*, which would put `Contents/` at the DMG
    root. The `hdiutil` fallback stages correctly — so the "nicer" branch only fires on machines
    with `create-dmg` installed, i.e. it differs from the path that was actually tested. Worth a
