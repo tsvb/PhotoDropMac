@@ -21,3 +21,9 @@ Package.resolved
 *.p12
 *.cer
 *.mobileprovision
+# The Sparkle update-signing PRIVATE key. Its public half belongs in Info.plist
+# and is committed; this half signs every update every user will ever install,
+# so it lives in the keychain and, when exported for backup, never here.
+# RELEASING.md tells you to export it — this is the net under that instruction.
+*private-key*.txt
+sparkle-private-key*

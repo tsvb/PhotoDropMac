@@ -15,6 +15,10 @@ struct PhotoDropMacApp: App {
     /// no ingest while one was in progress.
     @State private var copier = Copier()
     @State private var jobRegistry = JobRegistry()
+    /// App-level for the same reason `copier` is: the updater outlives any one
+    /// window, and its running-job gate must be answerable whether or not a
+    /// window is open.
+    @State private var updater = SoftwareUpdater()
     @AppStorage("photodrop.menuBar.visibility") private var menuBarVisibility = MenuBarVisibility.always
     @AppStorage("photodrop.verificationStyle") private var theme = VerificationStyle.steady
 
@@ -24,6 +28,7 @@ struct PhotoDropMacApp: App {
                 .environment(watcher)
                 .environment(coordinator)
                 .environment(copier)
+                .environment(updater)
                 .task { wireJobRegistry() }
                 .tint(theme.accent)
                 .fontDesign(theme.fontDesign)
@@ -31,7 +36,7 @@ struct PhotoDropMacApp: App {
         }
         .defaultSize(width: 1020, height: 700)
         .windowToolbarStyle(.unified)
-        .commands { PhotoDropCommands(coordinator: coordinator) }
+        .commands { PhotoDropCommands(coordinator: coordinator, updater: updater) }
 
         // Default (.always) keeps the menu bar — and its card-arrival auto-open —
         // alive exactly as before. .withCard shows it only while a card is
@@ -47,6 +52,14 @@ struct PhotoDropMacApp: App {
 
         Settings {
             SettingsView()
+                .environment(updater)
+                // The same wiring as the main window, because Settings is
+                // reachable without one: the menu bar's Preferences… item opens
+                // it directly, and the window can be closed. Without this, a user
+                // who went straight there found an updater that had never been
+                // started — toggles bound to nothing and a Check Now that did
+                // nothing. Both calls are idempotent.
+                .task { wireJobRegistry() }
                 .tint(theme.accent)
                 .fontDesign(theme.fontDesign)
                 .preferredColorScheme(theme.colorScheme)
@@ -54,12 +67,17 @@ struct PhotoDropMacApp: App {
         .windowResizability(.contentSize)
     }
 
-    /// The delegate is constructed by AppKit and has no access to scene state,
-    /// so the connection is made from here, once.
+    /// The delegate is constructed by AppKit and has no access to scene state, so
+    /// the connection is made from here. Called from every scene that can be the
+    /// first one on screen; idempotent.
     @MainActor
     private func wireJobRegistry() {
         copier.registry = jobRegistry
         appDelegate.registry = jobRegistry
+        // Order matters: the updater must be able to see a running job *before*
+        // Sparkle is allowed to schedule its first check.
+        updater.registry = jobRegistry
+        updater.start()
     }
 
     private var menuBarVisible: Bool {
@@ -79,6 +97,7 @@ struct PhotoDropMacApp: App {
 /// because a `Commands` builder is scene-scoped and cannot see window state.
 struct PhotoDropCommands: Commands {
     let coordinator: AppCoordinator
+    let updater: SoftwareUpdater
 
     var body: some Commands {
         CommandGroup(after: .toolbar) {
@@ -103,7 +122,16 @@ struct PhotoDropCommands: Commands {
             Button("PhotoDrop Help") { AppLinks.open(.readme) }
             Divider()
             Button("Report an Issue…") { AppLinks.open(.issues) }
-            Button("Check for Updates…") { AppLinks.open(.releases) }
+            // A real check when this build can make one, and the old behaviour —
+            // open the Releases page in the browser — when it cannot, so a build
+            // from source still has a working answer to "am I out of date?"
+            // rather than a menu item that does nothing.
+            if updater.configuration.isReady {
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
+            } else {
+                Button("Check for Updates…") { AppLinks.open(.releases) }
+            }
             Divider()
             Button("Install Command Line Tool…") { AppLinks.revealCommandLineTool() }
                 .disabled(EmbeddedCLI.path == nil)
@@ -113,10 +141,12 @@ struct PhotoDropCommands: Commands {
 
 /// The handful of outward links the app offers, in one place.
 ///
-/// Deliberately links rather than in-app network calls: the app makes no network
-/// connections of its own, which is a property worth keeping for a tool that
-/// reads people's photo libraries and filesystem paths. "Check for Updates"
-/// opens the releases page in the user's browser rather than phoning home.
+/// These are links, not in-app network calls: they open the user's browser when
+/// clicked and the app itself connects to nothing. The one exception in the
+/// whole app is the Sparkle update feed (`SoftwareUpdater`), which is opt-in,
+/// signature-checked, and the only outbound connection PhotoDrop makes — see
+/// PRIVACY.md. `.releases` remains the fallback for builds that cannot update
+/// themselves, which is every build made from source.
 enum AppLinks {
     enum Destination {
         case readme, issues, releases

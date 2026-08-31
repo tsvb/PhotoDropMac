@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PhotoDrop's Sparkle appcast.
+
+  This file IS the update channel. Every copy of PhotoDrop ever shipped polls
+  this exact URL, so it is append-only in practice: removing an item does not
+  recall a release, it only hides it from anyone still on an older build.
+
+  Items are written by scripts/appcast.sh, which signs the DMG with the private
+  half of the key in Info.plist's SUPublicEDKey. Do not hand-edit an enclosure's
+  signature or length — an item Sparkle cannot verify is silently ignored, which
+  looks exactly like "there is no update".
+
+  Served from raw.githubusercontent.com over HTTPS; the DMGs themselves are
+  GitHub release assets.
+-->
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+    <channel>
+        <title>PhotoDrop</title>
+        <link>https://raw.githubusercontent.com/tsvb/PhotoDropMac/main/appcast.xml</link>
+        <description>Updates for PhotoDrop, a macOS photo-ingest tool.</description>
+        <language>en</language>
+        <!-- NEW ITEMS ARE INSERTED DIRECTLY BELOW THIS LINE, NEWEST FIRST. -->
+    </channel>
+</rss>

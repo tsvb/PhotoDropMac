@@ -2,18 +2,39 @@
 
 PhotoDrop collects nothing, sends nothing, and has no servers.
 
-## No network access
+## One network connection, and you choose whether it happens
 
-The app makes **no outbound network connections**. There is no telemetry, no
-analytics, no crash reporting, and no update check. The only URLs in the source
-are the Help menu's links, which open in your browser when you click them, and a
-test fixture.
+There is **no telemetry, no analytics, and no crash reporting**. The developer
+has no signal at all when you hit a failure — no error counts, no stack traces,
+nothing. For a tool that reads photo libraries and filesystem paths, that is the
+right side of the trade: a crash report from a photographer's card is exactly the
+payload you least want leaving the machine.
 
-This is a deliberate trade. It means the developer has no signal at all when a
-user hits a failure — no error counts, no crash traces, nothing. For a tool that
-reads photo libraries and filesystem paths, that is the right side of the trade:
-a crash report from a photographer's card is exactly the payload you least want
-leaving the machine.
+The one exception is the **update check**. PhotoDrop uses [Sparkle](https://sparkle-project.org)
+to fetch a small XML file:
+
+```
+https://raw.githubusercontent.com/tsvb/PhotoDropMac/main/appcast.xml
+```
+
+That request tells GitHub the usual things any web request tells a server — your
+IP address, and a user agent naming the app and its version. It carries **no
+identifier of you, no machine profile, and nothing at all about your photos,
+cards, destinations or library**. Sparkle's optional system-profiling feature is
+off, and the app never turns it on.
+
+**Nothing is fetched until you say so.** On first launch Sparkle asks whether it
+should check automatically; until you answer yes, no request is made. You can
+change your mind any time in **Settings → Updates**, and you can leave automatic
+checks off and use **Check Now** — or never check at all, and download DMGs from
+the Releases page as before.
+
+Builds made from source carry no update-signing key, and a build in that state
+starts no updater at all: it makes **zero** network connections, exactly as the
+app did before updates existed.
+
+The rest of the URLs in the app are the Help menu's links, which open in your
+browser only when you click them.
 
 If you want to report a problem, the app writes everything needed to do so
 locally — see below — and the completion sheet has a **Copy Details** button for
@@ -28,6 +49,7 @@ the failure list.
 | Hash cache | `~/Library/Application Support/PhotoDropMac/hash-cache.json` |
 | Preferences, including recently ingested cards | the app's `UserDefaults` domain |
 | Scheduled-verify agent (if enabled) | `~/Library/LaunchAgents/` |
+| Update preferences and the date of the last check | the app's `UserDefaults` domain |
 
 All of it is yours, in plain formats, and can be deleted at any time. Deleting
 the hash cache costs only a re-hash. Deleting a manifest costs the ability to

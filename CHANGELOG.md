@@ -9,6 +9,50 @@ an older build had no way to learn what a newer one fixed — and no way to diff
 it. They live here now, in the repo, and `scripts/release.sh` cuts the GitHub
 release from this file.
 
+## [0.4.0] — 2026-08-31
+
+### Added
+
+- **In-app updates (Sparkle).** PhotoDrop can now keep itself up to date instead
+  of relying on you to notice a new DMG on the Releases page — which, for a
+  security fix, meant a fix that reached nobody. **Settings → Updates** holds the
+  controls; **Help → Check for Updates…** checks on demand.
+  - **Opt-in.** Sparkle asks before its first check and nothing is fetched until
+    you answer. The app sets no "check automatically" default on your behalf.
+  - **Signed.** Every update is verified against an Ed25519 key compiled into the
+    copy you are already running, before anything is unpacked — on top of the
+    existing Developer ID signature and Apple notarization.
+  - **Never during an ingest.** Sparkle's terminal act is to replace and relaunch
+    the app, and a copy's only safe stopping point is a file boundary. Update
+    checks are refused while a job runs, and a pending installation is postponed
+    until the copy has finished and written its manifest — the same reasoning
+    that already routes Quit through the graceful-cancel path.
+  - **A build that cannot update says so.** A build from source carries no signing
+    key; it starts no updater, makes no network connection at all, and Settings
+    states that plainly rather than showing a Check button that does nothing.
+  - Privacy: the update check is the app's only outbound connection, sends nothing
+    about you or your photos, and Sparkle's system profiling stays off. See
+    [PRIVACY.md](PRIVACY.md) and [SECURITY.md](SECURITY.md).
+
+### Changed
+
+- The app now uses an explicit `Info.plist` instead of Xcode's generated one.
+  Xcode's `INFOPLIST_KEY_*` build settings only cover keys it knows about:
+  `INFOPLIST_KEY_SUFeedURL` was accepted without a warning and **dropped from the
+  built plist**, which would have shipped an app that silently never checks for
+  updates. `scripts/release.sh` now reads both Sparkle keys back out of the built
+  bundle, and the test suite pins it.
+- Sparkle's XCFramework ships ad-hoc signed and embedding it signs only the outer
+  bundle, so a post-build phase re-signs the executables nested inside it with the
+  build's own identity, hardened runtime and secure timestamp. `codesign --verify
+  --deep --strict` reports such a build as perfectly valid; notarization is what
+  rejects it, after the archive is already submitted. `release.sh` now fails if
+  any ad-hoc signature survives in the finished bundle.
+- `scripts/release.sh` refuses to ship a build whose update key is missing or does
+  not match the private key in the keychain, and signs each release into
+  `appcast.xml` before tagging — a release absent from the feed is a release no
+  installed copy will ever see.
+
 ## [0.3.0] — 2026-08-31
 
 **Supersedes 0.2.1**, which was tagged but never published — so if you are on

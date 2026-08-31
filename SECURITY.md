@@ -16,10 +16,39 @@ one-developer project.
 
 ## Supported versions
 
-The **latest release** is the only supported version. There is no back-porting,
-and — until an update channel exists — no in-app update prompt either, so a fix
-reaches you only when you download a new DMG. That is a known gap, tracked
-publicly, and it is the reason this file names it rather than implying otherwise.
+The **latest release** is the only supported version; there is no back-porting.
+
+There is now an in-app update channel (Sparkle), so a security fix can reach you
+without your having to notice a new DMG on the Releases page. It is opt-in: if
+you declined automatic checks, or you are on a build made from source, you are
+back to checking by hand — **Help → Check for Updates…**. Releases before that
+channel existed have no route forward except downloading a new DMG.
+
+## The update channel
+
+An updater is a path by which code from the internet becomes code running with
+your account's privileges, so it is worth stating exactly what guards it:
+
+- The appcast is fetched over **HTTPS** from
+  `raw.githubusercontent.com/tsvb/PhotoDropMac/main/appcast.xml`. The app refuses
+  a non-HTTPS feed outright.
+- Every update is **signed with an Ed25519 key** whose public half is compiled
+  into the copy of PhotoDrop you are already running. Sparkle verifies that
+  signature over the downloaded DMG **before** unpacking it. An unsigned or
+  wrongly-signed update is refused — a compromised feed or a hijacked download
+  URL is not enough to install anything.
+- The DMG is *also* Developer ID-signed and notarized by Apple, so Gatekeeper
+  checks it independently.
+- A build with no signing key configured (any build from source) **starts no
+  updater at all** and makes no connection.
+- **An update is never installed while an ingest is running.** Sparkle's terminal
+  act is to replace and relaunch the app; PhotoDrop refuses update checks during
+  a copy and postpones any pending installation until the job has finished and
+  written its manifest.
+
+The private signing key lives in the maintainer's login keychain and is never in
+this repository. If you believe an update has been served that PhotoDrop should
+not have accepted, that is exactly the kind of report the section above is for.
 
 ## Known, accepted risk: ImageIO decodes card bytes in-process
 
@@ -51,9 +80,10 @@ designed use.
 
 ## What PhotoDrop does not do
 
-- **No network access.** The app makes no outbound connections of any kind. The
-  Help menu's links open your browser; nothing phones home, and there is no
-  telemetry, crash reporting, or update check. See [PRIVACY.md](PRIVACY.md).
+- **No telemetry.** There is no analytics and no crash reporting. The only
+  outbound connection the app ever makes is the update check described above,
+  which you opt into and which sends nothing about you or your photos. The Help
+  menu's links open your browser. See [PRIVACY.md](PRIVACY.md).
 - **It never writes to the source.** A card is opened read-only.
 - **It never overwrites.** Destination files are created with `O_EXCL`, so a
   collision fails the bundle rather than replacing a photo.

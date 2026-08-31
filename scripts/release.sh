@@ -59,6 +59,26 @@ if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>
   exit 1
 fi
 
+# The update channel is a code-execution path into every user's Mac, so the two
+# halves of its key are checked before anything expensive happens. This half —
+# "is there a public key at all?" — needs nothing but PlistBuddy. The other half,
+# "does the private key in the keychain match it?", needs Sparkle's tools and so
+# runs after the package is resolved, below.
+PUBLIC_ED_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' Info.plist 2>/dev/null || echo "")"
+if [[ -z "$PUBLIC_ED_KEY" ]]; then
+  if [[ "${ALLOW_UNSIGNED_UPDATES:-0}" == "1" ]]; then
+    echo "⚠ ALLOW_UNSIGNED_UPDATES=1 — shipping a build that can never update itself."
+  else
+    echo "✗ Info.plist carries no SUPublicEDKey, so this build could never update itself." >&2
+    echo "  Every copy you hand out would be stranded on this version forever — a" >&2
+    echo "  security fix would reach nobody who did not happen to revisit the" >&2
+    echo "  Releases page." >&2
+    echo "  Create the key once:   ./scripts/sparkle-keys.sh" >&2
+    echo "  Or ship without one:   ALLOW_UNSIGNED_UPDATES=1 $0 ${1:-}" >&2
+    exit 1
+  fi
+fi
+
 TEAM_ARGS=()
 if [[ -n "${DEVELOPMENT_TEAM:-}" ]]; then
   TEAM_ARGS=(DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM")
@@ -77,6 +97,38 @@ fi
 # ── 1. Regenerate the Xcode project from project.yml ────────────────────────
 echo "▸ xcodegen generate"
 xcodegen generate
+
+# Resolve packages explicitly so a network failure reads as a network failure —
+# and so Sparkle's signing tools exist for the key check immediately below.
+echo "▸ xcodebuild -resolvePackageDependencies"
+xcodebuild -project "$PROJECT" -resolvePackageDependencies >/dev/null
+
+# ── 1a. The other half of the update-key check ──────────────────────────────
+# The public key is committed in Info.plist; the private key is in the login
+# keychain. They can disagree silently, and the symptom is not an error — it is
+# every installed copy quietly refusing every update, forever. Caught here, while
+# the only thing lost is a few seconds.
+if [[ -n "$PUBLIC_ED_KEY" ]]; then
+  if KEYCHAIN_PUB="$("$(dirname "$0")/sparkle-keys.sh" --print 2>/dev/null | awk '/Public key:/ {print $NF}')" \
+     && [[ -n "$KEYCHAIN_PUB" ]]; then
+    if [[ "$KEYCHAIN_PUB" != "$PUBLIC_ED_KEY" ]]; then
+      echo "✗ The signing key in your keychain is not the one this app trusts." >&2
+      echo "    Info.plist : $PUBLIC_ED_KEY" >&2
+      echo "    keychain   : $KEYCHAIN_PUB" >&2
+      echo "  An update signed with the keychain key would be refused by every" >&2
+      echo "  installed copy. Import the right private key, or see" >&2
+      echo "  scripts/sparkle-keys.sh about rotating." >&2
+      exit 1
+    fi
+  elif [[ -z "${SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
+    echo "✗ No Sparkle private key available to sign the update with." >&2
+    echo "  Info.plist expects updates signed by $PUBLIC_ED_KEY." >&2
+    echo "  Import the private key into this keychain:" >&2
+    echo "      generate_keys -f <exported-key-file>" >&2
+    echo "  or point SPARKLE_PRIVATE_KEY_FILE at an exported copy." >&2
+    exit 1
+  fi
+fi
 
 # ── 1b. The test gate ───────────────────────────────────────────────────────
 # Nothing else in this project runs the suite automatically, and a release is
@@ -194,6 +246,35 @@ spctl -a -t exec -vvv "$APP" || true          # informational
 xcrun stapler validate "$APP"                 # the copy the user keeps
 xcrun stapler validate "$DMG"                 # the download itself
 
+# The update keys have to survive the build, not just the repo. They were first
+# declared as INFOPLIST_KEY_* build settings, which Xcode accepted without a
+# warning and then dropped from the built plist — an app that silently never
+# updates. Read them back out of the bundle that is about to ship.
+# Nothing in a local build catches an ad-hoc signature: `codesign --verify --deep
+# --strict` above reports the app as valid and satisfying its designated
+# requirement, because ad-hoc signatures are structurally fine. Notarization is
+# where it bites, and by then the archive is built and submitted. Sparkle's
+# XCFramework arrives ad-hoc signed and Xcode's embed step signs only the outer
+# framework, so scripts/sign-sparkle-helpers.sh re-signs what is inside it — this
+# is the assertion that the phase actually ran.
+ADHOC=0
+while IFS= read -r nested; do
+  if codesign -dvvv "$nested" 2>&1 | grep -q "flags=0x[0-9a-f]*(.*adhoc"; then
+    echo "✗ Ad-hoc signed, and notarization requires a Developer ID: $nested" >&2
+    ADHOC=1
+  fi
+done < <(find "$APP/Contents" \( -name "*.app" -o -name "*.xpc" -o -name "*.framework" \) -mindepth 1 -maxdepth 4 -type d
+         find "$APP/Contents/Frameworks" "$APP/Contents/MacOS" -type f -perm +111 2>/dev/null)
+[[ "$ADHOC" == "0" ]] || { echo "  See scripts/sign-sparkle-helpers.sh." >&2; exit 1; }
+
+BUILT_FEED="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP/Contents/Info.plist" 2>/dev/null || echo "")"
+BUILT_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" 2>/dev/null || echo "")"
+[[ "$BUILT_FEED" == https://* ]] || { echo "✗ The built app has no https SUFeedURL (got '\''$BUILT_FEED'\''). It could never update." >&2; exit 1; }
+if [[ "${ALLOW_UNSIGNED_UPDATES:-0}" != "1" && "$BUILT_KEY" != "$PUBLIC_ED_KEY" ]]; then
+  echo "✗ The built app's SUPublicEDKey does not match Info.plist. Updates would be refused." >&2
+  exit 1
+fi
+
 # ── 8. Record the release in the repo ───────────────────────────────────────
 # Until now `./release.sh 0.2.0` shipped 0.2.0 while project.yml still said
 # 0.1.3 and git recorded nothing, so the committed spec drifted from every
@@ -205,6 +286,23 @@ if [[ "$COMMITTED_VERSION" != "$VERSION" ]]; then
   sed -i '' -E "s/(MARKETING_VERSION: )\"[^\"]+\"/\1\"$VERSION\"/" project.yml
   git add project.yml
   git commit -m "chore(release): $VERSION"
+fi
+
+# ── 8b. Put the release in the appcast ──────────────────────────────────────
+# A GitHub release nobody is told about updates nobody: every installed copy
+# learns about new versions from this file and this file only. It is generated
+# before the tag so the tag names a commit whose feed already describes the
+# build — and pushed by step 9 along with everything else, so there is one
+# publish gate rather than two.
+if [[ -n "$PUBLIC_ED_KEY" ]]; then
+  echo "▸ Signing $DMG into appcast.xml"
+  ./scripts/appcast.sh "$DMG" --version "$VERSION" --build "$BUILD"
+  if [[ -n "$(git status --porcelain appcast.xml)" ]]; then
+    git add appcast.xml
+    git commit -m "chore(release): appcast for $VERSION"
+  fi
+else
+  echo "⚠ No signing key — appcast.xml not updated. No installed copy will learn about $VERSION."
 fi
 
 TAG="v$VERSION"
@@ -243,7 +341,9 @@ if [[ "${PUBLISH:-0}" == "1" ]]; then
   echo "✓ Published: $(gh release view "$TAG" --json url -q .url)"
 else
   echo ""
-  echo "⚠ NOT PUBLISHED. The DMG exists and $TAG is tagged locally; no user can get it."
+  echo "⚠ NOT PUBLISHED. The DMG exists, $TAG is tagged locally and appcast.xml is"
+  echo "  committed locally — so no user can download it and no installed copy can"
+  echo "  see it."
   echo "  Publish with:   PUBLISH=1 $0 $VERSION"
   echo "  Or by hand:     git push origin HEAD --follow-tags \\"
   echo "                  && gh release create $TAG '$DMG' --title '$APP_NAME $VERSION' --notes-file CHANGELOG.md"

@@ -16,6 +16,8 @@ struct SettingsView: View {
                 .tabItem { Label("Menu Bar", systemImage: "menubar.rectangle") }
             MaintenancePreferences()
                 .tabItem { Label("Maintenance", systemImage: "checkmark.shield") }
+            UpdatePreferences()
+                .tabItem { Label("Updates", systemImage: "arrow.down.circle") }
         }
         .frame(width: 540, height: 430)
         .tint(theme.accent)

@@ -33,6 +33,13 @@ packages:
   ArgumentParser:
     url: https://github.com/apple/swift-argument-parser
     from: "1.3.0"
+  # In-app updates. App target only — Core/ is also compiled into the headless
+  # `photodrop` tool, and a CLI must not grow a UI framework or a network feed.
+  # Sparkle ships as a binary XCFramework; Xcode embeds and re-signs it (with the
+  # Release config's hardened runtime + --timestamp) as part of the app.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.9.6"
 
 targets:
   PhotoDropMac:
@@ -41,6 +48,7 @@ targets:
     sources:
       - path: Sources/PhotoDropMac
     dependencies:
+      - package: Sparkle
       # Ship the headless CLI inside the app at Contents/MacOS/photodrop so the
       # scheduled-verification feature works with zero setup. link:false — the
       # tool is a standalone executable, not linked into the app binary;
@@ -55,14 +63,25 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tsvb.PhotoDropMac
         PRODUCT_NAME: PhotoDropMac
-        MARKETING_VERSION: "0.3.0"
+        MARKETING_VERSION: "0.4.0"
         CURRENT_PROJECT_VERSION: "1"
-        GENERATE_INFOPLIST_FILE: YES
+        # An explicit Info.plist rather than GENERATE_INFOPLIST_FILE, because
+        # Sparkle's SUFeedURL / SUPublicEDKey are not keys Xcode's
+        # INFOPLIST_KEY_* mechanism knows: it accepts them without a warning and
+        # drops them from the built plist, which is an app that never updates and
+        # never says why. See the header comment in the file itself.
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
-        INFOPLIST_KEY_NSPrincipalClass: NSApplication
-        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 tsvb. MIT licensed."
         CODE_SIGN_ENTITLEMENTS: PhotoDropMac.entitlements
+    postBuildScripts:
+      # Sparkle's XCFramework arrives ad-hoc signed, and Xcode's embed step signs
+      # only the framework bundle — not the four executables nested inside it.
+      # `codesign --verify --deep --strict` still passes; notarization does not.
+      # Runs last, so it is after the embed and before Xcode seals the app.
+      - name: Sign Sparkle's nested helpers
+        path: scripts/sign-sparkle-helpers.sh
+        basedOnDependencyAnalysis: false
     scheme:
       testTargets:
         - PhotoDropMacTests

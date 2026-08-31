@@ -110,3 +110,16 @@ jobs:
       # agent — to a file that isn't there. This is mechanical to catch.
       - name: Check relative markdown links resolve
         run: ./scripts/check-doc-links.sh
+
+      # appcast.xml IS the update channel: every installed copy of PhotoDrop
+      # reads this one file. A malformed feed does not produce an error anywhere
+      # a user can see — Sparkle simply reports "no update available", forever,
+      # including for a release that fixes something urgent. It is cheap to check
+      # that it parses and still has the marker scripts/appcast.sh inserts at.
+      - name: Check the appcast parses
+        run: |
+          xmllint --noout appcast.xml
+          grep -q "NEW ITEMS ARE INSERTED DIRECTLY BELOW THIS LINE" appcast.xml \
+            || { echo "::error::appcast.xml has lost the marker scripts/appcast.sh inserts at."; exit 1; }
+          grep -q "<key>SUFeedURL</key>" Info.plist \
+            || { echo "::error::Info.plist has no SUFeedURL — the app could never check for updates."; exit 1; }

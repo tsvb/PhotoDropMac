@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  An explicit Info.plist, not `GENERATE_INFOPLIST_FILE`.
+
+  Xcode's `INFOPLIST_KEY_<key>` build settings only cover the keys Xcode itself
+  knows about — measured: `INFOPLIST_KEY_SUFeedURL` is written into the project,
+  accepted without a warning, and silently absent from the built plist. Sparkle
+  reads `SUFeedURL` and `SUPublicEDKey` out of the bundle, so a key that vanishes
+  at build time is an app that never checks for updates and never says why.
+  `scripts/release.sh` reads both back out of the *built* app for that reason,
+  and `SoftwareUpdateTests` pins it.
+
+  Version keys stay build-setting references so `scripts/release.sh` can keep
+  overriding MARKETING_VERSION / CURRENT_PROJECT_VERSION per build.
+
+  Edit this file by hand or with `scripts/sparkle-keys.sh`, which does a targeted
+  in-place replacement. Do NOT use `PlistBuddy -c Set` on it: PlistBuddy rewrites
+  the whole file and drops every comment here, which is how the reasoning above
+  gets lost.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.photography</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 tsvb. MIT licensed.</string>
+
+	<!-- ── Sparkle ──────────────────────────────────────────────────────────
+	     The appcast, fetched over HTTPS. Baked into every build and polled by
+	     every build ever shipped, so it is effectively permanent: changing it
+	     strands every copy already in the wild on the old address.
+	-->
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/tsvb/PhotoDropMac/main/appcast.xml</string>
+	<!-- Public half of the Ed25519 update-signing key. PUBLIC by design: it is
+	     the trust anchor each shipped copy carries, so it must be committed, and
+	     must never change once builds are out there — an update signed by any
+	     other key is refused by every copy already installed, stranding those
+	     users with no in-app route forward.
+
+	     Empty means "this checkout has never generated a key". A build in that
+	     state starts no updater and makes no network connection at all
+	     (`SoftwareUpdater`), and `scripts/release.sh` refuses to ship it. Run
+	     `scripts/sparkle-keys.sh` to fill it in.
+
+	     Sparkle deliberately uses ONE key per user account across all their apps,
+	     so this may already be a key you use elsewhere. -->
+	<key>SUPublicEDKey</key>
+	<string>WKOnGAu8QlsO9cDxBQ8peCSLDuVRTmx+p5MsruHqUFE=</string>
+</dict>
+</plist>

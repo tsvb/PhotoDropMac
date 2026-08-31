@@ -50,7 +50,7 @@ The build is signed with a Developer ID and notarized by Apple, and the notariza
 
 Do drag it out of the DMG before running it. macOS *app translocation* runs an app launched from a disk image at a randomized read-only path, which stops it finding the `photodrop` tool bundled inside it. Moving it to Applications in Finder clears that.
 
-There is no automatic update check — the app makes no network connections at all ([why](PRIVACY.md)). **Help → Check for Updates…** opens the Releases page in your browser.
+PhotoDrop can keep itself up to date. On first launch it asks whether to check automatically; you can answer later, or never, in **Settings → Updates**, and **Help → Check for Updates…** always checks on demand. Updates are downloaded over HTTPS and installed only if they carry a valid signature from the key built into the copy you are already running — and never while an ingest is in progress. That check is the app's only network connection, it is opt-in, and it sends nothing about you or your photos ([details](PRIVACY.md)). Builds made from source have no signing key and make no connection at all.
 
 To build from source instead, see [Build and run](#build-and-run). Maintainers cutting a release: see [RELEASING.md](RELEASING.md).
 
@@ -67,6 +67,7 @@ To build from source instead, see [Build and run](#build-and-run). Maintainers c
 | **Multi-destination archival** | Write any number of independently verified mirror copies in the same pass (3-2-1 backups). Each destination fails independently — an offline NAS doesn't void the copy that landed in your library. |
 | **Contact-sheet culling** | Preview thumbnails in a grid and deselect individual frames or whole days before ingesting. |
 | **Warm hash cache** | Re-ingesting the same card against the same library skips the slow card reads entirely — a stat-bound operation instead of a read-bound one. |
+| **Signed in-app updates** | Opt-in Sparkle updates over HTTPS, verified against an Ed25519 key compiled into your copy — and held back until any running ingest has finished and written its manifest. |
 | **Card-aware menu bar** | A menu bar item detects card arrival, can auto-open the window, and offers optional one-click ingest with your saved defaults. |
 | **Eject + notify when done** | Optionally eject the card and post a Notification Center banner on completion when the app isn't frontmost. |
 | **Three committed themes** | Steady, Ledger, and Pressroom — each a full identity (appearance, type, accent, and a distinct verification mark), not just an accent color. |
@@ -171,6 +172,12 @@ Preferences are plain `@AppStorage` keys (no central store). Defaults:
 | `photodrop.scheduledVerify.binaryPath` | String | bundled CLI | Path to `photodrop` for the scheduled job; defaults to the copy inside the app. |
 | `photodrop.scheduledVerify.library` | String | — | Library the scheduled job checks; defaults to the primary destination. |
 | `photodrop.notify.authorizationDenied` | Bool | `false` | Written by the app, not a toggle: macOS refused permission to post banners. |
+
+Update preferences are the exception to the table above: they are owned by Sparkle
+(`SUEnableAutomaticChecks`, `SUScheduledCheckInterval`, `SUAutomaticallyUpdate` in
+the same defaults domain) and edited in **Settings → Updates**. The app mirrors
+them for display rather than keeping a second copy that could disagree with the
+values Sparkle actually acts on.
 
 ## Naming templates
 
@@ -317,7 +324,10 @@ PhotoDropMac/
 ├─ project.yml                 # XcodeGen spec (the .xcodeproj is generated, not committed)
 ├─ CLAUDE.md                   # in-repo guide to the codebase
 ├─ .github/workflows/ci.yml    # xcodegen + suite + CLI + side-effect assertions + doc links
-├─ scripts/                    # release.sh, make-icon.swift, check-doc-links.sh
+├─ Info.plist                  # the app's plist — explicit, because Sparkle's keys live in it
+├─ appcast.xml                 # the Sparkle update feed; every installed copy reads this file
+├─ scripts/                    # release.sh, appcast.sh, sparkle-keys.sh, sign-sparkle-helpers.sh,
+│                             #   sparkle-tools.sh, make-icon.swift, check-doc-links.sh
 ├─ docs/
 │  └─ design_handoff_polish_pass/   # design spec, copy, and an HTML prototype
 ├─ Tests/PhotoDropMacTests/    # the XCTest target (hosted in the app)
@@ -338,7 +348,8 @@ PhotoDropMac/
       ├─ DriveWatcher.swift · IngestPlanner.swift · Copier.swift · Verifier.swift   # controllers
       ├─ MainView.swift · PreviewTree.swift · ContactSheet.swift · ThumbnailLoader.swift
       ├─ InspectorPane.swift · ProgressPane.swift · CompletionSheet.swift · JobArtifactButtons.swift
-      ├─ SettingsView.swift · VerifySheet.swift · EmbeddedCLI.swift
+      ├─ SettingsView.swift · UpdatePreferences.swift · VerifySheet.swift · EmbeddedCLI.swift
+      ├─ SoftwareUpdater.swift · UpdatePolicy.swift                         # Sparkle, and the rules around it
       ├─ VerificationStyle+Theme.swift                                      # the three themes
       ├─ SealGrid.swift · StampMark.swift · ApertureMark.swift · VerifiedSignature.swift  # marks
       └─ Notifier.swift                                                     # completion notifications
@@ -351,7 +362,9 @@ The app is intentionally **unsandboxed**. It needs unrestricted filesystem acces
 Signing is split per build configuration (`project.yml`):
 
 - **Debug** — ad-hoc signed (`CODE_SIGN_IDENTITY = "-"`), hardened runtime off. Fast local builds, no certificate needed.
-- **Release** — **Developer ID Application** signing, **hardened runtime on**, secure `--timestamp`. This is the combination Apple notarization requires. Unsandboxed apps notarize fine; the hardened runtime is independent of the sandbox, and every runtime behavior (diskutil eject, the `launchctl` scheduled-verify agent, the post-ingest hook, notifications, xattr checksums) works under it without extra entitlements.
+- **Release** — **Developer ID Application** signing, **hardened runtime on**, secure `--timestamp`. This is the combination Apple notarization requires. Unsandboxed apps notarize fine; the hardened runtime is independent of the sandbox, and every runtime behavior (diskutil eject, the `launchctl` scheduled-verify agent, the post-ingest hook, notifications, xattr checksums, Sparkle's in-place update) works under it without extra entitlements.
+
+Sparkle is embedded as `Contents/Frameworks/Sparkle.framework` and signed and notarized along with everything else. Because the app is unsandboxed it needs none of Sparkle's installer XPC services and no additional entitlements. Its XCFramework arrives ad-hoc signed, and embedding it signs only the outer bundle — so a post-build phase (`scripts/sign-sparkle-helpers.sh`) re-signs the executables nested inside it, and `release.sh` fails the release if any ad-hoc signature survives. `codesign --verify --deep --strict` does not catch this; notarization does.
 
 The `photodrop` CLI is **embedded in the app bundle** at `Contents/MacOS/photodrop`, signed as part of the app's signature and covered by the same notarization — so scheduled verification works out of the box with no separate install. See **[RELEASING.md](RELEASING.md)** for the full build → notarize → staple → DMG process and its prerequisites.
 
