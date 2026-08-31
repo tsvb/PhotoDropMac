@@ -19,7 +19,7 @@ final class PostIngestHookTests: XCTestCase {
         CopyResult(bundleCount: copied, filesCopied: copied, filesSkipped: skipped, filesFailed: failed,
                    failuresByDestination: [:],
                    totalBytes: bytes, elapsedSeconds: 1, primaryDestination: primary,
-                   logURL: nil, manifestURL: nil, wasEjected: false, halted: false,
+                   logURL: nil, manifestURL: nil, manifestFailures: [], wasEjected: false, halted: false,
                    haltReason: nil, cancelled: false)
     }
 

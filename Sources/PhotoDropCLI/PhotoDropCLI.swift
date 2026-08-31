@@ -253,12 +253,19 @@ struct Ingest: AsyncParsableCommand {
         // released the card. Same rule the verify side already enforces with
         // `.unreadableTarget`.
         let outcome = AssetDiscovery.scanOutcome(root: cardURL)
-        guard case let .scanned(bundles, unreadableDirectories) = outcome else {
+        guard case let .scanned(bundles, unreadableDirectories, unrecognizedFiles) = outcome else {
             CLIOutput.error("Could not read “\(CLIOutput.safe(cardURL.path))” — it does not exist, is not a folder, or is not readable.")
             throw ExitCode(2)
         }
         if unreadableDirectories > 0 {
             CLIOutput.error("\(unreadableDirectories) folder(s) on the card could not be read; this ingest covers only what was visible. Not ejecting.")
+        }
+        // Files the walk read and will not copy. Previously dropped in silence,
+        // which let a card of stills + clips report a complete ingest of the
+        // stills alone and then eject.
+        if unrecognizedFiles > 0 {
+            CLIOutput.error("\(unrecognizedFiles) file(s) on the card are not a format PhotoDrop ingests "
+                          + "and will be left behind. Not ejecting.")
         }
         guard !bundles.isEmpty else {
             print("No recognized photos found on \(cardURL.path).")
@@ -269,7 +276,8 @@ struct Ingest: AsyncParsableCommand {
         // whatever the walk couldn't see, and ejecting is the one step that puts
         // it out of reach. (`IngestEngine` separately refuses to eject when files
         // failed; this covers what was never planned in the first place.)
-        let doEject = (eject ?? loadedPreset?.ejectAfterIngest ?? false) && unreadableDirectories == 0
+        let doEject = (eject ?? loadedPreset?.ejectAfterIngest ?? false)
+            && unreadableDirectories == 0 && unrecognizedFiles == 0
 
         let volumeID = (try? cardURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? cardURL.path
         let cardLabel = (try? cardURL.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? cardURL.lastPathComponent
@@ -371,6 +379,12 @@ struct Ingest: AsyncParsableCommand {
         if result.halted { throw ExitCode(2) }
         if result.cancelled { throw ExitCode(2) }
         if result.filesFailed > 0 { throw ExitCode(1) }
+        // A job that copied everything and could not write its manifest is not a
+        // success: the files exist and nothing can ever attest to them. This
+        // used to exit 0, so a wrapper script reading `$?` released the card over
+        // a library with no integrity record. Exit 1 — "issues found" — rather
+        // than 2, because the copy itself completed and was checked.
+        if !result.manifestFailures.isEmpty { throw ExitCode(1) }
     }
 }
 
@@ -579,6 +593,8 @@ enum CLIOutput {
             lead = "⚠ Cancelled — partial ingest: "
         } else if r.primaryFailures > 0 {
             lead = "⚠ Completed with errors: "
+        } else if !r.manifestFailures.isEmpty {
+            lead = "⚠ Copied, but no manifest was written: "
         } else if !r.failedMirrors.isEmpty {
             lead = "⚠ Library complete, mirror incomplete: "
         } else {
@@ -586,6 +602,9 @@ enum CLIOutput {
         }
         var s = lead + parts.joined(separator: ", ") + " · " + size
         if let manifestURL = r.manifestURL { s += "\n  manifest: \(manifestURL.path)" }
+        for root in r.manifestFailures {
+            s += "\n  could not write manifest at: \(safe(root))"
+        }
         for mirror in r.failedMirrors {
             s += "\n  could not write mirror: \(safe(mirror))"
         }
@@ -620,6 +639,7 @@ enum CLIOutput {
             if r.unstamped > 0 {
                 ok += "\n  \(r.unstamped) file(s) carry no checksum attribute and were not checked."
             }
+            ok += unexaminedLines(r)
             return ok
         }
         var headline = "✗ \(r.verified) of \(scope) verified — \(r.changed) changed, \(r.missing) missing, \(r.unreadable) unreadable"
@@ -634,6 +654,8 @@ enum CLIOutput {
         if r.unstamped > 0 {
             lines.append("  \(r.unstamped) file(s) carry no checksum attribute and were not checked.")
         }
+        let extra = unexaminedLines(r)
+        if !extra.isEmpty { lines.append(contentsOf: extra.split(separator: "\n").map(String.init)) }
         for issue in r.issues {
             let tag: String
             switch issue.kind {
@@ -652,6 +674,29 @@ enum CLIOutput {
         return lines.joined(separator: "\n")
     }
 
+    /// What a manifest-mode run could not use, and what it knows to be
+    /// incomplete. Appended to the pass *and* the failure headline, because both
+    /// verdicts are claims about the whole library and both were previously
+    /// silent about the entries they dropped.
+    private static func unexaminedLines(_ r: VerifyReport) -> String {
+        var lines: [String] = []
+        if r.undigested > 0 {
+            lines.append("  \(r.undigested) manifest entr(y/ies) record no checksum and could not be "
+                       + "checked. Older manifests recorded none for duplicate-skipped files.")
+        }
+        if r.outOfRoot > 0 {
+            lines.append("  \(r.outOfRoot) manifest entr(y/ies) name a path outside the library and were "
+                       + "refused. A manifest is unauthenticated data; entries that escape its root are "
+                       + "never followed.")
+        }
+        if r.partialManifests > 0 {
+            lines.append("  \(r.partialManifests) of \(r.manifestCount) manifest(s) are marked partial — "
+                       + "the job that wrote them was cancelled, halted, or lost files, so this library is "
+                       + "known to be missing photos the card held. What is here is intact.")
+        }
+        return lines.isEmpty ? "" : "\n" + lines.joined(separator: "\n")
+    }
+
     static func verifyJSON(_ r: VerifyReport) -> String {
         struct IssueDTO: Encodable { let kind: String; let name: String; let path: String }
         struct ReportDTO: Encodable {
@@ -661,6 +706,12 @@ enum CLIOutput {
             /// `allGood` is entitled to assume the verdict covered everything;
             /// these say how much of the target it actually reached.
             let unreadableDirectories: Int, unstamped: Int
+            /// Manifest-mode counterparts: entries with no digest, entries that
+            /// escaped the library root, and manifests whose job did not finish.
+            /// `allGood` stays true for all three — they are context, not
+            /// integrity errors — so a consumer that branches only on `allGood`
+            /// must read these to know what the verdict covered.
+            let undigested: Int, outOfRoot: Int, partialManifests: Int
             let issues: [IssueDTO]
         }
         func kindString(_ k: VerifyIssue.Kind) -> String {
@@ -676,6 +727,7 @@ enum CLIOutput {
             conflicts: r.conflicts,
             total: r.total, manifestCount: r.manifestCount, allGood: r.allGood,
             unreadableDirectories: r.unreadableDirectories, unstamped: r.unstamped,
+            undigested: r.undigested, outOfRoot: r.outOfRoot, partialManifests: r.partialManifests,
             issues: r.issues.map { IssueDTO(kind: kindString($0.kind), name: safe($0.name), path: safe($0.path)) }
         )
         let encoder = JSONEncoder()

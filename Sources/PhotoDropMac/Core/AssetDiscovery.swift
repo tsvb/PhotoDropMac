@@ -21,17 +21,58 @@ private let rawExtensions: Set<String> = [
     "iiq", "raw", "sr2", "srf", "dcr", "kdc", "mos",
 ]
 
-// JPEG extensions. A JPEG is either a companion (when a same-stem RAW
-// lives in the same directory) or a primary bundle of its own.
-private let jpegExtensions: Set<String> = ["jpg", "jpeg"]
+// Camera-written non-RAW stills. Each is either a companion (when a same-stem
+// RAW lives in the same directory) or a primary bundle of its own.
+//
+// **HEIF belongs here, not in a future "maybe".** `heic` is what every iPhone
+// since the 7 writes by default, `hif` is Canon's R-series HEIF and Sony's
+// equivalent, and all three were dropped by the extension filter below with no
+// tally — so an iPhone card or an R5 shooting HEIF+RAW scanned "clean", ingested
+// nothing (or only the RAW), reported ✓ and ejected. ImageIO reads their EXIF
+// and embedded previews with no change to `ExifReader` or `ThumbnailLoader`.
+private let jpegExtensions: Set<String> = ["jpg", "jpeg", "heic", "heif", "hif"]
+
+// Video written by stills cameras, action cams and phones. Treated exactly like
+// a standalone still: a primary in its own bundle, taking the same sidecar
+// companions (an `.xmp` beside a clip is as real as one beside a RAW).
+//
+// These were absent entirely, which was the single largest correctness gap in
+// the app: the enumerator dropped them with no counter, so a hybrid shooter's
+// card — 400 stills, 60 clips — planned 400 bundles, passed the `filesFailed ==
+// 0` eject gate, wrote a manifest attesting to completeness, and ejected the
+// only copy of the clips. Capture dates come from `ExifReader`, which falls back
+// to AVFoundation's creation metadata for these.
+//
+// Deliberately *not* here: the multi-file clip containers (spanned MXF, BRAW and
+// R3D folders, `.insv` pairs), which are directory-shaped and would need a
+// different atomic unit than `AssetBundle`. They are counted as unrecognized
+// rather than half-copied, which is the honest answer until that unit exists.
+private let videoExtensions: Set<String> = [
+    "mov", "mp4", "m4v", "avi", "mts", "m2ts", "3gp", "mpg", "mpeg", "wmv", "mkv",
+]
 
 // Recognised sidecar extensions. `.wav` only counts when it shares its
 // stem with a primary — it's treated as a camera audio note.
 private let sidecarExtensions: Set<String> = ["dop", "xmp", "pp3", "wav"]
 
+/// Files the walk deliberately passes over without counting them as unexamined.
+///
+/// The unrecognized tally exists to tell the user "this card holds things I did
+/// not take", so it must not cry wolf about filesystem and camera bookkeeping
+/// that nobody wants ingested: volume indexes, trashes, camera settings and
+/// print-order files are noise, not photos.
+private let ignorableExtensions: Set<String> = [
+    "ds_store", "spotlight-v100", "fseventsd", "trashes", "ctg", "mir", "sea",
+    "ind", "inp", "bin", "dat", "log", "tmp", "thm", "lrv", "lrf", "xml", "ini",
+    "txt", "url", "htm", "html", "plist", "db", "modd", "moff", "sav",
+]
+private let ignorableNames: Set<String> = [
+    ".ds_store", "misc", "avin", "clpinf", "index.bdm", "moviobj.bdm",
+]
+
 // Accepted primary extensions (RAW + JPEG). Anything else is ignored at
 // the enumeration stage.
-private let primaryExtensions: Set<String> = rawExtensions.union(jpegExtensions)
+private let primaryExtensions: Set<String> = rawExtensions.union(jpegExtensions).union(videoExtensions)
 
 // Every extension the enumerator needs to surface. Filtering by this
 // set up front keeps scratch files (`.tmp`, `.ctg`, etc.) out of the
@@ -76,14 +117,42 @@ private final class UnreadableCounter: @unchecked Sendable {
 /// files, report "✓ Ingest complete", and write a manifest attesting to the 137.
 enum ScanOutcome: Sendable {
     case unreadableSource
-    case scanned(bundles: [AssetBundle], unreadableDirectories: Int)
+    /// - Parameters:
+    ///   - unreadableDirectories: directories the walk could not open.
+    ///   - unrecognizedFiles: regular files the walk *could* read and chose not
+    ///     to ingest because their extension is not a recognized primary or
+    ///     sidecar — camera bookkeeping excluded. See `ignorableExtensions`.
+    case scanned(bundles: [AssetBundle], unreadableDirectories: Int, unrecognizedFiles: Int)
 
     var bundles: [AssetBundle] {
-        if case let .scanned(bundles, _) = self { return bundles }
+        if case let .scanned(bundles, _, _) = self { return bundles }
         return []
     }
+    var unreadableDirectories: Int {
+        if case let .scanned(_, unreadable, _) = self { return unreadable }
+        return 0
+    }
+    /// Files on the card this ingest will not copy.
+    ///
+    /// Kept distinct from `unreadableDirectories` because the remedy differs: an
+    /// unreadable directory is a fault to retry, while an unrecognized file is a
+    /// deliberate limit of the app that the user has to decide about. Both,
+    /// though, make `isComplete` false — the card was not fully taken, and no
+    /// caller may eject on the strength of a partial one.
+    var unrecognizedFiles: Int {
+        if case let .scanned(_, _, unrecognized) = self { return unrecognized }
+        return 0
+    }
+    /// Everything on the card was read **and** everything readable was ingestable.
+    ///
+    /// The unrecognized count joined this deliberately. Ejecting is the app's own
+    /// "this card is finished" gesture and the next thing that happens to a
+    /// finished card is a format; saying it over a card still holding 60 clips is
+    /// the worst outcome this app can produce.
     var isComplete: Bool {
-        if case let .scanned(_, unreadable) = self { return unreadable == 0 }
+        if case let .scanned(_, unreadable, unrecognized) = self {
+            return unreadable == 0 && unrecognized == 0
+        }
         return false
     }
 }
@@ -119,6 +188,7 @@ enum AssetDiscovery {
         // error. Without a handler the enumerator skips them silently and the
         // scan just comes back short — indistinguishable from a smaller card.
         let unreadable = UnreadableCounter()
+        let unrecognized = UnreadableCounter()
         guard let enumerator = fm.enumerator(
             at: root,
             includingPropertiesForKeys: keys,
@@ -146,7 +216,21 @@ enum AssetDiscovery {
             // AssetDiscoveryTests.testSymlinksAreNeverIngested.
             guard values.isRegularFile == true else { continue }
             let ext = url.pathExtension.lowercased()
-            guard recognisedExtensions.contains(ext) else { continue }
+            guard recognisedExtensions.contains(ext) else {
+                // **Count what we are leaving behind.** This filter used to
+                // `continue` in silence, which made "the card holds 60 clips I
+                // cannot ingest" indistinguishable from "the card holds nothing
+                // else" — the exact collapse `ScanOutcome` was created to
+                // prevent, at the one sink nobody had applied it to. The count
+                // suppresses the auto-eject and is stated in the UI and the CLI,
+                // so the user decides rather than discovering it after a format.
+                let name = url.lastPathComponent.lowercased()
+                if !ignorableExtensions.contains(ext), !ignorableNames.contains(name),
+                   !name.hasPrefix(".") {
+                    unrecognized.increment()
+                }
+                continue
+            }
             let size = Int64(values.fileSize ?? 0)
             let modDate = values.contentModificationDate ?? Date()
             let name = url.lastPathComponent
@@ -180,9 +264,11 @@ enum AssetDiscovery {
                 bundles.append(bundle)
             }
 
-            // Pass 2: standalone JPEGs (those not consumed as a
-            // JpegPair companion during pass 1).
-            for file in siblings where jpegExtensions.contains(file.ext) {
+            // Pass 2: standalone stills and video (those not consumed as a
+            // JpegPair companion during pass 1). Video is never a companion —
+            // a clip beside a RAW of the same stem is its own shot, not the
+            // RAW's pair — so it can only ever appear here.
+            for file in siblings where jpegExtensions.contains(file.ext) || videoExtensions.contains(file.ext) {
                 if consumed.contains(file.url) { continue }
                 let bundle = buildBundle(primary: file, siblings: siblings, claimed: consumed)
                 consumed.insert(file.url)
@@ -191,7 +277,9 @@ enum AssetDiscovery {
             }
         }
 
-        return .scanned(bundles: bundles, unreadableDirectories: unreadable.value)
+        return .scanned(bundles: bundles,
+                        unreadableDirectories: unreadable.value,
+                        unrecognizedFiles: unrecognized.value)
     }
 
     // Build a bundle for `primary`, pulling every sibling that classifies as a

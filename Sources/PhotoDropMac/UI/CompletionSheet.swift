@@ -11,8 +11,8 @@ struct CompletionSheet: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            if hadIssues {
-                Image(systemName: "exclamationmark.octagon.fill")
+            if withheldSeal {
+                Image(systemName: hadIssues ? "exclamationmark.octagon.fill" : "seal.slash.fill")
                     .font(.system(size: 48))
                     .foregroundStyle(.orange)
                     .symbolRenderingMode(.hierarchical)
@@ -80,6 +80,11 @@ struct CompletionSheet: View {
     /// showing the same red octagon for both taught the user to distrust it.
     private var hadIssues: Bool { result.primaryFailures > 0 }
 
+    /// The hero mark is withheld for a missing manifest too. A verification seal
+    /// over a job that produced no verification record is the one image this app
+    /// must never show.
+    private var withheldSeal: Bool { hadIssues || !result.manifestFailures.isEmpty }
+
     // Ledger swaps the SF Pro semibold headline for a regular-weight system
     // serif (New York) — the "single moment of typographic warmth".
     private var titleFont: Font {
@@ -94,6 +99,13 @@ struct CompletionSheet: View {
         if hadIssues {
             return "Ingest completed with errors"
         }
+        // A missing manifest is its own headline. The files are on disk and
+        // every byte was verified in flight, so "with errors" would overstate
+        // it — but "Ingest complete" understates a library that nothing can
+        // ever re-verify, which is the whole product. Say exactly what happened.
+        if !result.manifestFailures.isEmpty {
+            return "Copied — but the receipt could not be written"
+        }
         if !result.failedMirrors.isEmpty {
             return "Library complete — a mirror fell behind"
         }
@@ -106,6 +118,15 @@ struct CompletionSheet: View {
         if result.primaryFailures > 0 {
             let n = result.primaryFailures
             var s = "\(n) file\(n == 1 ? "" : "s") failed — see log for details."
+            if !result.failedMirrors.isEmpty { s += " \(mirrorFailureSentence)" }
+            return s
+        }
+        if !result.manifestFailures.isEmpty {
+            let names = result.manifestFailures.map { ($0 as NSString).lastPathComponent }
+            let list = names.count == 1 ? "“\(names[0])”" : names.map { "“\($0)”" }.joined(separator: ", ")
+            var s = "Every file was copied and verified, but the checksum manifest could not be "
+                  + "saved to \(list), so “Verify Library” has nothing to check there. "
+                  + "Check the folder is writable and has free space, then re-run the ingest."
             if !result.failedMirrors.isEmpty { s += " \(mirrorFailureSentence)" }
             return s
         }
@@ -219,6 +240,7 @@ private func previewResult(copied: Int, skipped: Int, failed: Int, ejected: Bool
         primaryDestination: URL(fileURLWithPath: "/Users/you/Pictures/Library"),
         logURL: log ? URL(fileURLWithPath: "/tmp/ingest.log") : nil,
         manifestURL: log ? URL(fileURLWithPath: "/tmp/ingest.json") : nil,
+        manifestFailures: [],
         wasEjected: ejected, halted: false, haltReason: nil, cancelled: false
     )
 }

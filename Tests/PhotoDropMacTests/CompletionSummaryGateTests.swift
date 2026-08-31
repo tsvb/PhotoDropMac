@@ -12,7 +12,7 @@ final class CompletionSummaryGateTests: XCTestCase {
             failuresByDestination: failed > 0 ? ["/tmp/lib": failed] : [:],
             totalBytes: 100, elapsedSeconds: 1,
             primaryDestination: URL(fileURLWithPath: "/tmp/lib"),
-            logURL: nil, manifestURL: nil, wasEjected: false, halted: false,
+            logURL: nil, manifestURL: nil, manifestFailures: [], wasEjected: false, halted: false,
             haltReason: nil, cancelled: false))
     }
 

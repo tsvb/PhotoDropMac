@@ -41,14 +41,47 @@ struct VerifyReport: Sendable, Equatable {
     /// "The stamp was lost" and "it was never stamped" are indistinguishable from
     /// the outside, so the honest report is the count.
     let unstamped: Int
+    /// Manifest entries carrying no usable digest (manifest mode only).
+    ///
+    /// `build` dropped these with `continue` and no tally, and `total` is
+    /// `verified + issues.count`, so they were invisible. This is the same defect
+    /// `unstamped` exists to prevent, one mode over: manifests written before
+    /// skipped-duplicate entries recorded their digest still sit in libraries
+    /// with `xxhash64: nil` on every skipped file, so a library that is mostly
+    /// skip entries verified the remainder and printed `✓ All N files match`.
+    let undigested: Int
+    /// Manifest entries whose recorded path resolved outside the library root
+    /// (manifest mode only).
+    ///
+    /// Dropping them is correct — `ManifestWriter.resolve` is what stops a
+    /// `../../..` entry turning verify into an existence oracle — but dropping
+    /// them *silently* means a manifest that is half traversal attempts reads as
+    /// a clean pass over the half that wasn't. Refusing to look somewhere is a
+    /// thing the report has to say out loud.
+    let outOfRoot: Int
+    /// Manifests that recorded `partial: true` — the job that wrote them was
+    /// cancelled, halted, or lost files.
+    ///
+    /// The field was written on every job and read by nothing. Cancel a
+    /// 500-photo ingest at bundle 40 and the manifest correctly says
+    /// `partial: true` with 40 entries; `verify` then reported
+    /// `✓ All 40 files match` and exited 0, and the nightly agent stayed green
+    /// forever over a library known to be incomplete. Reported, never failed on:
+    /// the 40 files really are intact, and the incompleteness is context the
+    /// user has to be told, not an integrity error.
+    let partialManifests: Int
 
     init(verified: Int, issues: [VerifyIssue], manifestCount: Int,
-         unreadableDirectories: Int = 0, unstamped: Int = 0) {
+         unreadableDirectories: Int = 0, unstamped: Int = 0,
+         undigested: Int = 0, outOfRoot: Int = 0, partialManifests: Int = 0) {
         self.verified = verified
         self.issues = issues
         self.manifestCount = manifestCount
         self.unreadableDirectories = unreadableDirectories
         self.unstamped = unstamped
+        self.undigested = undigested
+        self.outOfRoot = outOfRoot
+        self.partialManifests = partialManifests
     }
 
     var changed: Int { issues.lazy.filter { $0.kind == .changed }.count }
@@ -106,9 +139,10 @@ enum VerifyEngine {
                     onProgress: (VerifyProgress) -> Void = { _ in }) -> VerifyReport? {
         // Verification doesn't read mirrors — it checks the files under `target`
         // — so the mirror gate is irrelevant here and the refused list is unused.
-        let (work, manifestCount, conflicts, _) = build(target: target)
+        let plan = build(target: target)
+        let work = plan.items
         var verified = 0
-        var issues: [VerifyIssue] = conflicts
+        var issues: [VerifyIssue] = plan.conflicts
         let total = work.count
 
         for (i, item) in work.enumerated() {
@@ -122,7 +156,9 @@ enum VerifyEngine {
             onProgress(VerifyProgress(total: total, checked: i + 1, currentFile: item.name))
         }
 
-        return VerifyReport(verified: verified, issues: issues, manifestCount: manifestCount)
+        return VerifyReport(verified: verified, issues: issues, manifestCount: plan.manifestCount,
+                            undigested: plan.undigested, outOfRoot: plan.outOfRoot,
+                            partialManifests: plan.partialManifests)
     }
 
     /// Reads every manifest near `target` and flattens it into a deduped list of
@@ -167,14 +203,28 @@ enum VerifyEngine {
     /// there" is precisely the quiet narrowing that would make a recovery tool
     /// lie by omission, and the user is the only one who can say whether the root
     /// is theirs.
-    static func build(target: URL, allowedMirrorRoots: [URL] = [])
-        -> (items: [WorkItem], manifestCount: Int, conflicts: [VerifyIssue], refusedMirrorRoots: [String]) {
+    /// What `build` found. A struct rather than a tuple because it grew the
+    /// counts of what it *couldn't* use, and those must reach the report — an
+    /// unnamed tuple member is easy to drop at a call site with `_`, which is
+    /// exactly how these entries went missing in the first place.
+    struct Plan {
+        let items: [WorkItem]
+        let manifestCount: Int
+        let conflicts: [VerifyIssue]
+        let refusedMirrorRoots: [String]
+        let undigested: Int
+        let outOfRoot: Int
+        let partialManifests: Int
+    }
+
+    static func build(target: URL, allowedMirrorRoots: [URL] = []) -> Plan {
         let allowed = Set(allowedMirrorRoots.map { $0.standardizedFileURL.path })
         // Decode every manifest, then order oldest → newest. This ordering is
         // only for deterministic output — it is explicitly *not* trusted to
         // arbitrate between manifests (see above).
         var loaded: [(createdAt: Date, urlPath: String, root: URL, mirrors: [URL], files: [ManifestEntry])] = []
         var refused: [String] = []
+        var partialCount = 0
         for manifestURL in ManifestWriter.manifestURLs(near: target) {
             guard let data = try? Data(contentsOf: manifestURL),
                   let manifest = ManifestWriter.decode(data) else { continue }
@@ -195,17 +245,30 @@ enum VerifyEngine {
                     refused.append(recordedPath)
                 }
             }
+            // Absent (a manifest written before the field existed) is *not*
+            // partial: those jobs recorded completeness the only way they could,
+            // and treating a missing field as a warning would flag every old
+            // library forever.
+            if manifest.partial == true { partialCount += 1 }
             loaded.append((manifest.createdAt, manifestURL.path, root, mirrors, manifest.files))
         }
         loaded.sort { ($0.createdAt, $0.urlPath) < ($1.createdAt, $1.urlPath) }
 
         var byPath: [String: WorkItem] = [:]
         var conflicted: [String: VerifyIssue] = [:]
+        var undigested = 0
+        var outOfRoot = 0
         for record in loaded {
             for entry in record.files {
-                guard let hex = entry.xxhash64, let expected = UInt64(hex, radix: 16) else { continue }
+                guard let hex = entry.xxhash64, let expected = UInt64(hex, radix: 16) else {
+                    undigested += 1
+                    continue
+                }
                 // Untrusted path: dropped outright if it escapes the library root.
-                guard let fileURL = ManifestWriter.resolve(entryPath: entry.path, under: record.root) else { continue }
+                guard let fileURL = ManifestWriter.resolve(entryPath: entry.path, under: record.root) else {
+                    outOfRoot += 1
+                    continue
+                }
                 let key = fileURL.path
                 if let existing = byPath[key], existing.expected != expected {
                     conflicted[key] = VerifyIssue(name: entry.name, path: existing.relPath, kind: .conflict)
@@ -236,7 +299,13 @@ enum VerifyEngine {
         // Path-sorted output so progress and the report are deterministic.
         let items = byPath.values.sorted { $0.relPath < $1.relPath }
         let conflicts = conflicted.values.sorted { $0.path < $1.path }
-        return (items, loaded.count, conflicts, refused.sorted())
+        return Plan(items: items,
+                    manifestCount: loaded.count,
+                    conflicts: conflicts,
+                    refusedMirrorRoots: refused.sorted(),
+                    undigested: undigested,
+                    outOfRoot: outOfRoot,
+                    partialManifests: partialCount)
     }
 
     /// See `build`. Trusted iff the user named it, or it carries the manifest

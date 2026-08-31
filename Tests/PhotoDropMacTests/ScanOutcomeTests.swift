@@ -76,7 +76,7 @@ final class ScanOutcomeTests: XCTestCase {
         let card = tmp.appendingPathComponent("card", isDirectory: true)
         try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
 
-        guard case let .scanned(bundles, unreadable) = AssetDiscovery.scanOutcome(root: card) else {
+        guard case let .scanned(bundles, unreadable, _) = AssetDiscovery.scanOutcome(root: card) else {
             return XCTFail("a readable empty folder is a successful scan of nothing")
         }
         XCTAssertTrue(bundles.isEmpty)
@@ -93,7 +93,7 @@ final class ScanOutcomeTests: XCTestCase {
         try writePhoto("IMG_0002.JPG", in: locked)
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
 
-        guard case let .scanned(bundles, unreadable) = AssetDiscovery.scanOutcome(root: card) else {
+        guard case let .scanned(bundles, unreadable, _) = AssetDiscovery.scanOutcome(root: card) else {
             return XCTFail("the card itself is readable, so this is a partial scan, not a failure")
         }
         XCTAssertEqual(bundles.count, 1, "only the readable folder's photo was found")

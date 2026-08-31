@@ -43,6 +43,16 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     let primaryDestination: URL
     let logURL: URL?
     let manifestURL: URL?
+    /// Destination roots whose verification manifest could **not** be written.
+    ///
+    /// `ManifestWriter.write` returns `nil` on four separate failures and the
+    /// engine used to discard that, so a job could copy every file, verify every
+    /// file, report `✓ Ingest complete`, exit 0 and eject the card while leaving
+    /// a library with no integrity record at all. The manifest is the product;
+    /// a job that couldn't write one did not fully succeed, and every consumer —
+    /// the CLI's exit code, the completion sheet, the eject gate — now has to be
+    /// able to see that.
+    let manifestFailures: [String]
     let wasEjected: Bool
     let halted: Bool
     let haltReason: String?
@@ -137,6 +147,15 @@ final class IngestEngine {
     /// Roots whose volume rejected the checksum xattr, so the notice is logged
     /// once per destination instead of once per file (or, as before, never).
     private var xattrUnsupportedRoots = Set<Int>()
+    /// The **deduped** destination roots for this run, in the order every
+    /// `destination:` index refers to.
+    ///
+    /// Held as a property because `copyBundle` labels its log lines by that index
+    /// and previously reconstructed the list as `[primaryRoot] + archiveRoots` —
+    /// the *un-deduped* one. With any destination collapsed as a duplicate the
+    /// two lists differ in length, so the "this volume does not support checksum
+    /// attributes" notice named a different mirror than the one it was about.
+    private var resolvedRoots: [URL] = []
 
     init(bundles: [AssetBundle],
          description: String,
@@ -187,6 +206,7 @@ final class IngestEngine {
         }
         totalBytes = perDestinationBytes * Int64(allRoots.count)
         manifestEntriesByRoot = Array(repeating: [], count: allRoots.count)
+        resolvedRoots = allRoots
 
         // Refuse a topology where the trees overlap. `dedupedRoots` above collapses
         // roots that are the *same* folder; this catches roots that *contain* one
@@ -336,34 +356,12 @@ final class IngestEngine {
                      + "writing a manifest for the \(completedBundles) bundle\(completedBundles == 1 ? "" : "s") already copied.")
         }
 
-        // One F_FULLFSYNC per destination volume now that every file is fsync'd —
-        // makes the whole job durable against power loss before we (optionally)
-        // eject. Skipped when nothing new was written (an all-duplicate re-ingest).
-        if filesCopied > 0 {
-            log(.info, "Flushing destinations to disk…")
-            var flushed = true
-            for root in allRoots { flushed = FileCopier.fullSyncVolume(at: root) && flushed }
-            if !flushed {
-                log(.error, "Warning: could not force a device-cache flush; copies are written but may not survive an immediate power loss until the OS flushes them.")
-            }
-        }
-
-        // Ejecting is the one irreversible act in the job, and it was gated only
-        // on halt/cancel. A run where files *failed* — a full disk, a permission
-        // error, a mirror that vanished — ejected the card anyway, removing the
-        // only remaining copy of whatever didn't land from reach. Failures are
-        // recoverable exactly as long as the card is still mounted.
-        var didEject = false
-        if haltReason == nil, !wasCancelled, filesFailed == 0, ejectAfter, let mountPoint = sourceMountPoint {
-            log(.info, "Ejecting card…")
-            do {
-                try await DriveEjector.eject(mountPoint: mountPoint)
-                didEject = true
-                log(.info, "Card ejected — safe to remove.")
-            } catch {
-                log(.error, "Eject failed: \(error.localizedDescription)")
-            }
-        }
+        // The device flush and the eject both happen **after** the manifest and
+        // log are written; see the end of this function. They used to run here,
+        // which put the one irreversible act in the job (the eject) ahead of the
+        // receipt that proves the job was worth ejecting for. Nothing that
+        // happens after a card leaves the reader can be recovered by re-reading
+        // it, so the receipt has to exist and be durable first.
 
         // Reported size = bytes that actually landed in the primary library (the
         // sum of its manifest entries), not the progress counter `bytesCopied`,
@@ -415,6 +413,80 @@ final class IngestEngine {
                 : "Verification manifest written to “\(ManifestWriter.folderName)”.")
         }
 
+        // **A manifest that did not get written is a failure, and it used to be
+        // silent.** `ManifestWriter.write` answers `nil` on four distinct
+        // failures — the folder can't be created, the encode fails, the name
+        // can't be claimed, the write throws — and the only branch here logged
+        // the *successes*. So a primary that filled up on the last bundle, or a
+        // read-only `PhotoDrop Manifests` folder, produced `filesFailed == 0`,
+        // an opened eject gate, "✓ Ingest complete" and exit 0 over a library of
+        // files nothing can ever verify. The receipt is the product; failing to
+        // write it is not a footnote.
+        var manifestFailures: [String] = []
+        for (d, root) in allRoots.enumerated() where manifestURLs[d] == nil {
+            manifestFailures.append(root.path(percentEncoded: false))
+            log(.error, rootLabel(d, of: allRoots)
+                     + "Could not write the verification manifest for this destination. "
+                     + "The files are copied, but nothing here records their checksums.")
+        }
+
+        // Persist the hash cache — misses populated during this run stay hot.
+        try? await cache.save()
+
+        // One F_FULLFSYNC per destination volume, now that every file is fsync'd
+        // **and the manifest is written**. This used to run before the manifest,
+        // so the photos were durable and the receipt for them was not: `.atomic`
+        // gives rename-atomicity, not durability, and after `rename(2)` returns
+        // both the data and the directory entry can still be in the page cache.
+        // A power loss in the seconds after a job finished left a good library
+        // with no manifest, and `verify` then reported exit 2 "no manifest
+        // found" over it forever.
+        //
+        // The old `filesCopied > 0` gate is gone for the same reason: an
+        // all-duplicate re-ingest copies nothing and still writes a manifest,
+        // and that manifest needs the barrier as much as any other.
+        if filesCopied > 0 || manifestURLs.contains(where: { $0 != nil }) {
+            log(.info, "Flushing destinations to disk…")
+            for (d, root) in allRoots.enumerated() where !FileCopier.fullSyncVolume(at: root) {
+                // Named per volume rather than once per job: a user with a single
+                // SMB mirror saw the same anonymous warning on every ingest and
+                // had no way to tell which destination it was about, which is how
+                // a warning becomes noise.
+                log(.error, rootLabel(d, of: allRoots)
+                         + "Could not force a device-cache flush here; the copies are written "
+                         + "but may not survive an immediate power loss until the OS flushes them.")
+            }
+        }
+
+        // Ejecting is the one irreversible act in the job. It is gated on
+        // halt/cancel/failures — a run that lost files to a full disk or a
+        // permission error must not put the only remaining copy out of reach —
+        // and now also on the receipt existing: ejecting after a failed manifest
+        // write strands a library nothing can verify while the source is still
+        // in the reader. Failures are recoverable exactly as long as the card is
+        // still mounted.
+        var didEject = false
+        if haltReason == nil, !wasCancelled, filesFailed == 0, manifestFailures.isEmpty,
+           ejectAfter, let mountPoint = sourceMountPoint {
+            log(.info, "Ejecting card…")
+            do {
+                try await DriveEjector.eject(mountPoint: mountPoint)
+                didEject = true
+                log(.info, "Card ejected — safe to remove.")
+            } catch {
+                log(.error, "Eject failed: \(error.localizedDescription)")
+            }
+        } else if ejectAfter, !manifestFailures.isEmpty, haltReason == nil, !wasCancelled, filesFailed == 0 {
+            log(.info, "Card not ejected: the verification manifest could not be written. "
+                     + "The card is still mounted, so the ingest can be re-run.")
+        }
+
+        log(.info, "Complete: \(filesCopied) copied, \(filesSkipped) skipped, \(filesFailed) failed.")
+
+        // The log is written **last**, so it is the only artifact that can record
+        // the flush, the eject and the final tally. Written before them, it was
+        // an audit trail that stopped just short of the two events a reader most
+        // wants to find in it.
         let logURL = JobLogger.write(
             entries: logEntries,
             startedAt: startedAt,
@@ -426,11 +498,6 @@ final class IngestEngine {
             baseName: manifestURL?.deletingPathExtension().lastPathComponent,
             directory: logDirectory
         )
-
-        // Persist the hash cache — misses populated during this run stay hot.
-        try? await cache.save()
-
-        log(.info, "Complete: \(filesCopied) copied, \(filesSkipped) skipped, \(filesFailed) failed.")
 
         var failuresByDestination: [String: Int] = [:]
         for (d, root) in allRoots.enumerated() where failuresByRoot[d] > 0 {
@@ -448,6 +515,7 @@ final class IngestEngine {
             primaryDestination: primaryRoot,
             logURL: logURL,
             manifestURL: manifestURL,
+            manifestFailures: manifestFailures,
             wasEjected: didEject,
             halted: haltReason != nil,
             haltReason: haltReason,
@@ -482,6 +550,9 @@ final class IngestEngine {
             primaryDestination: primaryRoot,
             logURL: logURL,
             manifestURL: nil,
+            // A refusal writes no manifest *by design* — no bytes landed, so
+            // there is nothing to attest to. That is not a manifest failure.
+            manifestFailures: [],
             wasEjected: false,
             halted: true,
             haltReason: reason,
@@ -601,7 +672,7 @@ final class IngestEngine {
                 // --xattr` is otherwise the only tool that would have noticed and
                 // it reports an unstamped tree as nothing to check.
                 if !FileChecksumXattr.stamp(copyHash, on: dest), xattrUnsupportedRoots.insert(d).inserted {
-                    log(.info, rootLabel(d, of: [primaryRoot] + archiveRoots)
+                    log(.info, rootLabel(d, of: resolvedRoots)
                              + "This volume does not support checksum attributes; the manifest is the record for it.")
                 }
 

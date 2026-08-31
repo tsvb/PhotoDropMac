@@ -19,6 +19,7 @@ final class JobSurfaceTests: XCTestCase {
             primaryDestination: URL(fileURLWithPath: "/lib"),
             logURL: log.map { URL(fileURLWithPath: $0) },
             manifestURL: manifest.map { URL(fileURLWithPath: $0) },
+            manifestFailures: [],
             wasEjected: false, halted: true, haltReason: "verification mismatch",
             cancelled: false)
     }

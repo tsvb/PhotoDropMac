@@ -58,10 +58,41 @@ struct DestinationIndex: Sendable {
             return nil
         }
         for candidate in candidates {
-            if let candidateHash = await cache.destinationHash(url: candidate),
-               candidateHash == sourceHash {
-                return Duplicate(url: candidate, hash: sourceHash)
+            guard let candidateHash = await cache.destinationHash(url: candidate),
+                  candidateHash == sourceHash else { continue }
+
+            // **Confirm the match against the candidate's real bytes before
+            // skipping the copy.** `destinationHash` answers from the persisted
+            // cache whenever `stat` still agrees on (size, mtime, birthtime), so
+            // on a warm cache nothing had read the file this skip vouches for.
+            // Silent corruption — bit rot, a bad cable, a partial restore —
+            // changes content without touching any of those three, so a file
+            // that rotted after its ingest matched its own stale digest, the
+            // copy was skipped, and a *fresh* manifest entry recorded that digest
+            // for that path. The user then wiped the card. That is the one
+            // failure this app exists to prevent, and the comment on `fullWalk`
+            // below asserted this re-read as the reason the walk may skip
+            // directories safely — it has to actually happen.
+            //
+            // Cost is one device read per *actual* skip, not per candidate: the
+            // cache still narrows size collisions down to a single file first,
+            // and the source side (the card — the documented bottleneck) is
+            // untouched. `bypassCache` reads from the device rather than the
+            // page cache, for the same reason copy verification does.
+            guard let confirmed = try? XxHash64.hash(fileAt: candidate, bypassCache: true) else {
+                // Unreadable now: not something we can call a duplicate.
+                await cache.invalidateDestination(url: candidate)
+                continue
             }
+            guard confirmed == sourceHash else {
+                // The cached digest was stale or the file has changed underneath
+                // it. Drop the poisoned entry and fall through to copying, which
+                // lands a fresh verified copy under a collision-safe name and
+                // leaves the damaged file for `verify` to report.
+                await cache.invalidateDestination(url: candidate)
+                continue
+            }
+            return Duplicate(url: candidate, hash: sourceHash)
         }
         return nil
     }
