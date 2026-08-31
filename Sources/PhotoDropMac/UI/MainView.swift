@@ -92,6 +92,29 @@ struct MainView: View {
         .sheet(item: completionSheetBinding) { result in
             CompletionSheet(result: result, onDismiss: { copier.reset() })
         }
+        // The one dead end a first run could reach: the destination fields live
+        // only in the inspector, which is `@State` and hideable from the toolbar
+        // and ⌥⌘I. Hide it with no destination set and the Ingest button is
+        // greyed out with its *explanation inside the panel you just hid*. This
+        // says it where the user is looking, and opens the panel for them.
+        .safeAreaInset(edge: .top) {
+            if primaryDest.isEmpty, source != nil, !copier.isRunning {
+                HStack(spacing: 10) {
+                    Image(systemName: "folder.badge.questionmark")
+                        .foregroundStyle(.orange)
+                    Text("Choose where these photos should go before you ingest.")
+                        .font(.callout)
+                    Spacer()
+                    Button("Choose Destination…") { showInspector = true }
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.bar)
+                .overlay(alignment: .bottom) { Divider() }
+                .accessibilityElement(children: .combine)
+            }
+        }
     }
 
     /// Also extracted from `body` — an inline `Binding(get:set:)` with a
@@ -162,6 +185,11 @@ struct MainView: View {
             Sidebar(selection: $selectedSourceID,
                     folderSources: $folderSources,
                     onChooseFolder: chooseFolderSource)
+                // Visibly inert during a copy rather than silently ignoring the
+                // click — `onSourceChanged` refuses to replan while a job runs,
+                // and a control that looks live but does nothing is worse than a
+                // disabled one.
+                .disabled(copier.isRunning)
         } detail: {
             detailColumn
         }
@@ -190,6 +218,14 @@ struct MainView: View {
             pendingOneClickCardID: coordinator.pendingOneClickCardID,
             isScanning: planner.isScanning,
             onSourceChanged: {
+                // **Never while a copy is running.** The sidebar was live during
+                // an ingest, so clicking another card — or pulling the one being
+                // copied, which reconciles the selection — started a competing
+                // detached `AssetDiscovery` walk *and* wiped `deselectedIDs`,
+                // which is the cull for the job still in flight. The engine works
+                // from bundles captured at start, so the copy itself survived;
+                // the user's selection and the preview did not.
+                guard !copier.isRunning else { return }
                 deselectedIDs = []   // a different card → start with everything selected
                 planner.setSource(source, description: descriptionText, template: template)
             },

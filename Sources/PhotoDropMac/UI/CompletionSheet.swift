@@ -55,7 +55,7 @@ struct CompletionSheet: View {
                     }
                 }
                 Button("Show in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([result.primaryDestination])
+                    NSWorkspace.shared.activateFileViewerSelecting(result.foldersToReveal)
                 }
                 if let manifestURL = result.manifestURL {
                     Button("Export Manifest…") { exportManifest(manifestURL) }
@@ -259,7 +259,7 @@ private func previewResult(copied: Int, skipped: Int, failed: Int, ejected: Bool
                                   destination: "/Users/you/Pictures/Library",
                                   reason: "Write failed: No space left on device")
         } : [],
-        duplicatesFoundElsewhere: [],
+        duplicatesFoundElsewhere: [], landedFolders: [],
         totalBytes: 26_400_000_000, elapsedSeconds: 642,
         primaryDestination: URL(fileURLWithPath: "/Users/you/Pictures/Library"),
         logURL: log ? URL(fileURLWithPath: "/tmp/ingest.log") : nil,

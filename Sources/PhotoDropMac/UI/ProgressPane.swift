@@ -74,11 +74,22 @@ struct ProgressPane: View {
                 .monospacedDigit()
 
                 if !progress.currentFile.isEmpty {
-                    Text(progress.currentFile)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text(progress.currentFile)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        // Which destination this pass is writing to. Without it
+                        // a three-destination job showed every filename three
+                        // times with nothing distinguishing the passes.
+                        if !progress.destinationLabel.isEmpty {
+                            Text("→ \(progress.destinationLabel)")
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
                 }
             }
 

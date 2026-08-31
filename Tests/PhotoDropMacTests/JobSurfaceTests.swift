@@ -15,7 +15,7 @@ final class JobSurfaceTests: XCTestCase {
                         log: String? = "/logs/ingest-1.log") -> CopyResult {
         CopyResult(
             bundleCount: 3, filesCopied: 3, filesSkipped: 0, filesFailed: 0,
-            failuresByDestination: [:], failedFiles: [], duplicatesFoundElsewhere: [], totalBytes: 300, elapsedSeconds: 1,
+            failuresByDestination: [:], failedFiles: [], duplicatesFoundElsewhere: [], landedFolders: [], totalBytes: 300, elapsedSeconds: 1,
             primaryDestination: URL(fileURLWithPath: "/lib"),
             logURL: log.map { URL(fileURLWithPath: $0) },
             manifestURL: manifest.map { URL(fileURLWithPath: $0) },

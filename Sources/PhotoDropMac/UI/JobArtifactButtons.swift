@@ -29,7 +29,7 @@ struct JobArtifactButtons: View {
                     Button("Open Log") { NSWorkspace.shared.open(logURL) }
                 }
                 Button("Show in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([result.primaryDestination])
+                    NSWorkspace.shared.activateFileViewerSelecting(result.foldersToReveal)
                 }
                 if let manifestURL = result.manifestURL {
                     Button("Export Manifest…") { export(manifestURL) }

@@ -11,6 +11,15 @@ struct CopyProgress: Sendable, Equatable, Hashable {
     let bytesCopied: Int64
     let elapsedSeconds: Double
     let currentFile: String
+    /// Which destination the current file is being written to, when there is
+    /// more than one — e.g. `mirror 2: NAS`. Empty for a single-destination job.
+    ///
+    /// With mirrors the same filename flashed past once per destination with
+    /// nothing saying which pass it was, so a user watching a three-destination
+    /// job saw every name three times and had no idea whether the NAS had even
+    /// started. The only signal was a `[mirror 2: NAS]` prefix in the log, which
+    /// scrolls.
+    var destinationLabel: String = ""
 
     var percent: Double {
         totalBytes == 0 ? 0 : Double(bytesCopied) / Double(totalBytes)
@@ -61,6 +70,14 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     /// reported as the first — so a corrected description looked like it had
     /// been applied when nothing had moved.
     let duplicatesFoundElsewhere: [String]
+    /// The day folders this job actually wrote into, relative to the primary
+    /// root, sorted.
+    ///
+    /// "Show in Finder" selected `primaryDestination` — the library **root** —
+    /// so after an ingest the user was dropped at the top of a library holding
+    /// years of work with no indication of what had just been added. The
+    /// manifest holds the list; nothing in the UI read it back.
+    let landedFolders: [String]
     let totalBytes: Int64
     let elapsedSeconds: Double
     let primaryDestination: URL
@@ -105,6 +122,18 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     /// The cap on `failedFiles`. Past this the list is truncated and
     /// `failuresByDestination` remains the authority on how many there were.
     static let maxRecordedFailures = 200
+
+    /// What "Show in Finder" should select: the day folders this job wrote,
+    /// falling back to the library root when it wrote none (an all-duplicate run,
+    /// or a job that failed before anything landed).
+    ///
+    /// Capped: selecting several hundred folders would open several hundred
+    /// Finder windows' worth of selection and is not a useful gesture. Beyond the
+    /// cap the root is the honest answer.
+    var foldersToReveal: [URL] {
+        guard !landedFolders.isEmpty, landedFolders.count <= 12 else { return [primaryDestination] }
+        return landedFolders.map { primaryDestination.appendingPathComponent($0, isDirectory: true) }
+    }
 
     /// Destinations other than the primary that had at least one failure.
     var failedMirrors: [String] {
@@ -168,6 +197,8 @@ final class IngestEngine {
     private var filesSkipped = 0
     private var filesFailed = 0
     private var currentFile = ""
+    /// See `CopyProgress.destinationLabel`.
+    private var currentDestinationLabel = ""
     /// Manifest entries **per destination root**, parallel to `allRoots`.
     ///
     /// Previously only the primary recorded entries, on the reasoning that a
@@ -200,6 +231,8 @@ final class IngestEngine {
     /// Folders under the primary root where duplicates were found that this job
     /// would have filed somewhere else. See `CopyResult.duplicatesFoundElsewhere`.
     private var duplicatesFoundElsewhere: Set<String> = []
+    /// See `CopyResult.landedFolders`.
+    private var landedFolders: Set<String> = []
     /// For the bundle currently being copied: where each of its files now lives
     /// under the **primary** root, and the digest the card's copy hashed to.
     ///
@@ -619,6 +652,7 @@ final class IngestEngine {
             failuresByDestination: failuresByDestination,
             failedFiles: failedFiles,
             duplicatesFoundElsewhere: duplicatesFoundElsewhere.sorted(),
+            landedFolders: landedFolders.sorted(),
             totalBytes: landedBytes,
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
@@ -656,6 +690,7 @@ final class IngestEngine {
             failuresByDestination: [:],
             failedFiles: [],
             duplicatesFoundElsewhere: [],
+            landedFolders: [],
             totalBytes: 0,
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
@@ -760,6 +795,8 @@ final class IngestEngine {
                 if isCancelled() { throw CancellationError() }
 
                 currentFile = file.source.lastPathComponent
+                currentDestinationLabel = rootLabel(d, of: resolvedRoots)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
                 emitProgress()
 
                 // Dedup check — routes through HashCache so a re-run skips file
@@ -855,6 +892,10 @@ final class IngestEngine {
                 if d == 0 {
                     primaryLanded[file.source] = dest
                     primaryDigest[file.source] = copyHash
+                    if let rel = Self.relative(dest.deletingLastPathComponent()
+                                                   .path(percentEncoded: false), under: root) {
+                        landedFolders.insert(rel)
+                    }
                 }
 
                 if verify {
@@ -923,7 +964,8 @@ final class IngestEngine {
             totalBytes: totalBytes,
             bytesCopied: bytesCopied,
             elapsedSeconds: Date().timeIntervalSince(startedAt),
-            currentFile: currentFile
+            currentFile: currentFile,
+            destinationLabel: currentDestinationLabel
         )
     }
 

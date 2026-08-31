@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 /// Presents a library re-verification: live progress while re-hashing, then a
 /// report of what matched / changed / went missing.
@@ -140,13 +142,47 @@ struct VerifySheet: View {
             .frame(maxHeight: 240)
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
 
-            if issues.count > shown.count {
-                Text("+ \(issues.count - shown.count) more")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 6)
+            HStack(spacing: 10) {
+                if issues.count > shown.count {
+                    Text("+ \(issues.count - shown.count) more")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                // The report was non-selectable `Text` in a sheet that
+                // `Verifier.reset()` empties on dismiss, with no export — so the
+                // app's answer to a library with 3,000 changed files was a
+                // scrollable list of the first 200 names that could not leave the
+                // window. Re-running means re-hashing the whole library.
+                Button("Copy List") { copyIssues(issues) }
+                    .controlSize(.small)
+                Button("Save Report…") { saveIssues(issues) }
+                    .controlSize(.small)
             }
+            .padding(.top, 6)
         }
+        .textSelection(.enabled)
+    }
+
+    /// Plain text: it pastes into a note, an email or an issue unchanged.
+    private func issueText(_ issues: [VerifyIssue]) -> String {
+        issues.map { "\(label(for: $0.kind))\t\($0.path)" }.joined(separator: "\n") + "\n"
+    }
+
+    private func copyIssues(_ issues: [VerifyIssue]) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(issueText(issues), forType: .string)
+    }
+
+    private func saveIssues(_ issues: [VerifyIssue]) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "verify-report.txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        panel.title = "Save Verification Report"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? issueText(issues).data(using: .utf8)?.write(to: url, options: .atomic)
     }
 
     // MARK: Failed / empty
@@ -156,7 +192,7 @@ struct VerifySheet: View {
         Image(systemName: "questionmark.folder")
             .font(.system(size: 40))
             .foregroundStyle(.secondary)
-        Text("Nothing to verify")
+        Text("Nothing could be checked")
             .font(.title2.weight(.semibold))
         Text(message)
             .font(.subheadline)
