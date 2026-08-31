@@ -565,6 +565,68 @@ final class OppositionFixTests: XCTestCase {
         XCTAssertFalse(warning.contains("SSD"), "only the unreachable one is named")
     }
 
+    // MARK: - F23 · the receipt is readable by other tools
+
+    /// The manifest was a bespoke JSON/CSV pair only PhotoDrop could read. MHL is
+    /// what Hedge, OffShoot, Silverstack and ShotPut Pro emit and what post
+    /// houses actually require.
+    func testMHLIsWrittenAlongsideTheManifest() throws {
+        let library = try freshTempDir("MHL")
+        let photo = try write(Data(repeating: 0x51, count: 2048), named: "IMG_0001.CR2",
+                              in: library.appendingPathComponent("2026/2026-05-28", isDirectory: true))
+        let digest = try XxHash64.hash(fileAt: photo)
+
+        try writeManifest(in: library, partial: false, entries: [
+            ManifestEntry(name: "IMG_0001.CR2", path: "2026/2026-05-28/IMG_0001.CR2",
+                          bytes: 2048, xxhash64: String(format: "%016llx", digest), status: "copied"),
+        ])
+
+        // The fixture writes JSON directly; exercise the real writer here.
+        let manifest = try XCTUnwrap(ManifestWriter.decode(
+            try Data(contentsOf: ManifestWriter.manifestURLs(near: library)[0])))
+        let mhl = MHLWriter.render(manifest, hostname: "studio-mac", username: "tim")
+
+        XCTAssertTrue(mhl.hasPrefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
+        XCTAssertTrue(mhl.contains("<hashlist version=\"1.1\">"))
+        XCTAssertTrue(mhl.contains("<file>2026/2026-05-28/IMG_0001.CR2</file>"))
+        XCTAssertTrue(mhl.contains("<size>2048</size>"))
+        XCTAssertTrue(mhl.contains("<xxhash64be>\(String(format: "%016llx", digest))</xxhash64be>"),
+                      "the digest must be the manifest's, not a recomputation that could disagree")
+        XCTAssertTrue(mhl.hasSuffix("</hashlist>\n"))
+    }
+
+    /// An entry with no digest is omitted rather than written with an empty hash:
+    /// an MHL entry exists to assert a checksum, and one asserting nothing would
+    /// be read by another tool as a file it had verified.
+    func testMHLOmitsEntriesWithNoDigest() throws {
+        let manifest = Manifest(
+            schema: Manifest.schemaID, app: Manifest.appName, createdAt: Date(), source: "CARD",
+            primaryDestination: "/lib", archiveDestination: nil, destinations: ["/lib"],
+            verified: true, partial: false, filesCopied: 1, filesSkipped: 1, filesFailed: 0,
+            totalBytes: 2, elapsedSeconds: 1,
+            files: [
+                ManifestEntry(name: "a.CR2", path: "a.CR2", bytes: 1,
+                              xxhash64: "0123456789abcdef", status: "copied"),
+                ManifestEntry(name: "b.CR2", path: "b.CR2", bytes: 1,
+                              xxhash64: nil, status: "skipped"),
+            ])
+        let mhl = MHLWriter.render(manifest)
+        XCTAssertTrue(mhl.contains("<file>a.CR2</file>"))
+        XCTAssertFalse(mhl.contains("<file>b.CR2</file>"))
+    }
+
+    /// A filename is untrusted text and this is a sink that renders it. Unescaped,
+    /// `a<b&c".CR2` — legal on every filesystem PhotoDrop writes to — produces XML
+    /// another tool either rejects or misparses into a different path.
+    func testMHLEscapesHostileFilenames() {
+        let escaped = MHLWriter.escape(#"a<b&c">d'e.CR2"#)
+        XCTAssertEqual(escaped, "a&lt;b&amp;c&quot;&gt;d&apos;e.CR2")
+        // XML 1.0 cannot represent most C0 controls at all, so they are dropped
+        // rather than escaped; the JSON manifest remains the authority on the
+        // name the file actually has.
+        XCTAssertEqual(MHLWriter.escape("IMG\u{1B}[2K0002.CR2"), "IMG[2K0002.CR2")
+    }
+
     // MARK: - Manifest fixture
 
     /// Writes a manifest into `PhotoDrop Manifests/` the way a job would, so the

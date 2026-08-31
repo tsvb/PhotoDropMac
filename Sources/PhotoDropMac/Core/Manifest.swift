@@ -92,6 +92,14 @@ enum ManifestWriter {
                 try? FileManager.default.removeItem(at: csvURL)
             }
         }
+
+        // MHL, from the same resolved base and for the same reason as the CSV:
+        // a receipt only PhotoDrop can read is one you cannot hand to anyone.
+        // Best-effort and never read back — `verify`, `heal` and `sync` all
+        // derive from the JSON, which is where the schema check and the trust
+        // rules live. See `MHLWriter`.
+        MHLWriter.write(manifest, into: dir, base: base)
+
         return jsonURL
     }
 
