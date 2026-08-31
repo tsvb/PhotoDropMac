@@ -9,7 +9,11 @@ an older build had no way to learn what a newer one fixed — and no way to diff
 it. They live here now, in the repo, and `scripts/release.sh` cuts the GitHub
 release from this file.
 
-## [Unreleased]
+## [0.3.0] — 2026-08-31
+
+**Supersedes 0.2.1**, which was tagged but never published — so if you are on
+0.2.0, this is the first build you can download since then, and it carries 0.2.1's
+release-script fix as well.
 
 Fixes and features from an adversarial review of the whole app. The through-line
 is a rule the codebase already held and was not enforcing everywhere: *"couldn't
