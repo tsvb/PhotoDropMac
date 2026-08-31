@@ -6,10 +6,27 @@ struct ScannedPhoto: Identifiable, Hashable, Sendable {
     let size: Int64
     let dateTaken: Date
     let dateSource: DateSource
+    /// Camera identity from EXIF; empty when the camera didn't record it.
+    /// Feeds the `{CameraModel}` / `{BodySerial}` naming tokens, which are what
+    /// make a two-body shoot's colliding filenames tellable apart — see
+    /// `TemplateContext.cameraModel`.
+    let cameraModel: String
+    let bodySerial: String
 
     enum DateSource: Sendable {
         case exif
         case fileModification
+    }
+
+    init(id: URL, url: URL, size: Int64, dateTaken: Date, dateSource: DateSource,
+         cameraModel: String = "", bodySerial: String = "") {
+        self.id = id
+        self.url = url
+        self.size = size
+        self.dateTaken = dateTaken
+        self.dateSource = dateSource
+        self.cameraModel = cameraModel
+        self.bodySerial = bodySerial
     }
 }
 
@@ -386,12 +403,15 @@ enum AssetDiscovery {
             date = file.modDate
             source = .fileModification
         }
+        let camera = ExifReader.cameraInfo(for: file.url)
         return ScannedPhoto(
             id: file.url,
             url: file.url,
             size: file.size,
             dateTaken: date,
-            dateSource: source
+            dateSource: source,
+            cameraModel: camera.model,
+            bodySerial: camera.serial
         )
     }
 }

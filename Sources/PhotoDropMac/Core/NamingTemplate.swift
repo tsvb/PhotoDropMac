@@ -49,6 +49,9 @@ struct NamingTemplate: Sendable, Hashable {
         TokenHelp(token: "{OriginalStem}", meaning: "Original name, no extension"),
         TokenHelp(token: "{OriginalName}", meaning: "Original name with extension"),
         TokenHelp(token: "{CardLabel}", meaning: "Memory-card volume name"),
+        TokenHelp(token: "{CameraModel}", meaning: "Camera model, from EXIF"),
+        TokenHelp(token: "{BodySerial}", meaning: "Camera body serial number, from EXIF"),
+        TokenHelp(token: "{Sequence:4}", meaning: "Position in this ingest, zero-padded (0001)"),
         TokenHelp(token: "[…]", meaning: "Optional — dropped if a named token inside is empty"),
     ]
 
@@ -103,6 +106,40 @@ struct TemplateContext: Sendable {
     let originalName: String
     let originalStem: String
     let cardLabel: String     // sanitized; "" if unknown
+    /// The camera body's model name, from EXIF. Empty when unknown.
+    ///
+    /// Two bodies shooting one wedding both write `IMG_0001.CR2` and both fire at
+    /// 14:30:12, so the default template renders them to the same name and
+    /// `CopyPlan` correctly pushes the second to `_1`. Nothing is overwritten —
+    /// but the `_1` is assigned by *card ingest order*, so the two frames are then
+    /// indistinguishable by name, and the same photo can carry a different name in
+    /// two libraries ingested in a different order. The intended escape hatch was
+    /// `{CardLabel}`, and cards ship and reformat as `UNTITLED`.
+    let cameraModel: String
+    /// The body's serial number, from EXIF. Empty when unknown. This is the token
+    /// that actually separates two identical bodies; `cameraModel` does not.
+    let bodySerial: String
+    /// 1-based position of this file within the job, in plan order.
+    ///
+    /// Sequence numbering is the most common professional rename in this category
+    /// and was inexpressible: `Wedding_0001, Wedding_0002…` could not be written
+    /// however the templates were arranged. Zero-padded by repeating the token —
+    /// `{Sequence}` → `1`, `{SSSS}`-style padding is spelled `{Sequence:4}` → `0001`.
+    let sequence: Int
+
+    /// Everything except the per-file parts, for callers that build one context
+    /// per bundle from a shared job context.
+    init(date: Date, description: String, originalName: String, originalStem: String,
+         cardLabel: String, cameraModel: String = "", bodySerial: String = "", sequence: Int = 0) {
+        self.date = date
+        self.description = description
+        self.originalName = originalName
+        self.originalStem = originalStem
+        self.cardLabel = cardLabel
+        self.cameraModel = cameraModel
+        self.bodySerial = bodySerial
+        self.sequence = sequence
+    }
 }
 
 enum TemplateRenderer {
@@ -157,7 +194,17 @@ enum TemplateRenderer {
         case "OriginalName": return (context.originalName, context.originalName.isEmpty)
         case "OriginalStem": return (context.originalStem, context.originalStem.isEmpty)
         case "CardLabel":    return (context.cardLabel, context.cardLabel.isEmpty)
+        case "CameraModel":  return (context.cameraModel, context.cameraModel.isEmpty)
+        case "BodySerial":   return (context.bodySerial, context.bodySerial.isEmpty)
+        case "Sequence":     return sequenceValue(context.sequence, width: 1)
         default:
+            // `{Sequence:4}` — zero-padded to the given width. Parsed here rather
+            // than added to the known-token list so the width is part of the token
+            // rather than a second syntax.
+            if token.hasPrefix("Sequence:"),
+               let width = Int(token.dropFirst("Sequence:".count)), (1...12).contains(width) {
+                return sequenceValue(context.sequence, width: width)
+            }
             // A token that isn't a known name is a date-format pattern — but only
             // if it actually looks like one.
             //
@@ -232,13 +279,23 @@ enum TemplateRenderer {
                 continue
             }
             let token = String(template[template.index(after: index)..<close])
-            let known = ["Description", "OriginalName", "OriginalStem", "CardLabel"]
-            if !known.contains(token), !isDatePattern(token), !found.contains(token) {
+            let known = ["Description", "OriginalName", "OriginalStem", "CardLabel",
+                         "CameraModel", "BodySerial", "Sequence"]
+            let isPaddedSequence = token.hasPrefix("Sequence:")
+                && Int(token.dropFirst("Sequence:".count)).map { (1...12).contains($0) } == true
+            if !known.contains(token), !isPaddedSequence, !isDatePattern(token), !found.contains(token) {
                 found.append(token)
             }
             index = template.index(after: close)
         }
         return found
+    }
+
+    /// A sequence number is *empty* when the job never set one (0), so an
+    /// optional group containing it drops rather than rendering a bare `0`.
+    private static func sequenceValue(_ value: Int, width: Int) -> (value: String, isNamedEmpty: Bool) {
+        guard value > 0 else { return ("", true) }
+        return (String(format: "%0\(width)d", value), false)
     }
 
     /// Formats `date` with a cached `DateFormatter` for `pattern`.

@@ -76,21 +76,29 @@ enum CopyPlan {
         // only a starting point; `plan` still verifies every candidate against
         // `isTaken`, so a wrong hint costs iterations, never a collision.
         var nextDisambiguator: [String: Int] = [:]
+        var sequence = 0
 
         for bundle in bundles {
             // Keyed on the *rendered base name inside its day-folder* — the thing
             // that actually collides. Keying on the folder alone would make
             // distinct names inherit each other's suffixes.
+            // 1-based position in the batch, for `{Sequence}`. Stable across the
+            // mirrors because `IngestEngine.rebase` reuses these very plans, and
+            // stable against the preview because the folder template never sees a
+            // sequence — see `destinationDirectory`.
+            sequence += 1
             let hintKey = collisionKey(
                 destinationDirectory(for: bundle, destinationRoot: destinationRoot,
                                      description: description, template: template,
                                      cardLabel: cardLabel).path
                 + "\u{0}"
-                + baseStem(for: bundle, description: description, template: template, cardLabel: cardLabel))
+                + baseStem(for: bundle, description: description, template: template,
+                           cardLabel: cardLabel, sequence: sequence))
             let bundlePlan = plan(
                 bundle: bundle, destinationRoot: destinationRoot, description: description,
                 template: template, cardLabel: cardLabel,
-                startingAt: nextDisambiguator[hintKey] ?? 0
+                startingAt: nextDisambiguator[hintKey] ?? 0,
+                sequence: sequence
             ) { url in
                 taken.contains(collisionKey(url.path))
             }
@@ -137,12 +145,22 @@ enum CopyPlan {
         let c = cal.dateComponents([.year, .month, .day], from: date)
         let year = c.year ?? 0
 
+        // **No sequence here, deliberately.** `PathPlanner.plan` renders this same
+        // folder template to group the preview tree, and the two must agree — the
+        // doc calls a preview that shows one tree while the bytes go to another
+        // the exact dishonesty this app exists not to commit. A sequence number
+        // cannot agree across them: the preview is planned over every bundle on
+        // the card, while the copy runs over the *selected* ones, so a cull would
+        // shift every folder name. `{Sequence}` therefore renders empty in a
+        // folder template (dropping its optional group) and is a filename token.
         let context = TemplateContext(
             date: date,
             description: PathPlanner.sanitize(description),
             originalName: bundle.primary.url.lastPathComponent,
             originalStem: bundle.primary.url.deletingPathExtension().lastPathComponent,
-            cardLabel: PathPlanner.sanitize(cardLabel)
+            cardLabel: PathPlanner.sanitize(cardLabel),
+            cameraModel: PathPlanner.sanitize(bundle.primary.cameraModel),
+            bodySerial: PathPlanner.sanitize(bundle.primary.bodySerial)
         )
         // A "/" in the folder template nests subfolders below the year — and
         // the year itself is now optional (`template.yearFolder`). Whatever this
@@ -178,6 +196,9 @@ enum CopyPlan {
         template: NamingTemplate,
         cardLabel: String,
         startingAt: Int = 0,
+        /// 1-based position in the job, for `{Sequence}`. 0 means "no sequence",
+        /// which renders the token empty and drops its optional group.
+        sequence: Int = 0,
         isTaken: (URL) -> Bool = { _ in false }
     ) -> BundlePlan {
         let primary = bundle.primary
@@ -186,7 +207,8 @@ enum CopyPlan {
         let primaryExt = primary.url.pathExtension
 
         let destDir = destinationDirectory(for: bundle, destinationRoot: destinationRoot, description: description, template: template, cardLabel: cardLabel)
-        let baseStem = baseStem(for: bundle, description: description, template: template, cardLabel: cardLabel)
+        let baseStem = baseStem(for: bundle, description: description, template: template,
+                                cardLabel: cardLabel, sequence: sequence)
 
         // Smallest disambiguator at or above `startingAt` (0 = none) that frees
         // every file in the bundle. `taken` is a finite set (on-disk +
@@ -221,14 +243,18 @@ enum CopyPlan {
     /// disambiguator hint keys on exactly what `plan` will name the file, rather
     /// than on an approximation that could drift from it.
     static func baseStem(for bundle: AssetBundle, description: String,
-                         template: NamingTemplate, cardLabel: String) -> String {
+                         template: NamingTemplate, cardLabel: String,
+                         sequence: Int = 0) -> String {
         let primary = bundle.primary
         let context = TemplateContext(
             date: primary.dateTaken,
             description: PathPlanner.sanitize(description),
             originalName: primary.url.lastPathComponent,
             originalStem: primary.url.deletingPathExtension().lastPathComponent,
-            cardLabel: PathPlanner.sanitize(cardLabel)
+            cardLabel: PathPlanner.sanitize(cardLabel),
+            cameraModel: PathPlanner.sanitize(primary.cameraModel),
+            bodySerial: PathPlanner.sanitize(primary.bodySerial),
+            sequence: sequence
         )
         let rendered = PathPlanner.sanitize(TemplateRenderer.render(template.filename, context))
         return rendered.isEmpty

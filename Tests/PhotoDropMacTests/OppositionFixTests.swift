@@ -354,6 +354,134 @@ final class OppositionFixTests: XCTestCase {
         }
     }
 
+    // MARK: - F16 · sequence and camera tokens
+
+    /// `Wedding_0001, Wedding_0002…` — the most common professional rename in the
+    /// category — was inexpressible however the templates were arranged.
+    func testSequenceTokenNumbersFilesInPlanOrder() throws {
+        let tmp = try freshTempDir("Sequence")
+        let card = tmp.appendingPathComponent("card", isDirectory: true)
+        let bundles = try (1...3).map { n -> AssetBundle in
+            let url = try write(Data(repeating: UInt8(n), count: 128),
+                                named: "IMG_000\(n).CR2", in: card)
+            var c = DateComponents()
+            c.year = 2026; c.month = 5; c.day = 28; c.hour = 12; c.minute = n
+            return AssetBundle(
+                primary: ScannedPhoto(id: url, url: url, size: 128,
+                                      dateTaken: Calendar.current.date(from: c)!,
+                                      dateSource: .exif),
+                companions: [])
+        }
+
+        var template = NamingTemplate.default
+        template.filename = "Wedding_{Sequence:4}"
+        let plans = CopyPlan.planBatch(
+            bundles: bundles, destinationRoot: tmp.appendingPathComponent("Library"),
+            description: "", template: template, cardLabel: "")
+
+        let names = plans.map { $0.files[0].destination.deletingPathExtension().lastPathComponent }
+        XCTAssertEqual(names, ["Wedding_0001", "Wedding_0002", "Wedding_0003"])
+    }
+
+    /// `{Sequence}` renders empty in a **folder** template on purpose.
+    ///
+    /// `PathPlanner.plan` renders the folder template to group the preview and
+    /// `CopyPlan.destinationDirectory` renders it to place the bytes, and the two
+    /// must agree. A sequence cannot: the preview is planned over every bundle on
+    /// the card while the copy runs over the *selected* ones, so a cull would
+    /// shift every folder name out from under the tree the user just approved.
+    func testSequenceIsNotHonouredInAFolderTemplateSoThePreviewStaysTrue() throws {
+        let tmp = try freshTempDir("SequenceFolder")
+        let card = tmp.appendingPathComponent("card", isDirectory: true)
+        let url = try write(Data(repeating: 0x9, count: 128), named: "IMG_0001.CR2", in: card)
+        var c = DateComponents()
+        c.year = 2026; c.month = 5; c.day = 28; c.hour = 12
+        let bundle = AssetBundle(
+            primary: ScannedPhoto(id: url, url: url, size: 128,
+                                  dateTaken: Calendar.current.date(from: c)!, dateSource: .exif),
+            companions: [])
+
+        var template = NamingTemplate.default
+        template.folder = "{yyyy-MM-dd}[_{Sequence}]"
+        let root = tmp.appendingPathComponent("Library", isDirectory: true)
+
+        let planned = CopyPlan.destinationDirectory(
+            for: bundle, destinationRoot: root, description: "", template: template, cardLabel: "")
+        let previewed = PathPlanner.plan(
+            bundles: [bundle], description: "", template: template, cardLabel: "")
+
+        XCTAssertEqual(planned.lastPathComponent, "2026-05-28",
+                       "the optional group drops rather than numbering a folder")
+        XCTAssertEqual(previewed.first?.folders.first?.relativePath.hasSuffix("2026-05-28"), true,
+                       "and the preview renders the identical folder")
+    }
+
+    /// Two bodies, both writing IMG_0001 at the same second. Nothing is
+    /// overwritten either way — but `_1` is assigned by card ingest order, so the
+    /// frames were indistinguishable by name and the same photo could carry a
+    /// different name in two libraries ingested in a different order.
+    func testBodySerialSeparatesTwoCamerasThatCollide() throws {
+        let tmp = try freshTempDir("BodySerial")
+        let card = tmp.appendingPathComponent("card", isDirectory: true)
+        var c = DateComponents()
+        c.year = 2026; c.month = 5; c.day = 28; c.hour = 14; c.minute = 30; c.second = 12
+        let date = Calendar.current.date(from: c)!
+
+        let a = try write(Data(repeating: 0xA1, count: 128), named: "IMG_0001.CR2", in: card)
+        let b = try write(Data(repeating: 0xB2, count: 128), named: "IMG_0001.CR2",
+                          in: card.appendingPathComponent("second-body", isDirectory: true))
+        let bundles = [
+            AssetBundle(primary: ScannedPhoto(id: a, url: a, size: 128, dateTaken: date,
+                                              dateSource: .exif, cameraModel: "EOS R5",
+                                              bodySerial: "012345"), companions: []),
+            AssetBundle(primary: ScannedPhoto(id: b, url: b, size: 128, dateTaken: date,
+                                              dateSource: .exif, cameraModel: "EOS R6",
+                                              bodySerial: "998877"), companions: []),
+        ]
+
+        var template = NamingTemplate.default
+        template.filename = "{yyyyMMdd_HHmmss}_{BodySerial}_{OriginalStem}"
+        let plans = CopyPlan.planBatch(
+            bundles: bundles, destinationRoot: tmp.appendingPathComponent("Library"),
+            description: "", template: template, cardLabel: "")
+
+        let names = plans.map { $0.files[0].destination.lastPathComponent }
+        XCTAssertEqual(names, ["20260528_143012_012345_IMG_0001.CR2",
+                               "20260528_143012_998877_IMG_0001.CR2"])
+        XCTAssertFalse(names.contains { $0.contains("_1.") },
+                       "with the bodies named apart, no disambiguator is needed at all")
+    }
+
+    /// A camera that recorded no serial leaves the token empty, so an optional
+    /// group drops instead of leaving a dangling separator.
+    func testAnUnknownCameraDropsItsOptionalGroup() throws {
+        let tmp = try freshTempDir("NoSerial")
+        let card = tmp.appendingPathComponent("card", isDirectory: true)
+        let url = try write(Data(repeating: 0x7, count: 128), named: "IMG_0001.CR2", in: card)
+        var c = DateComponents()
+        c.year = 2026; c.month = 5; c.day = 28; c.hour = 12
+        let bundle = AssetBundle(
+            primary: ScannedPhoto(id: url, url: url, size: 128,
+                                  dateTaken: Calendar.current.date(from: c)!, dateSource: .exif),
+            companions: [])
+
+        var template = NamingTemplate.default
+        template.filename = "{OriginalStem}[_{BodySerial}]"
+        let plans = CopyPlan.planBatch(
+            bundles: [bundle], destinationRoot: tmp.appendingPathComponent("Library"),
+            description: "", template: template, cardLabel: "")
+        XCTAssertEqual(plans[0].files[0].destination.lastPathComponent, "IMG_0001.CR2")
+    }
+
+    /// The new tokens must not be reported as typos by the validator that exists
+    /// to catch `{Descripton}`.
+    func testNewTokensAreNotReportedAsUnknown() {
+        XCTAssertTrue(TemplateRenderer.unknownTokens(
+            in: "{CameraModel}{BodySerial}{Sequence}{Sequence:4}").isEmpty)
+        XCTAssertEqual(TemplateRenderer.unknownTokens(in: "{Sequence:99}"), ["Sequence:99"])
+        XCTAssertEqual(TemplateRenderer.unknownTokens(in: "{CamraModel}"), ["CamraModel"])
+    }
+
     // MARK: - Manifest fixture
 
     /// Writes a manifest into `PhotoDrop Manifests/` the way a job would, so the

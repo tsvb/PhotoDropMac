@@ -14,6 +14,30 @@ enum ExifReader {
         return movieDateTaken(for: url)
     }
 
+    /// Camera identity for a still, from the same properties dictionary the date
+    /// comes from — one `CGImageSourceCopyPropertiesAtIndex` call, no extra I/O.
+    ///
+    /// The body serial is the field that actually separates two identical bodies
+    /// covering one event; the model alone does not. Both are empty when the
+    /// camera didn't write them, which is normal for phones and older bodies, and
+    /// an empty named token drops its optional group.
+    static func cameraInfo(for url: URL) -> (model: String, serial: String) {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        else { return ("", "") }
+
+        let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any]
+
+        let model = (tiff?[kCGImagePropertyTIFFModel] as? String) ?? ""
+        let serial = (exif?[kCGImagePropertyExifBodySerialNumber] as? String)
+            ?? (props[kCGImagePropertyExifAuxDictionary] as? [CFString: Any])
+                .flatMap { $0[kCGImagePropertyExifAuxSerialNumber] as? String }
+            ?? ""
+        return (model.trimmingCharacters(in: .whitespaces),
+                serial.trimmingCharacters(in: .whitespaces))
+    }
+
     private static func exifDateTaken(for url: URL) -> Date? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
