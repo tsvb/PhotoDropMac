@@ -50,11 +50,45 @@ enum VolumeBacking {
 }
 
 struct DetectedDrive: Identifiable, Hashable, Sendable {
+    /// What this source is. A folder chosen by the user is offered alongside the
+    /// cards because the engine has never cared about the difference — the CLI
+    /// has always documented `--from` as "memory card **or source folder**" — and
+    /// only the GUI was fenced in. Without it you could not re-file an existing
+    /// shoot, ingest a card someone else had already dumped to a drive, re-run an
+    /// ingest after the card was pulled, or evaluate the app on your own library.
+    ///
+    /// The distinction still matters for exactly one thing: a folder is never
+    /// ejected. `DriveEjector` runs `diskutil eject` on the *volume* containing
+    /// the path, so ejecting a folder source would unmount the disk it lives on —
+    /// which, for a folder inside the user's own library, is the startup disk.
+    enum Kind: Sendable, Hashable { case card, folder }
+
     let id: String
     let label: String
     let mountPoint: String
     let url: URL
     let totalBytes: Int64
+    var kind: Kind = .card
+
+    var isEjectable: Bool { kind == .card }
+
+    /// A user-chosen folder presented as a source.
+    ///
+    /// The id is the path rather than a volume UUID: two folders on one volume
+    /// are two different sources, and the volume's UUID would make them one.
+    static func folder(at url: URL) -> DetectedDrive {
+        let standardized = url.standardizedFileURL
+        let size = (try? standardized.resourceValues(forKeys: [.totalFileAllocatedSizeKey]))?
+            .totalFileAllocatedSize
+        return DetectedDrive(
+            id: "folder:" + standardized.path,
+            label: standardized.lastPathComponent,
+            mountPoint: standardized.path,
+            url: standardized,
+            totalBytes: Int64(size ?? 0),
+            kind: .folder
+        )
+    }
 }
 
 @MainActor

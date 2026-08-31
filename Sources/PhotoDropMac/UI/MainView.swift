@@ -21,6 +21,12 @@ struct MainView: View {
     @AppStorage("photodrop.showCompletionSheet") private var showCompletionSheet: Bool = true
 
     @State private var selectedSourceID: DetectedDrive.ID?
+    /// Folders the user has added as sources this session.
+    ///
+    /// Not persisted: a source is a thing you are ingesting *now*, and a stale
+    /// remembered folder in the sidebar is an invitation to re-ingest something
+    /// by accident. Cleared when the window closes, like the rest of the pick.
+    @State private var folderSources: [DetectedDrive] = []
     @State private var descriptionText: String = ""
     @State private var showInspector: Bool = true
     @State private var autoIngestPending = false
@@ -34,8 +40,12 @@ struct MainView: View {
 
     private var source: DetectedDrive? {
         guard let id = selectedSourceID else { return nil }
-        return watcher.drives.first { $0.id == id }
+        return allSources.first { $0.id == id }
     }
+
+    /// Cards first, then any folders the user added. Cards lead because an
+    /// inserted card is the case the app opens itself for.
+    private var allSources: [DetectedDrive] { watcher.drives + folderSources }
 
     private var completionResult: CopyResult? {
         if case .completed(let result) = copier.state { return result }
@@ -149,18 +159,27 @@ struct MainView: View {
 
     var body: some View {
         NavigationSplitView {
-            Sidebar(selection: $selectedSourceID)
+            Sidebar(selection: $selectedSourceID,
+                    folderSources: $folderSources,
+                    onChooseFolder: chooseFolderSource)
         } detail: {
             detailColumn
         }
         .onAppear {
             selectedSourceID = DriveSelection.reconcile(current: selectedSourceID,
-                                                        drives: watcher.drives.map(\.id))
+                                                        drives: allSources.map(\.id))
             planner.setSource(source, description: descriptionText, template: template)
         }
-        .onChange(of: watcher.drives) { _, drives in
+        .onChange(of: watcher.drives) { _, _ in
+            // Reconciled against cards *and* folders: keyed on `watcher.drives`
+            // alone, adding a folder source and then unplugging an unrelated card
+            // would drop the folder the user had just chosen.
             selectedSourceID = DriveSelection.reconcile(current: selectedSourceID,
-                                                        drives: drives.map(\.id))
+                                                        drives: allSources.map(\.id))
+        }
+        .onChange(of: folderSources) { _, _ in
+            selectedSourceID = DriveSelection.reconcile(current: selectedSourceID,
+                                                        drives: allSources.map(\.id))
         }
         .modifier(PlanningHandlers(
             selectedSourceID: selectedSourceID,
@@ -234,6 +253,29 @@ struct MainView: View {
         SelectionSummary.of(yearGroups: planner.yearGroups, deselected: deselectedIDs).bundles
     }
 
+    /// Add a folder as an ingest source.
+    ///
+    /// Selecting it immediately is the point of the gesture — a user who picked a
+    /// folder wants to see what is in it, not to then find and click it.
+    private func chooseFolderSource() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.title = "Choose a Source Folder"
+        panel.prompt = "Use as Source"
+        panel.message = "Pick a folder of photos to ingest. It won’t be modified or ejected."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let folder = DetectedDrive.folder(at: url)
+        if let existing = folderSources.firstIndex(where: { $0.id == folder.id }) {
+            selectedSourceID = folderSources[existing].id
+        } else {
+            folderSources.append(folder)
+            selectedSourceID = folder.id
+        }
+    }
+
     private func startIngest() {
         guard source != nil, !primaryDest.isEmpty else { return }
         // Flush any debounced replan first: pressing Ingest immediately after
@@ -304,7 +346,11 @@ struct MainView: View {
             // deselected are still on the card, and ejecting is this app's "the
             // card is finished" gesture. The next thing that happens to a finished
             // card is a format.
-            ejectAfter: ejectAfterIngest && planner.scanWasComplete && deselectedIDs.isEmpty,
+            // …and never for a folder source at all: `DriveEjector` ejects the
+            // *volume* the path is on, so "eject after ingest" on a folder in the
+            // user's own Pictures folder would try to unmount the startup disk.
+            ejectAfter: ejectAfterIngest && source.isEjectable
+                && planner.scanWasComplete && deselectedIDs.isEmpty,
             sourceMountPoint: source.mountPoint,
             sourceVolumeID: source.id,
             template: template,
@@ -416,21 +462,53 @@ struct MainView: View {
 struct Sidebar: View {
     @Environment(DriveWatcher.self) private var watcher
     @Binding var selection: DetectedDrive.ID?
+    @Binding var folderSources: [DetectedDrive]
+    let onChooseFolder: () -> Void
 
     var body: some View {
-        Group {
-            if watcher.drives.isEmpty {
-                ContentUnavailableView(
-                    "No Cards",
-                    systemImage: "sdcard",
-                    description: Text("Insert a memory card to begin.")
-                )
+        VStack(spacing: 0) {
+            if watcher.drives.isEmpty && folderSources.isEmpty {
+                ContentUnavailableView {
+                    Label("No Cards", systemImage: "sdcard")
+                } description: {
+                    Text("Insert a memory card to begin, or ingest from a folder you already have.")
+                } actions: {
+                    Button("Choose Folder…", action: onChooseFolder)
+                }
             } else {
-                List(watcher.drives, selection: $selection) { card in
-                    SidebarRow(card: card)
-                        .tag(card.id)
+                List(selection: $selection) {
+                    if !watcher.drives.isEmpty {
+                        Section("Cards") {
+                            ForEach(watcher.drives) { card in
+                                SidebarRow(card: card).tag(card.id)
+                            }
+                        }
+                    }
+                    if !folderSources.isEmpty {
+                        Section("Folders") {
+                            ForEach(folderSources) { folder in
+                                SidebarRow(card: folder).tag(folder.id)
+                                    .contextMenu {
+                                        Button("Remove from Sidebar") {
+                                            folderSources.removeAll { $0.id == folder.id }
+                                        }
+                                    }
+                            }
+                        }
+                    }
                 }
                 .listStyle(.sidebar)
+
+                Divider()
+                Button(action: onChooseFolder) {
+                    Label("Choose Folder…", systemImage: "folder.badge.plus")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .help("Ingest from a folder instead of a card")
+                .accessibilityLabel("Choose a source folder")
             }
         }
         .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 320)
@@ -444,7 +522,7 @@ struct SidebarRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "sdcard.fill")
+            Image(systemName: card.isEjectable ? "sdcard.fill" : "folder.fill")
                 .font(.system(size: 18))
                 .foregroundStyle(theme.resolvedAccent)
                 .frame(width: 24)
@@ -452,13 +530,24 @@ struct SidebarRow: View {
                 Text(card.label)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Text(card.totalBytes.formatted(.byteCount(style: .file)))
+                // A folder shows where it is rather than a size: the size of a
+                // folder tree is an expensive number that would have to be
+                // recomputed, and the path is what tells two same-named folders
+                // apart.
+                Text(card.isEjectable
+                     ? card.totalBytes.formatted(.byteCount(style: .file))
+                     : card.url.deletingLastPathComponent().path)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .lineLimit(1)
+                    .truncationMode(.head)
             }
             Spacer(minLength: 0)
+            // No eject for a folder: `DriveEjector` unmounts the volume the path
+            // is on, which for a folder in the user's own library is the startup
+            // disk.
+            if card.isEjectable {
             Button {
                 let mountPoint = card.mountPoint
                 let label = card.label
@@ -480,6 +569,7 @@ struct SidebarRow: View {
             .buttonStyle(.plain)
             .help("Eject \(card.label)")
             .accessibilityLabel("Eject \(card.label)")
+            }
         }
         .padding(.vertical, 2)
         .alert("Eject failed", isPresented: Binding(
