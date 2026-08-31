@@ -664,7 +664,8 @@ struct DetailPane: View {
                 progress: progress,
                 log: copier.log,
                 verifying: copier.isVerifyingCurrentJob,
-                onCancel: { copier.cancel() }
+                onCancel: { copier.cancel() },
+                stoppingForTermination: copier.isStoppingForTermination
             )
         case .cancelled(let result):
             ContentUnavailableView {

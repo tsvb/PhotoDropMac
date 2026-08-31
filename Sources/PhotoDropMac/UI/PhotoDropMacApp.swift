@@ -183,6 +183,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               TerminationPolicy.decide(hasRunningJob: copier.isRunning) == .waitForTheJobToStop
         else { return .terminateNow }
 
+        // Bring the window forward so the user can see *why* the app hasn't
+        // quit. Deferring termination silently is indistinguishable from a hang,
+        // and the wait is real work: the bundle in flight has to finish, then the
+        // manifest, the log and a device-cache flush per destination.
+        NSApp.activate(ignoringOtherApps: true)
+        for window in NSApp.windows where window.canBecomeMain {
+            window.makeKeyAndOrderFront(nil)
+            break
+        }
+
         Task { @MainActor in
             await copier.stopForTermination()
             NSApp.reply(toApplicationShouldTerminate: true)

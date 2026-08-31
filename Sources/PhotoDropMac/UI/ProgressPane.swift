@@ -10,6 +10,9 @@ struct ProgressPane: View {
     /// fixed for, left standing where more people would see it.
     let verifying: Bool
     let onCancel: () -> Void
+    /// Shown when a quit is waiting on this job — see `Copier.stopForTermination`.
+    /// Deferring termination silently is indistinguishable from a hang.
+    var stoppingForTermination: Bool = false
 
     /// Pure, so the claim can be tested rather than eyeballed.
     static func trustCaption(verifying: Bool) -> String {
@@ -20,6 +23,19 @@ struct ProgressPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if stoppingForTermination {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Finishing the current file, then writing the manifest — PhotoDrop will quit when the job has a receipt.")
+                        .font(.callout)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.bar)
+                .overlay(alignment: .bottom) { Divider() }
+                .accessibilityElement(children: .combine)
+            }
             progressCard
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
