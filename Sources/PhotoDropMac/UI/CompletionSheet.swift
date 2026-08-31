@@ -11,8 +11,8 @@ struct CompletionSheet: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            if hadIssues {
-                Image(systemName: "exclamationmark.octagon.fill")
+            if withheldSeal {
+                Image(systemName: hadIssues ? "exclamationmark.octagon.fill" : "seal.slash.fill")
                     .font(.system(size: 48))
                     .foregroundStyle(.orange)
                     .symbolRenderingMode(.hierarchical)
@@ -44,6 +44,10 @@ struct CompletionSheet: View {
             stats
                 .padding(.vertical, 6)
 
+            // The reasons, not just the count. Kept collapsed so a clean run is
+            // unchanged and a failed one is one click from being actionable.
+            FailureList(failures: result.failedFiles, totalFailures: result.filesFailed)
+
             HStack(spacing: 10) {
                 if let logURL = result.logURL {
                     Button("Open Log") {
@@ -51,7 +55,7 @@ struct CompletionSheet: View {
                     }
                 }
                 Button("Show in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([result.primaryDestination])
+                    NSWorkspace.shared.activateFileViewerSelecting(result.foldersToReveal)
                 }
                 if let manifestURL = result.manifestURL {
                     Button("Export Manifest…") { exportManifest(manifestURL) }
@@ -80,6 +84,11 @@ struct CompletionSheet: View {
     /// showing the same red octagon for both taught the user to distrust it.
     private var hadIssues: Bool { result.primaryFailures > 0 }
 
+    /// The hero mark is withheld for a missing manifest too. A verification seal
+    /// over a job that produced no verification record is the one image this app
+    /// must never show.
+    private var withheldSeal: Bool { hadIssues || !result.manifestFailures.isEmpty }
+
     // Ledger swaps the SF Pro semibold headline for a regular-weight system
     // serif (New York) — the "single moment of typographic warmth".
     private var titleFont: Font {
@@ -93,6 +102,13 @@ struct CompletionSheet: View {
     private var title: String {
         if hadIssues {
             return "Ingest completed with errors"
+        }
+        // A missing manifest is its own headline. The files are on disk and
+        // every byte was verified in flight, so "with errors" would overstate
+        // it — but "Ingest complete" understates a library that nothing can
+        // ever re-verify, which is the whole product. Say exactly what happened.
+        if !result.manifestFailures.isEmpty {
+            return "Copied — but the receipt could not be written"
         }
         if !result.failedMirrors.isEmpty {
             return "Library complete — a mirror fell behind"
@@ -109,6 +125,15 @@ struct CompletionSheet: View {
             if !result.failedMirrors.isEmpty { s += " \(mirrorFailureSentence)" }
             return s
         }
+        if !result.manifestFailures.isEmpty {
+            let names = result.manifestFailures.map { ($0 as NSString).lastPathComponent }
+            let list = names.count == 1 ? "“\(names[0])”" : names.map { "“\($0)”" }.joined(separator: ", ")
+            var s = "Every file was copied and verified, but the checksum manifest could not be "
+                  + "saved to \(list), so “Verify Library” has nothing to check there. "
+                  + "Check the folder is writable and has free space, then re-run the ingest."
+            if !result.failedMirrors.isEmpty { s += " \(mirrorFailureSentence)" }
+            return s
+        }
         // The primary is complete; say so plainly before naming the mirror, so
         // the user knows their photos are safe.
         if !result.failedMirrors.isEmpty {
@@ -117,7 +142,21 @@ struct CompletionSheet: View {
 
         var base: String
         if result.filesCopied == 0, result.filesSkipped > 0 {
-            base = "Everything was already there — nothing new to copy."
+            // Name the folder the photos are actually in when it isn't the one
+            // this job planned. "Everything was already there" is true and
+            // useless if the user just corrected the description and is waiting
+            // to see the new folder appear.
+            if !result.duplicatesFoundElsewhere.isEmpty {
+                let names = result.duplicatesFoundElsewhere.prefix(3).map { "“\($0)”" }
+                let list = names.joined(separator: ", ")
+                let more = result.duplicatesFoundElsewhere.count > names.count
+                    ? " (and \(result.duplicatesFoundElsewhere.count - names.count) more)" : ""
+                base = "These photos are already in your library, filed under \(list)\(more)"
+                    + " — not under the folder name this ingest would have used. "
+                    + "Nothing was copied. Rename the existing folder in Finder if you want the new name."
+            } else {
+                base = "Everything was already there — nothing new to copy."
+            }
         } else if result.filesCopied > 0, result.filesSkipped > 0 {
             base = "\(result.filesCopied) copied, \(result.filesSkipped) already present."
         } else if result.filesCopied > 0 {
@@ -215,10 +254,17 @@ private func previewResult(copied: Int, skipped: Int, failed: Int, ejected: Bool
         bundleCount: copied + skipped + failed,
         filesCopied: copied, filesSkipped: skipped, filesFailed: failed,
         failuresByDestination: failed > 0 ? ["/Users/you/Pictures/Library": failed] : [:],
+        failedFiles: failed > 0 ? (1...failed).map {
+            CopyResult.FailedFile(name: "IMG_\(1000 + $0).CR2",
+                                  destination: "/Users/you/Pictures/Library",
+                                  reason: "Write failed: No space left on device")
+        } : [],
+        duplicatesFoundElsewhere: [], landedFolders: [],
         totalBytes: 26_400_000_000, elapsedSeconds: 642,
         primaryDestination: URL(fileURLWithPath: "/Users/you/Pictures/Library"),
         logURL: log ? URL(fileURLWithPath: "/tmp/ingest.log") : nil,
         manifestURL: log ? URL(fileURLWithPath: "/tmp/ingest.json") : nil,
+        manifestFailures: [],
         wasEjected: ejected, halted: false, haltReason: nil, cancelled: false
     )
 }

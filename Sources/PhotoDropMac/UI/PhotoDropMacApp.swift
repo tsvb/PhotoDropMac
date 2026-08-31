@@ -94,6 +94,57 @@ struct PhotoDropCommands: Commands {
             Button("Cancel Ingest") { coordinator.requestCancel() }
                 .keyboardShortcut(".", modifiers: .command)
         }
+
+        // macOS renders a Help menu whether or not anything is behind it, and
+        // ours opened nothing. There was also no way, anywhere in the shipped
+        // app, to reach the project, report a problem, or discover that a
+        // command-line tool ships inside the bundle.
+        CommandGroup(replacing: .help) {
+            Button("PhotoDrop Help") { AppLinks.open(.readme) }
+            Divider()
+            Button("Report an Issue…") { AppLinks.open(.issues) }
+            Button("Check for Updates…") { AppLinks.open(.releases) }
+            Divider()
+            Button("Install Command Line Tool…") { AppLinks.revealCommandLineTool() }
+                .disabled(EmbeddedCLI.path == nil)
+        }
+    }
+}
+
+/// The handful of outward links the app offers, in one place.
+///
+/// Deliberately links rather than in-app network calls: the app makes no network
+/// connections of its own, which is a property worth keeping for a tool that
+/// reads people's photo libraries and filesystem paths. "Check for Updates"
+/// opens the releases page in the user's browser rather than phoning home.
+enum AppLinks {
+    enum Destination {
+        case readme, issues, releases
+
+        var url: URL {
+            switch self {
+            case .readme:   URL(string: "https://github.com/tsvb/PhotoDropMac#readme")!
+            case .issues:   URL(string: "https://github.com/tsvb/PhotoDropMac/issues/new")!
+            case .releases: URL(string: "https://github.com/tsvb/PhotoDropMac/releases")!
+            }
+        }
+    }
+
+    static func open(_ destination: Destination) {
+        NSWorkspace.shared.open(destination.url)
+    }
+
+    /// Reveal the embedded `photodrop` binary in Finder.
+    ///
+    /// The tool is signed and notarized inside the app — an elegant zero-install
+    /// distribution — and completely undiscoverable: not on `PATH`, mentioned
+    /// only around line 200 of the README, and never named anywhere in the UI
+    /// despite Settings → Maintenance using it internally. Revealing it, rather
+    /// than symlinking it into `/usr/local/bin` on the user's behalf, keeps the
+    /// app out of directories it has no business writing to unasked.
+    static func revealCommandLineTool() {
+        guard let path = EmbeddedCLI.path else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 }
 
@@ -111,10 +162,36 @@ struct PhotoDropCommands: Commands {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var registry: JobRegistry?
 
+    /// Ask for notification permission at launch, while the app is frontmost.
+    ///
+    /// `Notifier.post` deliberately no longer asks: it runs only when the app is
+    /// *not* frontmost, so asking there put the system prompt on screen over
+    /// whatever the user was actually doing, and recorded a dismissal as a
+    /// denial. But the completion-banner setting defaults to **on**, so a user
+    /// who never visits Settings had never been asked at all — and would have
+    /// silently got nothing. Launch is the one moment that is both in-context and
+    /// certain to happen. `Notifier.requestAuthorization` is a no-op once the
+    /// system has an answer on file, so this prompts exactly once.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard UserDefaults.standard.object(forKey: "photodrop.notifyOnCompletion") as? Bool ?? true
+        else { return }
+        Task { await Notifier.requestAuthorizationIfNeverAsked() }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let copier = registry?.runningCopier,
               TerminationPolicy.decide(hasRunningJob: copier.isRunning) == .waitForTheJobToStop
         else { return .terminateNow }
+
+        // Bring the window forward so the user can see *why* the app hasn't
+        // quit. Deferring termination silently is indistinguishable from a hang,
+        // and the wait is real work: the bundle in flight has to finish, then the
+        // manifest, the log and a device-cache flush per destination.
+        NSApp.activate(ignoringOtherApps: true)
+        for window in NSApp.windows where window.canBecomeMain {
+            window.makeKeyAndOrderFront(nil)
+            break
+        }
 
         Task { @MainActor in
             await copier.stopForTermination()

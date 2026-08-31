@@ -11,6 +11,15 @@ struct CopyProgress: Sendable, Equatable, Hashable {
     let bytesCopied: Int64
     let elapsedSeconds: Double
     let currentFile: String
+    /// Which destination the current file is being written to, when there is
+    /// more than one — e.g. `mirror 2: NAS`. Empty for a single-destination job.
+    ///
+    /// With mirrors the same filename flashed past once per destination with
+    /// nothing saying which pass it was, so a user watching a three-destination
+    /// job saw every name three times and had no idea whether the NAS had even
+    /// started. The only signal was a `[mirror 2: NAS]` prefix in the log, which
+    /// scrolls.
+    var destinationLabel: String = ""
 
     var percent: Double {
         totalBytes == 0 ? 0 : Double(bytesCopied) / Double(totalBytes)
@@ -38,11 +47,52 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     /// for a mirror with `primaryFailures == 0` is the "one mirror was offline,
     /// your library is fine" case, which must not be reported as a failed job.
     let failuresByDestination: [String: Int]
+    /// Every bundle that failed, with the destination it failed at and why.
+    ///
+    /// `CopyResult` carried counts alone, and the per-file reasons existed only
+    /// as log lines — which the detail pane stops rendering the moment a job
+    /// leaves `.running`, and which `Copier.reset()` clears on dismiss. So the
+    /// entire in-app account of a run that lost 40 of 500 files was "40 files
+    /// failed — see log for details", and dismissing the sheet destroyed the
+    /// detail. A failure the user cannot read is a failure they cannot act on.
+    ///
+    /// Bounded: a job whose destination went away fails every remaining bundle,
+    /// and a 2,000-entry array behind a `Hashable` result that crosses actor
+    /// boundaries is not worth the fidelity. `failuresByDestination` keeps the
+    /// true count; this keeps the readable evidence.
+    let failedFiles: [FailedFile]
+    /// Folders under the primary root that already held this card's photos, when
+    /// they are *not* the folders this job planned to write.
+    ///
+    /// Distinguishes "this card is already in your library" from "this card is
+    /// already in your library, under a different name than the one you just
+    /// typed". Both produce `filesCopied == 0`, and the second used to be
+    /// reported as the first — so a corrected description looked like it had
+    /// been applied when nothing had moved.
+    let duplicatesFoundElsewhere: [String]
+    /// The day folders this job actually wrote into, relative to the primary
+    /// root, sorted.
+    ///
+    /// "Show in Finder" selected `primaryDestination` — the library **root** —
+    /// so after an ingest the user was dropped at the top of a library holding
+    /// years of work with no indication of what had just been added. The
+    /// manifest holds the list; nothing in the UI read it back.
+    let landedFolders: [String]
     let totalBytes: Int64
     let elapsedSeconds: Double
     let primaryDestination: URL
     let logURL: URL?
     let manifestURL: URL?
+    /// Destination roots whose verification manifest could **not** be written.
+    ///
+    /// `ManifestWriter.write` returns `nil` on four separate failures and the
+    /// engine used to discard that, so a job could copy every file, verify every
+    /// file, report `✓ Ingest complete`, exit 0 and eject the card while leaving
+    /// a library with no integrity record at all. The manifest is the product;
+    /// a job that couldn't write one did not fully succeed, and every consumer —
+    /// the CLI's exit code, the completion sheet, the eject gate — now has to be
+    /// able to see that.
+    let manifestFailures: [String]
     let wasEjected: Bool
     let halted: Bool
     let haltReason: String?
@@ -55,6 +105,34 @@ struct CopyResult: Sendable, Identifiable, Equatable, Hashable {
     /// *library* is incomplete, as opposed to one of its mirrors.
     var primaryFailures: Int {
         failuresByDestination[primaryDestination.path(percentEncoded: false)] ?? 0
+    }
+
+    /// One bundle's failure at one destination.
+    struct FailedFile: Sendable, Equatable, Hashable, Identifiable {
+        var id: String { "\(destination)|\(name)" }
+        /// The source file's name, which is what the user recognizes — the
+        /// destination name may have been templated into something else.
+        let name: String
+        /// The destination root it failed at, so a mirror-only failure is
+        /// legible as such.
+        let destination: String
+        let reason: String
+    }
+
+    /// The cap on `failedFiles`. Past this the list is truncated and
+    /// `failuresByDestination` remains the authority on how many there were.
+    static let maxRecordedFailures = 200
+
+    /// What "Show in Finder" should select: the day folders this job wrote,
+    /// falling back to the library root when it wrote none (an all-duplicate run,
+    /// or a job that failed before anything landed).
+    ///
+    /// Capped: selecting several hundred folders would open several hundred
+    /// Finder windows' worth of selection and is not a useful gesture. Beyond the
+    /// cap the root is the honest answer.
+    var foldersToReveal: [URL] {
+        guard !landedFolders.isEmpty, landedFolders.count <= 12 else { return [primaryDestination] }
+        return landedFolders.map { primaryDestination.appendingPathComponent($0, isDirectory: true) }
     }
 
     /// Destinations other than the primary that had at least one failure.
@@ -119,6 +197,8 @@ final class IngestEngine {
     private var filesSkipped = 0
     private var filesFailed = 0
     private var currentFile = ""
+    /// See `CopyProgress.destinationLabel`.
+    private var currentDestinationLabel = ""
     /// Manifest entries **per destination root**, parallel to `allRoots`.
     ///
     /// Previously only the primary recorded entries, on the reasoning that a
@@ -137,6 +217,42 @@ final class IngestEngine {
     /// Roots whose volume rejected the checksum xattr, so the notice is logged
     /// once per destination instead of once per file (or, as before, never).
     private var xattrUnsupportedRoots = Set<Int>()
+    /// The **deduped** destination roots for this run, in the order every
+    /// `destination:` index refers to.
+    ///
+    /// Held as a property because `copyBundle` labels its log lines by that index
+    /// and previously reconstructed the list as `[primaryRoot] + archiveRoots` —
+    /// the *un-deduped* one. With any destination collapsed as a duplicate the
+    /// two lists differ in length, so the "this volume does not support checksum
+    /// attributes" notice named a different mirror than the one it was about.
+    private var resolvedRoots: [URL] = []
+    /// See `CopyResult.failedFiles`. Capped at `CopyResult.maxRecordedFailures`.
+    private var failedFiles: [CopyResult.FailedFile] = []
+    /// Folders under the primary root where duplicates were found that this job
+    /// would have filed somewhere else. See `CopyResult.duplicatesFoundElsewhere`.
+    private var duplicatesFoundElsewhere: Set<String> = []
+    /// See `CopyResult.landedFolders`.
+    private var landedFolders: Set<String> = []
+    /// For the bundle currently being copied: where each of its files now lives
+    /// under the **primary** root, and the digest the card's copy hashed to.
+    ///
+    /// This is what lets a mirror copy from the primary instead of re-reading the
+    /// card. The destination loop sits outside the copy, and every pass read
+    /// `file.source`, so a 3-destination job read the whole card **three times**,
+    /// serially — the app's headline 3-2-1 feature was also its slowest path, at
+    /// roughly 4¼ hours for a 512 GB CFexpress that takes 85 minutes to read once,
+    /// on reader hardware that heats and throttles.
+    ///
+    /// Fanning out from the primary is *more* rigorous, not less: the mirror's
+    /// tee-hash is checked against the card-side digest recorded here, so a
+    /// primary that no longer holds the bytes that came off the card is caught at
+    /// the first mirror rather than silently propagated.
+    ///
+    /// Cleared at the start of every bundle, and again if the primary rolls back —
+    /// a mirror must fall back to the card rather than read a file that has just
+    /// been deleted.
+    private var primaryLanded: [URL: URL] = [:]
+    private var primaryDigest: [URL: UInt64] = [:]
 
     init(bundles: [AssetBundle],
          description: String,
@@ -175,6 +291,14 @@ final class IngestEngine {
 
     func run() async -> CopyResult {
         totalBundles = bundles.count
+
+        // Hold the machine awake for the whole job, including the tail: the
+        // manifest write, the volume barrier and the eject all still have to
+        // happen after the last byte. Released by `deinit` when this scope ends,
+        // on every path out including a throw or a cancel.
+        let awake = PowerAssertion(reason: "PhotoDrop is copying photos from a card")
+        defer { awake.release() }
+
         let perDestinationBytes = bundles.reduce(Int64(0)) { $0 + $1.totalSize }
         // Primary at index 0, then each archive mirror. Deduped by filesystem
         // identity: writing one folder twice makes pass 2 collide with pass 1's
@@ -187,6 +311,7 @@ final class IngestEngine {
         }
         totalBytes = perDestinationBytes * Int64(allRoots.count)
         manifestEntriesByRoot = Array(repeating: [], count: allRoots.count)
+        resolvedRoots = allRoots
 
         // Refuse a topology where the trees overlap. `dedupedRoots` above collapses
         // roots that are the *same* folder; this catches roots that *contain* one
@@ -275,6 +400,10 @@ final class IngestEngine {
         outer: for i in 0..<bundleCount {
             if isCancelled() { wasCancelled = true; break }
             var primaryOK = true
+            // Per bundle: nothing has landed at the primary yet, so the first
+            // pass reads the card and every later pass reads what it wrote.
+            primaryLanded.removeAll(keepingCapacity: true)
+            primaryDigest.removeAll(keepingCapacity: true)
 
             // Each destination gets its own error handling. A mirror failing must
             // not skip the mirrors *after* it and must not void the primary copy
@@ -292,7 +421,15 @@ final class IngestEngine {
                     break outer
                 } catch let err as FileCopierError {
                     log(.error, rootLabel(d, of: allRoots) + err.description)
-                    if d == 0 { primaryOK = false }
+                    recordFailure(bundle: plansPerRoot[d][i], root: allRoots[d], reason: err.description)
+                    // The primary rolled back, so the paths recorded for it no
+                    // longer exist. Mirrors fall back to the card — a failed
+                    // primary must not take its mirrors down with it.
+                    if d == 0 {
+                        primaryOK = false
+                        primaryLanded.removeAll(keepingCapacity: true)
+                        primaryDigest.removeAll(keepingCapacity: true)
+                    }
                     // A mismatch means the bytes on disk are not the bytes we
                     // read: stop the whole job, at every destination.
                     if case .verificationMismatch = err {
@@ -300,12 +437,35 @@ final class IngestEngine {
                         haltReason = "verification mismatch"
                         break outer
                     }
+                    // **The source going away is a job-level fault, not a
+                    // per-bundle one.** A bumped reader, a bus-powered drive
+                    // losing power to idle sleep, or someone pulling the wrong
+                    // card at bundle 100 of 2000 produced 1,900 identical
+                    // "could not be opened" lines — 5,700 with mirrors — and a
+                    // user with no way to tell from the log what had happened.
+                    // Every remaining bundle is guaranteed to fail for the same
+                    // reason, so stop and say so once.
+                    if isSourceSide(err), sourceIsGone() {
+                        log(.error, "The source is no longer readable — the card may have been removed "
+                                  + "or the drive may have gone to sleep. Stopping here; "
+                                  + "\(bundleCount - i - 1) bundle(s) were not copied.")
+                        haltReason = "the card was removed"
+                        failuresByRoot[d] += 1
+                        filesFailed += 1
+                        break outer
+                    }
                     failuresByRoot[d] += 1
                     filesFailed += 1
                     continue
                 } catch {
                     log(.error, rootLabel(d, of: allRoots) + "Bundle failed: \(error.localizedDescription)")
-                    if d == 0 { primaryOK = false }
+                    recordFailure(bundle: plansPerRoot[d][i], root: allRoots[d],
+                                  reason: error.localizedDescription)
+                    if d == 0 {
+                        primaryOK = false
+                        primaryLanded.removeAll(keepingCapacity: true)
+                        primaryDigest.removeAll(keepingCapacity: true)
+                    }
                     failuresByRoot[d] += 1
                     filesFailed += 1
                     continue
@@ -336,34 +496,12 @@ final class IngestEngine {
                      + "writing a manifest for the \(completedBundles) bundle\(completedBundles == 1 ? "" : "s") already copied.")
         }
 
-        // One F_FULLFSYNC per destination volume now that every file is fsync'd —
-        // makes the whole job durable against power loss before we (optionally)
-        // eject. Skipped when nothing new was written (an all-duplicate re-ingest).
-        if filesCopied > 0 {
-            log(.info, "Flushing destinations to disk…")
-            var flushed = true
-            for root in allRoots { flushed = FileCopier.fullSyncVolume(at: root) && flushed }
-            if !flushed {
-                log(.error, "Warning: could not force a device-cache flush; copies are written but may not survive an immediate power loss until the OS flushes them.")
-            }
-        }
-
-        // Ejecting is the one irreversible act in the job, and it was gated only
-        // on halt/cancel. A run where files *failed* — a full disk, a permission
-        // error, a mirror that vanished — ejected the card anyway, removing the
-        // only remaining copy of whatever didn't land from reach. Failures are
-        // recoverable exactly as long as the card is still mounted.
-        var didEject = false
-        if haltReason == nil, !wasCancelled, filesFailed == 0, ejectAfter, let mountPoint = sourceMountPoint {
-            log(.info, "Ejecting card…")
-            do {
-                try await DriveEjector.eject(mountPoint: mountPoint)
-                didEject = true
-                log(.info, "Card ejected — safe to remove.")
-            } catch {
-                log(.error, "Eject failed: \(error.localizedDescription)")
-            }
-        }
+        // The device flush and the eject both happen **after** the manifest and
+        // log are written; see the end of this function. They used to run here,
+        // which put the one irreversible act in the job (the eject) ahead of the
+        // receipt that proves the job was worth ejecting for. Nothing that
+        // happens after a card leaves the reader can be recovered by re-reading
+        // it, so the receipt has to exist and be durable first.
 
         // Reported size = bytes that actually landed in the primary library (the
         // sum of its manifest entries), not the progress counter `bytesCopied`,
@@ -415,6 +553,80 @@ final class IngestEngine {
                 : "Verification manifest written to “\(ManifestWriter.folderName)”.")
         }
 
+        // **A manifest that did not get written is a failure, and it used to be
+        // silent.** `ManifestWriter.write` answers `nil` on four distinct
+        // failures — the folder can't be created, the encode fails, the name
+        // can't be claimed, the write throws — and the only branch here logged
+        // the *successes*. So a primary that filled up on the last bundle, or a
+        // read-only `PhotoDrop Manifests` folder, produced `filesFailed == 0`,
+        // an opened eject gate, "✓ Ingest complete" and exit 0 over a library of
+        // files nothing can ever verify. The receipt is the product; failing to
+        // write it is not a footnote.
+        var manifestFailures: [String] = []
+        for (d, root) in allRoots.enumerated() where manifestURLs[d] == nil {
+            manifestFailures.append(root.path(percentEncoded: false))
+            log(.error, rootLabel(d, of: allRoots)
+                     + "Could not write the verification manifest for this destination. "
+                     + "The files are copied, but nothing here records their checksums.")
+        }
+
+        // Persist the hash cache — misses populated during this run stay hot.
+        try? await cache.save()
+
+        // One F_FULLFSYNC per destination volume, now that every file is fsync'd
+        // **and the manifest is written**. This used to run before the manifest,
+        // so the photos were durable and the receipt for them was not: `.atomic`
+        // gives rename-atomicity, not durability, and after `rename(2)` returns
+        // both the data and the directory entry can still be in the page cache.
+        // A power loss in the seconds after a job finished left a good library
+        // with no manifest, and `verify` then reported exit 2 "no manifest
+        // found" over it forever.
+        //
+        // The old `filesCopied > 0` gate is gone for the same reason: an
+        // all-duplicate re-ingest copies nothing and still writes a manifest,
+        // and that manifest needs the barrier as much as any other.
+        if filesCopied > 0 || manifestURLs.contains(where: { $0 != nil }) {
+            log(.info, "Flushing destinations to disk…")
+            for (d, root) in allRoots.enumerated() where !FileCopier.fullSyncVolume(at: root) {
+                // Named per volume rather than once per job: a user with a single
+                // SMB mirror saw the same anonymous warning on every ingest and
+                // had no way to tell which destination it was about, which is how
+                // a warning becomes noise.
+                log(.error, rootLabel(d, of: allRoots)
+                         + "Could not force a device-cache flush here; the copies are written "
+                         + "but may not survive an immediate power loss until the OS flushes them.")
+            }
+        }
+
+        // Ejecting is the one irreversible act in the job. It is gated on
+        // halt/cancel/failures — a run that lost files to a full disk or a
+        // permission error must not put the only remaining copy out of reach —
+        // and now also on the receipt existing: ejecting after a failed manifest
+        // write strands a library nothing can verify while the source is still
+        // in the reader. Failures are recoverable exactly as long as the card is
+        // still mounted.
+        var didEject = false
+        if haltReason == nil, !wasCancelled, filesFailed == 0, manifestFailures.isEmpty,
+           ejectAfter, let mountPoint = sourceMountPoint {
+            log(.info, "Ejecting card…")
+            do {
+                try await DriveEjector.eject(mountPoint: mountPoint)
+                didEject = true
+                log(.info, "Card ejected — safe to remove.")
+            } catch {
+                log(.error, "Eject failed: \(error.localizedDescription)")
+            }
+        } else if ejectAfter, !manifestFailures.isEmpty, haltReason == nil, !wasCancelled, filesFailed == 0 {
+            log(.info, "Card not ejected: the verification manifest could not be written. "
+                     + "The card is still mounted, so the ingest can be re-run.")
+        }
+
+        log(.info, "Complete: \(filesCopied) copied, \(filesSkipped) skipped, \(filesFailed) failed.")
+
+        // The log is written **last**, so it is the only artifact that can record
+        // the flush, the eject and the final tally. Written before them, it was
+        // an audit trail that stopped just short of the two events a reader most
+        // wants to find in it.
         let logURL = JobLogger.write(
             entries: logEntries,
             startedAt: startedAt,
@@ -427,11 +639,6 @@ final class IngestEngine {
             directory: logDirectory
         )
 
-        // Persist the hash cache — misses populated during this run stay hot.
-        try? await cache.save()
-
-        log(.info, "Complete: \(filesCopied) copied, \(filesSkipped) skipped, \(filesFailed) failed.")
-
         var failuresByDestination: [String: Int] = [:]
         for (d, root) in allRoots.enumerated() where failuresByRoot[d] > 0 {
             failuresByDestination[root.path(percentEncoded: false)] = failuresByRoot[d]
@@ -443,11 +650,15 @@ final class IngestEngine {
             filesSkipped: filesSkipped,
             filesFailed: filesFailed,
             failuresByDestination: failuresByDestination,
+            failedFiles: failedFiles,
+            duplicatesFoundElsewhere: duplicatesFoundElsewhere.sorted(),
+            landedFolders: landedFolders.sorted(),
             totalBytes: landedBytes,
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
             logURL: logURL,
             manifestURL: manifestURL,
+            manifestFailures: manifestFailures,
             wasEjected: didEject,
             halted: haltReason != nil,
             haltReason: haltReason,
@@ -477,11 +688,17 @@ final class IngestEngine {
             filesSkipped: 0,
             filesFailed: 0,
             failuresByDestination: [:],
+            failedFiles: [],
+            duplicatesFoundElsewhere: [],
+            landedFolders: [],
             totalBytes: 0,
             elapsedSeconds: elapsed,
             primaryDestination: primaryRoot,
             logURL: logURL,
             manifestURL: nil,
+            // A refusal writes no manifest *by design* — no bytes landed, so
+            // there is nothing to attest to. That is not a manifest failure.
+            manifestFailures: [],
             wasEjected: false,
             halted: true,
             haltReason: reason,
@@ -517,6 +734,44 @@ final class IngestEngine {
         return BundlePlan(bundle: plan.bundle, files: files)
     }
 
+    /// Is this error about a file on the *source*, rather than a destination?
+    ///
+    /// Compared by path components against the source root — never by string
+    /// prefix, for the reason `DestinationTopology` spells out: `/Volumes/CARD2`
+    /// is not inside `/Volumes/CARD`.
+    private func isSourceSide(_ err: FileCopierError) -> Bool {
+        guard let mountPoint = sourceMountPoint else { return false }
+        let root = URL(fileURLWithPath: mountPoint, isDirectory: true)
+            .standardizedFileURL.pathComponents
+        let file = err.url.standardizedFileURL.pathComponents
+        guard file.count > root.count else { return false }
+        return Array(file.prefix(root.count)) == root
+    }
+
+    /// Has the source stopped being readable altogether?
+    ///
+    /// Checked only after a source-side failure, so the cost is paid once per
+    /// fault rather than once per file. `isReadableFile` as well as existence:
+    /// an unmounted volume can leave its mount point behind as an empty,
+    /// unreadable directory.
+    private func sourceIsGone() -> Bool {
+        guard let mountPoint = sourceMountPoint else { return false }
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: mountPoint, isDirectory: &isDirectory), isDirectory.boolValue,
+              fm.isReadableFile(atPath: mountPoint) else { return true }
+        return (try? fm.contentsOfDirectory(atPath: mountPoint)) == nil
+    }
+
+    private func recordFailure(bundle: BundlePlan, root: URL, reason: String) {
+        guard failedFiles.count < CopyResult.maxRecordedFailures else { return }
+        failedFiles.append(CopyResult.FailedFile(
+            name: bundle.bundle.primary.url.lastPathComponent,
+            destination: root.path(percentEncoded: false),
+            reason: reason
+        ))
+    }
+
     /// Prefixes a log line with the destination it concerns, but only when there
     /// is more than one — a single-destination job reads better unadorned.
     private func rootLabel(_ d: Int, of roots: [URL]) -> String {
@@ -540,6 +795,8 @@ final class IngestEngine {
                 if isCancelled() { throw CancellationError() }
 
                 currentFile = file.source.lastPathComponent
+                currentDestinationLabel = rootLabel(d, of: resolvedRoots)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
                 emitProgress()
 
                 // Dedup check — routes through HashCache so a re-run skips file
@@ -554,6 +811,36 @@ final class IngestEngine {
                 if let existingDuplicate {
                     log(.skipped, "\(file.source.lastPathComponent) — already present as \(existingDuplicate.url.lastPathComponent)")
                     skippedInBundle += 1
+                    // **Where** the duplicate lives, when that is not where this
+                    // job would have put it.
+                    //
+                    // Dedup matches content anywhere under the root — deliberately,
+                    // so a renamed earlier import is still found. The consequence
+                    // is the most likely shoot-day misstep in the app: ingest a
+                    // card with the description blank, realise you wanted
+                    // "Smith Wedding", type it, ingest again. Every file matches
+                    // its twin in the old folder, nothing is copied, the new
+                    // folder is never created, and the sheet says "Everything was
+                    // already there — nothing new to copy." The user reads that as
+                    // done and reformats the card, and the library is organised
+                    // under a name they explicitly rejected.
+                    //
+                    // Only the primary root is tracked: a mirror lagging behind is
+                    // a different situation with its own reporting.
+                    if d == 0 {
+                        let foundIn = existingDuplicate.url.deletingLastPathComponent()
+                        let plannedIn = file.destination.deletingLastPathComponent()
+                        if foundIn.standardizedFileURL != plannedIn.standardizedFileURL,
+                           let rel = Self.relative(foundIn.path(percentEncoded: false), under: root) {
+                            duplicatesFoundElsewhere.insert(rel)
+                        }
+                        // A file already in the library is just as good a read
+                        // source for the mirrors as one this job wrote, and it is
+                        // on fast local storage rather than the card. It is *not*
+                        // in `writtenFiles`, so rollback will never delete it.
+                        primaryLanded[file.source] = existingDuplicate.url
+                        primaryDigest[file.source] = existingDuplicate.hash
+                    }
                     bundleManifest.append(ManifestEntry(
                         name: file.source.lastPathComponent,
                         path: relativePath(of: existingDuplicate.url, under: root),
@@ -576,13 +863,40 @@ final class IngestEngine {
                 // removes its own partial on failure, so we register the file for
                 // bundle-level rollback only once it is fully written.
                 let dest = file.destination
+                // Mirrors read from the copy the primary just made, not from the
+                // card. See `primaryLanded`. The fallback is the card itself, for
+                // the two cases where the primary has nothing to offer: this *is*
+                // the primary pass, or the primary failed and rolled back.
+                let readFrom = (d == 0) ? file.source : (primaryLanded[file.source] ?? file.source)
                 let copyHash = try FileCopier.copyAndHash(
-                    source: file.source, destination: dest, isCancelled: isCancelled
+                    source: readFrom, destination: dest, isCancelled: isCancelled
                 ) { chunkBytes in
                     self.bytesCopied += chunkBytes
                     self.emitProgress()
                 }
                 writtenFiles.append(dest)
+
+                // The digest this file must have: the one the card's bytes hashed
+                // to on the primary pass. When a mirror reads from the primary,
+                // comparing its tee-hash against that is an end-to-end check the
+                // old card-per-destination scheme never performed — it hashed
+                // three independent reads and never compared them to each other.
+                // A disagreement means the primary no longer holds what came off
+                // the card, which is a whole-job halt, not a mirror failure.
+                let expected = primaryDigest[file.source] ?? copyHash
+                if copyHash != expected {
+                    throw FileCopierError.verificationMismatch(
+                        file: readFrom, expected: expected, actual: copyHash)
+                }
+
+                if d == 0 {
+                    primaryLanded[file.source] = dest
+                    primaryDigest[file.source] = copyHash
+                    if let rel = Self.relative(dest.deletingLastPathComponent()
+                                                   .path(percentEncoded: false), under: root) {
+                        landedFolders.insert(rel)
+                    }
+                }
 
                 if verify {
                     try FileCopier.verify(file: dest, expectedHash: copyHash)
@@ -601,7 +915,7 @@ final class IngestEngine {
                 // --xattr` is otherwise the only tool that would have noticed and
                 // it reports an unstamped tree as nothing to check.
                 if !FileChecksumXattr.stamp(copyHash, on: dest), xattrUnsupportedRoots.insert(d).inserted {
-                    log(.info, rootLabel(d, of: [primaryRoot] + archiveRoots)
+                    log(.info, rootLabel(d, of: resolvedRoots)
                              + "This volume does not support checksum attributes; the manifest is the record for it.")
                 }
 
@@ -650,7 +964,8 @@ final class IngestEngine {
             totalBytes: totalBytes,
             bytesCopied: bytesCopied,
             elapsedSeconds: Date().timeIntervalSince(startedAt),
-            currentFile: currentFile
+            currentFile: currentFile,
+            destinationLabel: currentDestinationLabel
         )
     }
 

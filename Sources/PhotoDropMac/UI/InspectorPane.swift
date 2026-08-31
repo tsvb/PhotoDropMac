@@ -204,7 +204,11 @@ struct InspectorPane: View {
 // default, but presented as stable-identity rows so each path edits cleanly and
 // gets its own remove button. Rows own the truth while visible; the serialized
 // default is the durable store, re-derived only on a genuine external change.
-private struct ExtraDestinationsEditor: View {
+/// Shared by the inspector and Settings → General, from one definition. Two
+/// editors for one key is how two surfaces end up disagreeing about what it
+/// means — Settings previously offered a bare `TextEditor` over the raw
+/// newline-separated string.
+struct ExtraDestinationsEditor: View {
     @Binding var serialized: String
     @State private var rows: [Row]
     @State private var syncedFrom: String

@@ -1,8 +1,44 @@
 import Foundation
 import ImageIO
+import AVFoundation
+import CoreMedia
 
 enum ExifReader {
     static func dateTaken(for url: URL) -> Date? {
+        if let exifDate = exifDateTaken(for: url) { return exifDate }
+        // ImageIO cannot open a movie, so every clip fell straight through to the
+        // file's mtime — which, for a card that has passed through any other
+        // machine, is the *copy* time. Video is a first-class primary now, so it
+        // gets a real capture date from the container's own metadata before the
+        // mtime fallback is reached.
+        return movieDateTaken(for: url)
+    }
+
+    /// Camera identity for a still, from the same properties dictionary the date
+    /// comes from — one `CGImageSourceCopyPropertiesAtIndex` call, no extra I/O.
+    ///
+    /// The body serial is the field that actually separates two identical bodies
+    /// covering one event; the model alone does not. Both are empty when the
+    /// camera didn't write them, which is normal for phones and older bodies, and
+    /// an empty named token drops its optional group.
+    static func cameraInfo(for url: URL) -> (model: String, serial: String) {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        else { return ("", "") }
+
+        let tiff = props[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any]
+
+        let model = (tiff?[kCGImagePropertyTIFFModel] as? String) ?? ""
+        let serial = (exif?[kCGImagePropertyExifBodySerialNumber] as? String)
+            ?? (props[kCGImagePropertyExifAuxDictionary] as? [CFString: Any])
+                .flatMap { $0[kCGImagePropertyExifAuxSerialNumber] as? String }
+            ?? ""
+        return (model.trimmingCharacters(in: .whitespaces),
+                serial.trimmingCharacters(in: .whitespaces))
+    }
+
+    private static func exifDateTaken(for url: URL) -> Date? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
         guard let exif = props[kCGImagePropertyExifDictionary] as? [CFString: Any] else { return nil }
@@ -12,6 +48,40 @@ enum ExifReader {
 
         guard let dateString else { return nil }
         return parse(dateString)
+    }
+
+    /// Capture date for a movie container.
+    ///
+    /// Reads the asset's `creationDate` metadata — the QuickTime/MP4
+    /// `com.apple.quicktime.creationdate` or the ISO `©day` atom, whichever the
+    /// camera wrote. Unlike an EXIF string these carry a real timezone offset, so
+    /// no local-zone reconstruction is needed or wanted.
+    ///
+    /// Synchronous on purpose: `dateTaken` is called from the detached scan for
+    /// every primary, and the callers are already off the main actor. The
+    /// deprecated synchronous accessors are used deliberately rather than
+    /// restructuring the whole scan around `load(_:)` for a metadata read that
+    /// touches only the container header.
+    private static func movieDateTaken(for url: URL) -> Date? {
+        let asset = AVURLAsset(url: url)
+        for item in asset.commonMetadata where item.commonKey == .commonKeyCreationDate {
+            if let date = item.dateValue { return date }
+            // Some cameras write the creation date as a string rather than a
+            // date value; QuickTime's is ISO-8601 with an offset.
+            if let text = item.stringValue, let parsed = parseISO8601(text) { return parsed }
+        }
+        return nil
+    }
+
+    /// ISO-8601 with and without fractional seconds. Cameras differ, and a
+    /// formatter configured for one returns nil for the other.
+    private static func parseISO8601(_ s: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = withFraction.date(from: s) { return d }
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: s)
     }
 
     // EXIF dates ("yyyy:MM:dd HH:mm:ss") carry no timezone. We parse in the

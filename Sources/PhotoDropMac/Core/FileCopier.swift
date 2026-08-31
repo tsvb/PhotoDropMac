@@ -21,6 +21,19 @@ enum FileCopierError: Error, CustomStringConvertible {
     case open(URL, any Error)
     case destinationExists(URL)
 
+    /// The file this error is about. `read` and `open` can name either side of a
+    /// copy, which is why callers deciding "did the *source* go away?" have to
+    /// compare this against the source root rather than switch on the case.
+    var url: URL {
+        switch self {
+        case let .verificationMismatch(file, _, _): return file
+        case let .read(url, _):                     return url
+        case let .write(url, _):                    return url
+        case let .open(url, _):                     return url
+        case let .destinationExists(url):           return url
+        }
+    }
+
     var description: String {
         switch self {
         case .verificationMismatch(let f, let e, let a):
@@ -126,12 +139,57 @@ enum FileCopier {
             // flush for every tiny sidecar.
             try flushToDisk(outHandle, destination: destination)
 
+            // Carry the source's timestamps across, `cp -p` style.
+            //
+            // Nothing set these, so every file in the library wore the *ingest*
+            // time as both its modification and creation date. That is wrong on
+            // its own terms — Finder's "Date Created" column and every downstream
+            // tool keyed on file dates described the offload, not the shoot — and
+            // it quietly destroyed evidence this app depends on: `ExifReader`
+            // falls back to mtime whenever a file has no parseable capture date
+            // (a sidecar, an unknown RAW), so ingesting an already-ingested
+            // folder filed everything under the copy date with no way back.
+            //
+            // Best-effort by design: a destination that cannot carry timestamps
+            // (some SMB shares) must not fail a copy whose bytes are correct and
+            // verified. Timestamps are metadata; the photo is the payload.
+            preserveTimestamps(from: source, toDescriptor: outHandle.fileDescriptor)
+
             return hasher.finalize()
         } catch {
             // We created this file; don't leave a partial behind on any failure.
             try? FileManager.default.removeItem(at: destination)
             throw error
         }
+    }
+
+    /// Copy the source's access/modification times, and its birth time where the
+    /// destination filesystem keeps one, onto the just-written descriptor.
+    ///
+    /// Times are taken with nanosecond precision from the source's `stat`, so a
+    /// destination on APFS keeps the full resolution the card recorded; exFAT
+    /// truncates on its own and that is the filesystem's business, not ours.
+    /// Birth time goes through `fsetattrlist`, the only interface that can set
+    /// it — and it is set *after* the mtime, because creating and writing the
+    /// file necessarily stamped "now" on both.
+    private static func preserveTimestamps(from source: URL, toDescriptor fd: Int32) {
+        var info = stat()
+        guard stat(source.path, &info) == 0 else { return }
+
+        var times = [
+            timespec(tv_sec: info.st_atimespec.tv_sec, tv_nsec: info.st_atimespec.tv_nsec),
+            timespec(tv_sec: info.st_mtimespec.tv_sec, tv_nsec: info.st_mtimespec.tv_nsec),
+        ]
+        _ = futimens(fd, &times)
+
+        // ATTR_CMN_CRTIME is accepted by APFS/HFS+ and rejected elsewhere; the
+        // return value is deliberately ignored for the same reason futimens' is.
+        var attrs = attrlist()
+        attrs.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        attrs.commonattr = attrgroup_t(ATTR_CMN_CRTIME)
+        var birth = timespec(tv_sec: info.st_birthtimespec.tv_sec,
+                             tv_nsec: info.st_birthtimespec.tv_nsec)
+        _ = fsetattrlist(fd, &attrs, &birth, MemoryLayout<timespec>.size, 0)
     }
 
     // fsync the file's data through to the filesystem. Throws a write error on

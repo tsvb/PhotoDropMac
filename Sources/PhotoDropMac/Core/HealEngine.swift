@@ -48,8 +48,11 @@ enum HealEngine {
                     allowedMirrorRoots: [URL] = [],
                     isCancelled: () -> Bool = { false },
                     onProgress: (VerifyProgress) -> Void = { _ in }) -> HealReport? {
-        let (items, manifestCount, conflicts, refusedMirrorRoots) =
-            VerifyEngine.build(target: target, allowedMirrorRoots: allowedMirrorRoots)
+        let plan = VerifyEngine.build(target: target, allowedMirrorRoots: allowedMirrorRoots)
+        let items = plan.items
+        let manifestCount = plan.manifestCount
+        let conflicts = plan.conflicts
+        let refusedMirrorRoots = plan.refusedMirrorRoots
 
         // Files whose manifests disagree are reported, never healed: with two
         // rival digests on record there is no expected value to restore towards.

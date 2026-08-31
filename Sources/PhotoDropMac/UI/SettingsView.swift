@@ -60,14 +60,24 @@ struct MaintenancePreferences: View {
             }
 
             Section {
-                TextField("photodrop CLI", text: $binaryPath,
-                          prompt: Text(EmbeddedCLI.path == nil
-                                       ? "Path to the photodrop binary"
-                                       : "Bundled photodrop — type a path to override"))
-                    .lineLimit(1).truncationMode(.middle)
-                TextField("Library to verify", text: $libraryOverride,
-                          prompt: Text(primary.isEmpty ? "Library folder" : "Defaults to the primary destination"))
-                    .lineLimit(1).truncationMode(.middle)
+                // Both of these were bare text fields while the post-ingest hook
+                // right below had a picker. The library one is the higher-stakes
+                // of the two: a typo installs a launchd agent that verifies
+                // nothing and either cries wolf nightly or stays silent forever —
+                // the exact failure the exit-code split exists to prevent.
+                SettingsPathRow(
+                    label: "photodrop CLI",
+                    path: $binaryPath,
+                    prompt: EmbeddedCLI.path == nil
+                        ? "Path to the photodrop binary"
+                        : "Bundled photodrop — choose a path to override",
+                    chooses: .file
+                )
+                SettingsPathRow(
+                    label: "Library to verify",
+                    path: $libraryOverride,
+                    prompt: primary.isEmpty ? "Library folder" : "Defaults to the primary destination"
+                )
             } footer: {
                 if binaryPath.isEmpty {
                     if EmbeddedCLI.path != nil {
@@ -146,13 +156,18 @@ struct GeneralPreferences: View {
             }
 
             Section {
-                TextEditor(text: $extraArchives)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(minHeight: 56)
+                // The same editor the inspector uses, from one definition.
+                // This was a bare `TextEditor` over a newline-separated string
+                // while the inspector offered stable rows with a folder picker
+                // each — two editors for one key, and the one a user is likelier
+                // to find first was the one that made them hand-type filesystem
+                // paths, where a typo is invisible until it becomes a "failed
+                // mirror" line in a log.
+                ExtraDestinationsEditor(serialized: $extraArchives)
             } header: {
                 Text("Additional archive locations")
             } footer: {
-                Text("Optional — one folder path per line. Each gets its own verified copy (e.g. a NAS and an offsite drive for 3-2-1 backups). The Primary and Archive above are always included.")
+                Text("Optional. Each gets its own verified copy (e.g. a NAS and an offsite drive for 3-2-1 backups). The Primary and Archive above are always included.")
             }
 
             Section {
@@ -460,30 +475,42 @@ struct MenuBarPreferences: View {
 }
 
 private struct SettingsPathRow: View {
+    enum Target { case folder, file }
+
     let label: String
     @Binding var path: String
     let prompt: String
+    var chooses: Target = .folder
 
     var body: some View {
         HStack(spacing: 8) {
             TextField(label, text: $path, prompt: Text(prompt))
                 .lineLimit(1)
                 .truncationMode(.middle)
+            // A typed path that isn't there is worth saying so before it becomes
+            // a failed job. Silent while empty, because empty is a legitimate
+            // "use the default" for several of these.
+            if !path.isEmpty, !FileManager.default.fileExists(atPath: path) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help("Nothing exists at this path")
+                    .accessibilityLabel("Warning: nothing exists at this path")
+            }
             Button {
-                chooseFolder()
+                choose()
             } label: {
-                Image(systemName: "folder")
+                Image(systemName: chooses == .folder ? "folder" : "doc")
             }
             .buttonStyle(.bordered)
-            .help("Choose folder…")
-            .accessibilityLabel("Choose folder")
+            .help(chooses == .folder ? "Choose folder…" : "Choose file…")
+            .accessibilityLabel(chooses == .folder ? "Choose folder" : "Choose file")
         }
     }
 
-    private func chooseFolder() {
+    private func choose() {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseDirectories = chooses == .folder
+        panel.canChooseFiles = chooses == .file
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
         if panel.runModal() == .OK, let url = panel.url {

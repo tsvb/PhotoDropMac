@@ -1,5 +1,7 @@
 import Foundation
 import SwiftUI
+import AVFoundation
+import CoreMedia
 import ImageIO
 
 /// A tiny capacity-bounded LRU map. Not thread-safe on its own — callers provide
@@ -97,8 +99,32 @@ actor ThumbnailLoader {
             kCGImageSourceCreateThumbnailWithTransform: true,   // bake in EXIF orientation
             kCGImageSourceThumbnailMaxPixelSize: maxPixel,
         ]
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+           let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+            return Image(decorative: cgImage, scale: 1, orientation: .up)
+        }
+        // ImageIO can't open a movie container, so a clip decoded as
+        // `.undecodable` and showed the contact sheet's placeholder — which is
+        // also what a corrupt file looks like. Now that video is ingestable it
+        // has to be cullable, which means it has to be visible.
+        return decodeMovieFrame(url: url, maxPixel: maxPixel)
+    }
+
+    /// A poster frame for a movie.
+    ///
+    /// Taken a little way in rather than at zero: many cameras start a clip on a
+    /// black or half-exposed frame, which is useless for culling.
+    /// `requestedTimeToleranceBefore/After` are left at their defaults so the
+    /// generator may snap to the nearest sync frame — exact seeking would decode
+    /// far more of the file for no benefit at thumbnail size.
+    nonisolated private static func decodeMovieFrame(url: URL, maxPixel: CGFloat) -> Image? {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true   // honour rotation metadata
+        generator.maximumSize = CGSize(width: maxPixel, height: maxPixel)
+        let at = CMTime(seconds: 1, preferredTimescale: 600)
+        guard let cgImage = try? generator.copyCGImage(at: at, actualTime: nil)
+            ?? generator.copyCGImage(at: .zero, actualTime: nil)
         else { return nil }
         return Image(decorative: cgImage, scale: 1, orientation: .up)
     }

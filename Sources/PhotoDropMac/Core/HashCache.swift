@@ -153,6 +153,20 @@ actor HashCache {
         return computed
     }
 
+    /// Drop a destination entry whose digest has been shown not to describe the
+    /// file any more.
+    ///
+    /// `DestinationIndex.findDuplicate` re-reads a candidate's real bytes before
+    /// it skips a copy; when that read disagrees with the cached digest (or the
+    /// file can no longer be read at all), keeping the entry would let the next
+    /// run make the same wrong call. Dropping it costs one re-hash and can never
+    /// yield a wrong digest — the same argument that makes pruning safe.
+    func invalidateDestination(url: URL) {
+        loadIfNeeded()
+        guard dest.removeValue(forKey: url.path) != nil else { return }
+        isDirty = true
+    }
+
     // Record a destination hash that we already computed elsewhere —
     // typically right after a tee-hash copy + verification passes. Saves
     // re-hashing that file on the next dedup run.

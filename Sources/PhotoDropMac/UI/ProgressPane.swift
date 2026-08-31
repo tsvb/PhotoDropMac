@@ -10,6 +10,9 @@ struct ProgressPane: View {
     /// fixed for, left standing where more people would see it.
     let verifying: Bool
     let onCancel: () -> Void
+    /// Shown when a quit is waiting on this job — see `Copier.stopForTermination`.
+    /// Deferring termination silently is indistinguishable from a hang.
+    var stoppingForTermination: Bool = false
 
     /// Pure, so the claim can be tested rather than eyeballed.
     static func trustCaption(verifying: Bool) -> String {
@@ -20,6 +23,19 @@ struct ProgressPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if stoppingForTermination {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Finishing the current file, then writing the manifest — PhotoDrop will quit when the job has a receipt.")
+                        .font(.callout)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.bar)
+                .overlay(alignment: .bottom) { Divider() }
+                .accessibilityElement(children: .combine)
+            }
             progressCard
                 .padding(.horizontal, 24)
                 .padding(.top, 20)
@@ -74,11 +90,22 @@ struct ProgressPane: View {
                 .monospacedDigit()
 
                 if !progress.currentFile.isEmpty {
-                    Text(progress.currentFile)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    HStack(spacing: 6) {
+                        Text(progress.currentFile)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        // Which destination this pass is writing to. Without it
+                        // a three-destination job showed every filename three
+                        // times with nothing distinguishing the passes.
+                        if !progress.destinationLabel.isEmpty {
+                            Text("→ \(progress.destinationLabel)")
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
                 }
             }
 
@@ -134,6 +161,12 @@ struct LogView: View {
                                 .foregroundStyle(color(for: entry.kind))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                                // Selectable: an error message the user can read
+                                // but not copy cannot be pasted into a search, a
+                                // note, or a bug report. It was plain `Text`, so
+                                // even while the job was running the one place
+                                // the reason existed was unselectable.
+                                .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             if let signature = entry.signature {
                                 VerifiedSignature(hash: signature)

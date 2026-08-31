@@ -214,6 +214,18 @@ final class Copier {
                 if self.postsNotifications { Notifier.notifyHalt(reason: result.haltReason ?? "error") }
             } else {
                 self.state = .completed(result)
+                // Remember that this card has been done. Recorded only on a clean
+                // completion: a halted or cancelled job leaves the card as
+                // unfinished business, and a sidebar row claiming otherwise is
+                // worse than no row at all. See `CardHistory` for the 2am problem
+                // this exists to solve.
+                CardHistory.record(CardHistoryEntry(
+                    volumeID: sourceVolumeID,
+                    label: cardLabel,
+                    ingestedAt: Date(),
+                    filesLanded: result.filesCopied + result.filesSkipped,
+                    manifestPath: result.manifestURL?.path
+                ), in: self.defaults)
                 if self.postsNotifications { Notifier.notifyCompletion(result: result) }
                 self.runPostIngestHookIfConfigured(result)
             }
@@ -237,10 +249,20 @@ final class Copier {
     /// and on a re-ingest its size differs so dedup misses it and `CopyPlan`
     /// pushes the *real* file to `…_1`. This is the same choice the CLI makes
     /// for SIGTERM — stop at a file boundary and still write the record.
+    /// True from the moment a quit is requested until the job's tail finishes.
+    ///
+    /// Quitting during a copy correctly deferred termination — but the user saw
+    /// **nothing**: no sheet, no message, just an app that refused to quit for an
+    /// indeterminate time. The tail is not instant either; it includes the
+    /// per-destination `F_FULLFSYNC`, which against a NAS is not quick.
+    private(set) var isStoppingForTermination = false
+
     func stopForTermination() async {
         guard isRunning else { return }
+        isStoppingForTermination = true
         cancel()
         await waitForCompletion()
+        isStoppingForTermination = false
     }
 
     private func applyProgress(_ progress: CopyProgress, from flag: CancellationFlag) {

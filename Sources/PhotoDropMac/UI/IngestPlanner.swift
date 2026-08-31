@@ -14,9 +14,16 @@ final class IngestPlanner {
     /// it", and the ingest must not eject on the strength of a partial view.
     private(set) var unreadableDirectories: Int = 0
     private(set) var sourceUnreadable: Bool = false
+    /// Readable files on the card this ingest will not copy — video containers
+    /// the app can't treat as a bundle, formats it doesn't recognize. Reported
+    /// so the user is never told a card is finished when it isn't.
+    private(set) var unrecognizedFiles: Int = 0
 
-    /// The scan saw the whole card. Gates the auto-eject.
-    var scanWasComplete: Bool { !sourceUnreadable && unreadableDirectories == 0 }
+    /// The scan saw the whole card **and** everything it saw is ingestable.
+    /// Gates the auto-eject.
+    var scanWasComplete: Bool {
+        !sourceUnreadable && unreadableDirectories == 0 && unrecognizedFiles == 0
+    }
 
     @ObservationIgnored private var bundles: [AssetBundle] = []
     @ObservationIgnored private var lastDescription: String = ""
@@ -70,8 +77,9 @@ final class IngestPlanner {
             case .unreadableSource:
                 self.sourceUnreadable = true
                 self.bundles = []
-            case let .scanned(bundles, unreadableDirectories):
+            case let .scanned(bundles, unreadableDirectories, unrecognizedFiles):
                 self.unreadableDirectories = unreadableDirectories
+                self.unrecognizedFiles = unrecognizedFiles
                 self.bundles = bundles
             }
             self.replan()

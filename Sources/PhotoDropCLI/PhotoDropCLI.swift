@@ -4,11 +4,28 @@ import os
 
 @main
 struct PhotoDropCommand: AsyncParsableCommand {
+    /// Read from the bundle rather than written out here.
+    ///
+    /// This was a literal, and it had drifted two releases behind
+    /// `MARKETING_VERSION` — `photodrop --version` reported 0.1.3 while the app
+    /// it ships inside was 0.2.1. For a tool whose product is "these bytes are
+    /// the bytes that came off the card", a binary that misreports itself
+    /// undermines the manifest it just signed: a support conversation cannot
+    /// establish which code produced a given receipt.
+    ///
+    /// `Bundle.main` is the app bundle when the CLI runs from inside it (the
+    /// normal case — it is embedded at `Contents/MacOS/photodrop`). Standalone,
+    /// there is no Info.plist, hence the fallback.
+    static let toolVersion: String = {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "unknown (built without a bundle)"
+    }()
+
     static let configuration = CommandConfiguration(
         commandName: "photodrop",
         abstract: "Verify and ingest photo libraries from the command line.",
-        version: "0.1.3",
-        subcommands: [Verify.self, Ingest.self, Heal.self, Layouts.self]
+        version: PhotoDropCommand.toolVersion,
+        subcommands: [Verify.self, Ingest.self, Sync.self, Heal.self, Layouts.self]
     )
 }
 
@@ -253,12 +270,19 @@ struct Ingest: AsyncParsableCommand {
         // released the card. Same rule the verify side already enforces with
         // `.unreadableTarget`.
         let outcome = AssetDiscovery.scanOutcome(root: cardURL)
-        guard case let .scanned(bundles, unreadableDirectories) = outcome else {
+        guard case let .scanned(bundles, unreadableDirectories, unrecognizedFiles) = outcome else {
             CLIOutput.error("Could not read “\(CLIOutput.safe(cardURL.path))” — it does not exist, is not a folder, or is not readable.")
             throw ExitCode(2)
         }
         if unreadableDirectories > 0 {
             CLIOutput.error("\(unreadableDirectories) folder(s) on the card could not be read; this ingest covers only what was visible. Not ejecting.")
+        }
+        // Files the walk read and will not copy. Previously dropped in silence,
+        // which let a card of stills + clips report a complete ingest of the
+        // stills alone and then eject.
+        if unrecognizedFiles > 0 {
+            CLIOutput.error("\(unrecognizedFiles) file(s) on the card are not a format PhotoDrop ingests "
+                          + "and will be left behind. Not ejecting.")
         }
         guard !bundles.isEmpty else {
             print("No recognized photos found on \(cardURL.path).")
@@ -269,7 +293,8 @@ struct Ingest: AsyncParsableCommand {
         // whatever the walk couldn't see, and ejecting is the one step that puts
         // it out of reach. (`IngestEngine` separately refuses to eject when files
         // failed; this covers what was never planned in the first place.)
-        let doEject = (eject ?? loadedPreset?.ejectAfterIngest ?? false) && unreadableDirectories == 0
+        let doEject = (eject ?? loadedPreset?.ejectAfterIngest ?? false)
+            && unreadableDirectories == 0 && unrecognizedFiles == 0
 
         let volumeID = (try? cardURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? cardURL.path
         let cardLabel = (try? cardURL.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? cardURL.lastPathComponent
@@ -371,6 +396,12 @@ struct Ingest: AsyncParsableCommand {
         if result.halted { throw ExitCode(2) }
         if result.cancelled { throw ExitCode(2) }
         if result.filesFailed > 0 { throw ExitCode(1) }
+        // A job that copied everything and could not write its manifest is not a
+        // success: the files exist and nothing can ever attest to them. This
+        // used to exit 0, so a wrapper script reading `$?` released the card over
+        // a library with no integrity record. Exit 1 — "issues found" — rather
+        // than 2, because the copy itself completed and was checked.
+        if !result.manifestFailures.isEmpty { throw ExitCode(1) }
     }
 }
 
@@ -579,6 +610,8 @@ enum CLIOutput {
             lead = "⚠ Cancelled — partial ingest: "
         } else if r.primaryFailures > 0 {
             lead = "⚠ Completed with errors: "
+        } else if !r.manifestFailures.isEmpty {
+            lead = "⚠ Copied, but no manifest was written: "
         } else if !r.failedMirrors.isEmpty {
             lead = "⚠ Library complete, mirror incomplete: "
         } else {
@@ -586,6 +619,9 @@ enum CLIOutput {
         }
         var s = lead + parts.joined(separator: ", ") + " · " + size
         if let manifestURL = r.manifestURL { s += "\n  manifest: \(manifestURL.path)" }
+        for root in r.manifestFailures {
+            s += "\n  could not write manifest at: \(safe(root))"
+        }
         for mirror in r.failedMirrors {
             s += "\n  could not write mirror: \(safe(mirror))"
         }
@@ -620,6 +656,7 @@ enum CLIOutput {
             if r.unstamped > 0 {
                 ok += "\n  \(r.unstamped) file(s) carry no checksum attribute and were not checked."
             }
+            ok += unexaminedLines(r)
             return ok
         }
         var headline = "✗ \(r.verified) of \(scope) verified — \(r.changed) changed, \(r.missing) missing, \(r.unreadable) unreadable"
@@ -634,6 +671,8 @@ enum CLIOutput {
         if r.unstamped > 0 {
             lines.append("  \(r.unstamped) file(s) carry no checksum attribute and were not checked.")
         }
+        let extra = unexaminedLines(r)
+        if !extra.isEmpty { lines.append(contentsOf: extra.split(separator: "\n").map(String.init)) }
         for issue in r.issues {
             let tag: String
             switch issue.kind {
@@ -652,6 +691,29 @@ enum CLIOutput {
         return lines.joined(separator: "\n")
     }
 
+    /// What a manifest-mode run could not use, and what it knows to be
+    /// incomplete. Appended to the pass *and* the failure headline, because both
+    /// verdicts are claims about the whole library and both were previously
+    /// silent about the entries they dropped.
+    private static func unexaminedLines(_ r: VerifyReport) -> String {
+        var lines: [String] = []
+        if r.undigested > 0 {
+            lines.append("  \(r.undigested) manifest entr(y/ies) record no checksum and could not be "
+                       + "checked. Older manifests recorded none for duplicate-skipped files.")
+        }
+        if r.outOfRoot > 0 {
+            lines.append("  \(r.outOfRoot) manifest entr(y/ies) name a path outside the library and were "
+                       + "refused. A manifest is unauthenticated data; entries that escape its root are "
+                       + "never followed.")
+        }
+        if r.partialManifests > 0 {
+            lines.append("  \(r.partialManifests) of \(r.manifestCount) manifest(s) are marked partial — "
+                       + "the job that wrote them was cancelled, halted, or lost files, so this library is "
+                       + "known to be missing photos the card held. What is here is intact.")
+        }
+        return lines.isEmpty ? "" : "\n" + lines.joined(separator: "\n")
+    }
+
     static func verifyJSON(_ r: VerifyReport) -> String {
         struct IssueDTO: Encodable { let kind: String; let name: String; let path: String }
         struct ReportDTO: Encodable {
@@ -661,6 +723,12 @@ enum CLIOutput {
             /// `allGood` is entitled to assume the verdict covered everything;
             /// these say how much of the target it actually reached.
             let unreadableDirectories: Int, unstamped: Int
+            /// Manifest-mode counterparts: entries with no digest, entries that
+            /// escaped the library root, and manifests whose job did not finish.
+            /// `allGood` stays true for all three — they are context, not
+            /// integrity errors — so a consumer that branches only on `allGood`
+            /// must read these to know what the verdict covered.
+            let undigested: Int, outOfRoot: Int, partialManifests: Int
             let issues: [IssueDTO]
         }
         func kindString(_ k: VerifyIssue.Kind) -> String {
@@ -676,8 +744,117 @@ enum CLIOutput {
             conflicts: r.conflicts,
             total: r.total, manifestCount: r.manifestCount, allGood: r.allGood,
             unreadableDirectories: r.unreadableDirectories, unstamped: r.unstamped,
+            undigested: r.undigested, outOfRoot: r.outOfRoot, partialManifests: r.partialManifests,
             issues: r.issues.map { IssueDTO(kind: kindString($0.kind), name: safe($0.name), path: safe($0.path)) }
         )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return (try? encoder.encode(dto)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    }
+}
+
+// MARK: - sync
+
+/// Bring a mirror up to date with an already-verified library.
+///
+/// The gap this closes: a mirror that wasn't mounted at ingest time had no route
+/// back. `heal` is report-only and treats recorded mirrors as recovery *sources*,
+/// so it would offer the lagging NAS as a place to restore from; `verify` only
+/// reports; and re-running the ingest needs the card, which by then is back in
+/// the camera. See `SyncEngine` for why this only ever adds files.
+struct Sync: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Copy anything a mirror is missing from an already-verified library."
+    )
+
+    @Argument(help: "The library to mirror from.")
+    var library: String
+
+    @Option(name: .long, help: "The mirror to bring up to date. Must already exist.")
+    var to: String
+
+    @Flag(inversion: .prefixedNo, help: "Hash-verify each copy (default on).")
+    var verify = true
+
+    @Flag(name: .long, help: "Emit a JSON report instead of human-readable text.")
+    var json = false
+
+    func run() throws {
+        let libraryURL = URL(fileURLWithPath: library, isDirectory: true)
+        let mirrorURL = URL(fileURLWithPath: to, isDirectory: true)
+        let showProgress = !json && isatty(FileHandle.standardError.fileDescriptor) != 0
+
+        let outcome: SyncEngine.Outcome
+        do {
+            outcome = try SyncEngine.run(
+                library: libraryURL, mirror: mirrorURL, verify: verify,
+                onProgress: { progress in
+                    guard showProgress else { return }
+                    FileHandle.standardError.write(
+                        Data("\r  \(progress.checked)/\(progress.total)…".utf8))
+                })
+        } catch let refusal as SyncEngine.Refusal {
+            CLIOutput.error(CLIOutput.safe(refusal.description))
+            throw ExitCode(2)
+        }
+        if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
+
+        print(json ? CLIOutput.syncJSON(outcome) : CLIOutput.syncHuman(outcome))
+
+        // Same ladder as the rest: 1 means "issues found", not "could not check".
+        // A conflict or a failure is an issue; nothing to do is a success.
+        if !outcome.allGood { throw ExitCode(1) }
+    }
+}
+
+extension CLIOutput {
+    static func syncHuman(_ o: SyncEngine.Outcome) -> String {
+        var lines: [String] = []
+        let lead = o.allGood ? "✓ Mirror up to date: " : "⚠ Mirror synced with issues: "
+        var parts = ["\(o.copied) copied"]
+        if o.alreadyPresent > 0 { parts.append("\(o.alreadyPresent) already present") }
+        if !o.conflicting.isEmpty { parts.append("\(o.conflicting.count) conflicting") }
+        if !o.failed.isEmpty { parts.append("\(o.failed.count) failed") }
+        if !o.missingAtSource.isEmpty { parts.append("\(o.missingAtSource.count) missing from the library") }
+        // The byte count is only meaningful when something moved; `.byteCount`
+        // renders 0 as "Zero kB", which reads like a bug.
+        lines.append(lead + parts.joined(separator: ", ")
+                     + (o.bytesCopied > 0 ? " · " + o.bytesCopied.formatted(.byteCount(style: .file)) : ""))
+
+        for path in o.conflicting {
+            lines.append("  CONFLICT  \(safe(path))")
+        }
+        if !o.conflicting.isEmpty {
+            lines.append("  CONFLICT means the mirror already holds a different file at that path.")
+            lines.append("  Nothing was overwritten. Resolve them yourself, then run sync again.")
+        }
+        for path in o.missingAtSource {
+            lines.append("  MISSING   \(safe(path))  (recorded in the manifest, absent from the library)")
+        }
+        for failure in o.failed {
+            lines.append("  FAILED    \(safe(failure.path)): \(safe(failure.reason))")
+        }
+        if let manifestURL = o.manifestURL {
+            lines.append("  manifest: \(manifestURL.path)")
+        } else if o.copied > 0 || !o.allGood {
+            // Only a *failure* to write one is a warning. A no-op sync writes no
+            // manifest on purpose — see `SyncEngine`.
+            lines.append("  warning: no manifest could be written at the mirror, so it cannot be verified on its own.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func syncJSON(_ o: SyncEngine.Outcome) -> String {
+        struct DTO: Encodable {
+            let copied: Int, alreadyPresent: Int, bytesCopied: Int64
+            let conflicting: [String], missingAtSource: [String]
+            let failed: [String], allGood: Bool, manifest: String?
+        }
+        let dto = DTO(
+            copied: o.copied, alreadyPresent: o.alreadyPresent, bytesCopied: o.bytesCopied,
+            conflicting: o.conflicting.map(safe), missingAtSource: o.missingAtSource.map(safe),
+            failed: o.failed.map { safe("\($0.path): \($0.reason)") },
+            allGood: o.allGood, manifest: o.manifestURL?.path)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return (try? encoder.encode(dto)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"

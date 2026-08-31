@@ -20,12 +20,16 @@ struct JobArtifactButtons: View {
 
     var body: some View {
         if let result {
+            // The failures come before the buttons: a halted or cancelled job is
+            // exactly where the user needs to know *which* files, and this pane
+            // previously offered only "Open Log".
+            FailureList(failures: result.failedFiles, totalFailures: result.filesFailed)
             HStack(spacing: 10) {
                 if let logURL = result.logURL {
                     Button("Open Log") { NSWorkspace.shared.open(logURL) }
                 }
                 Button("Show in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([result.primaryDestination])
+                    NSWorkspace.shared.activateFileViewerSelecting(result.foldersToReveal)
                 }
                 if let manifestURL = result.manifestURL {
                     Button("Export Manifest…") { export(manifestURL) }

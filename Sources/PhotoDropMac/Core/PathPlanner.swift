@@ -76,12 +76,16 @@ enum PathPlanner {
         // "/" so it groups identically to CopyPlan.destinationDirectory's
         // components; the preview must agree with the copy.
         func leaf(for bundle: AssetBundle) -> String {
+            // No sequence: the preview groups by folder and the folder template
+            // never carries one — see `CopyPlan.destinationDirectory`.
             let context = TemplateContext(
                 date: bundle.primary.dateTaken,
                 description: safeDescription,
                 originalName: bundle.primary.url.lastPathComponent,
                 originalStem: bundle.primary.url.deletingPathExtension().lastPathComponent,
-                cardLabel: safeCardLabel
+                cardLabel: safeCardLabel,
+                cameraModel: sanitize(bundle.primary.cameraModel),
+                bodySerial: sanitize(bundle.primary.bodySerial)
             )
             let components = sanitizedComponents(TemplateRenderer.render(template.folder, context))
             if !components.isEmpty { return components.joined(separator: "/") }
