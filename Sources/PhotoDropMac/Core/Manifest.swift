@@ -51,10 +51,15 @@ struct Manifest: Codable, Sendable {
 enum ManifestWriter {
     static let folderName = "PhotoDrop Manifests"
 
-    /// Writes `ingest-<stamp>.json` and `.csv` into `<root>/PhotoDrop Manifests/`.
+    /// Writes `<kind>-<stamp>.json` and `.csv` into `<root>/PhotoDrop Manifests/`.
     /// `stamp` should match the job's log stamp so the two pair up. Returns the
     /// JSON URL on success, nil on failure.
-    static func write(_ manifest: Manifest, intoRoot root: URL, stamp: Date) -> URL? {
+    ///
+    /// `kind` names the command that produced it — `ingest` or `sync`. The audit
+    /// trail should say what wrote a record; a `sync` manifest filed under
+    /// `ingest-` claims a card was read when none was.
+    static func write(_ manifest: Manifest, intoRoot root: URL, stamp: Date,
+                      kind: String = "ingest") -> URL? {
         let fm = FileManager.default
         let dir = root.appendingPathComponent(folderName, isDirectory: true)
         guard (try? fm.createDirectory(at: dir, withIntermediateDirectories: true)) != nil else {
@@ -68,7 +73,7 @@ enum ManifestWriter {
         // destroy this manifest — and a lost manifest doesn't fail loudly, it
         // makes `verify` report success over the records that remain.
         guard let jsonURL = JobStamp.claimUniqueName(in: dir,
-                                                     base: "ingest-\(JobStamp.fileStamp(stamp))",
+                                                     base: "\(kind)-\(JobStamp.fileStamp(stamp))",
                                                      pathExtension: "json") else { return nil }
         do {
             try json.write(to: jsonURL, options: .atomic)

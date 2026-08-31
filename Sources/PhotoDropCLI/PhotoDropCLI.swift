@@ -8,7 +8,7 @@ struct PhotoDropCommand: AsyncParsableCommand {
         commandName: "photodrop",
         abstract: "Verify and ingest photo libraries from the command line.",
         version: "0.1.3",
-        subcommands: [Verify.self, Ingest.self, Heal.self, Layouts.self]
+        subcommands: [Verify.self, Ingest.self, Sync.self, Heal.self, Layouts.self]
     )
 }
 
@@ -730,6 +730,114 @@ enum CLIOutput {
             undigested: r.undigested, outOfRoot: r.outOfRoot, partialManifests: r.partialManifests,
             issues: r.issues.map { IssueDTO(kind: kindString($0.kind), name: safe($0.name), path: safe($0.path)) }
         )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return (try? encoder.encode(dto)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+    }
+}
+
+// MARK: - sync
+
+/// Bring a mirror up to date with an already-verified library.
+///
+/// The gap this closes: a mirror that wasn't mounted at ingest time had no route
+/// back. `heal` is report-only and treats recorded mirrors as recovery *sources*,
+/// so it would offer the lagging NAS as a place to restore from; `verify` only
+/// reports; and re-running the ingest needs the card, which by then is back in
+/// the camera. See `SyncEngine` for why this only ever adds files.
+struct Sync: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Copy anything a mirror is missing from an already-verified library."
+    )
+
+    @Argument(help: "The library to mirror from.")
+    var library: String
+
+    @Option(name: .long, help: "The mirror to bring up to date. Must already exist.")
+    var to: String
+
+    @Flag(inversion: .prefixedNo, help: "Hash-verify each copy (default on).")
+    var verify = true
+
+    @Flag(name: .long, help: "Emit a JSON report instead of human-readable text.")
+    var json = false
+
+    func run() throws {
+        let libraryURL = URL(fileURLWithPath: library, isDirectory: true)
+        let mirrorURL = URL(fileURLWithPath: to, isDirectory: true)
+        let showProgress = !json && isatty(FileHandle.standardError.fileDescriptor) != 0
+
+        let outcome: SyncEngine.Outcome
+        do {
+            outcome = try SyncEngine.run(
+                library: libraryURL, mirror: mirrorURL, verify: verify,
+                onProgress: { progress in
+                    guard showProgress else { return }
+                    FileHandle.standardError.write(
+                        Data("\r  \(progress.checked)/\(progress.total)…".utf8))
+                })
+        } catch let refusal as SyncEngine.Refusal {
+            CLIOutput.error(CLIOutput.safe(refusal.description))
+            throw ExitCode(2)
+        }
+        if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
+
+        print(json ? CLIOutput.syncJSON(outcome) : CLIOutput.syncHuman(outcome))
+
+        // Same ladder as the rest: 1 means "issues found", not "could not check".
+        // A conflict or a failure is an issue; nothing to do is a success.
+        if !outcome.allGood { throw ExitCode(1) }
+    }
+}
+
+extension CLIOutput {
+    static func syncHuman(_ o: SyncEngine.Outcome) -> String {
+        var lines: [String] = []
+        let lead = o.allGood ? "✓ Mirror up to date: " : "⚠ Mirror synced with issues: "
+        var parts = ["\(o.copied) copied"]
+        if o.alreadyPresent > 0 { parts.append("\(o.alreadyPresent) already present") }
+        if !o.conflicting.isEmpty { parts.append("\(o.conflicting.count) conflicting") }
+        if !o.failed.isEmpty { parts.append("\(o.failed.count) failed") }
+        if !o.missingAtSource.isEmpty { parts.append("\(o.missingAtSource.count) missing from the library") }
+        // The byte count is only meaningful when something moved; `.byteCount`
+        // renders 0 as "Zero kB", which reads like a bug.
+        lines.append(lead + parts.joined(separator: ", ")
+                     + (o.bytesCopied > 0 ? " · " + o.bytesCopied.formatted(.byteCount(style: .file)) : ""))
+
+        for path in o.conflicting {
+            lines.append("  CONFLICT  \(safe(path))")
+        }
+        if !o.conflicting.isEmpty {
+            lines.append("  CONFLICT means the mirror already holds a different file at that path.")
+            lines.append("  Nothing was overwritten. Resolve them yourself, then run sync again.")
+        }
+        for path in o.missingAtSource {
+            lines.append("  MISSING   \(safe(path))  (recorded in the manifest, absent from the library)")
+        }
+        for failure in o.failed {
+            lines.append("  FAILED    \(safe(failure.path)): \(safe(failure.reason))")
+        }
+        if let manifestURL = o.manifestURL {
+            lines.append("  manifest: \(manifestURL.path)")
+        } else if o.copied > 0 || !o.allGood {
+            // Only a *failure* to write one is a warning. A no-op sync writes no
+            // manifest on purpose — see `SyncEngine`.
+            lines.append("  warning: no manifest could be written at the mirror, so it cannot be verified on its own.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func syncJSON(_ o: SyncEngine.Outcome) -> String {
+        struct DTO: Encodable {
+            let copied: Int, alreadyPresent: Int, bytesCopied: Int64
+            let conflicting: [String], missingAtSource: [String]
+            let failed: [String], allGood: Bool, manifest: String?
+        }
+        let dto = DTO(
+            copied: o.copied, alreadyPresent: o.alreadyPresent, bytesCopied: o.bytesCopied,
+            conflicting: o.conflicting.map(safe), missingAtSource: o.missingAtSource.map(safe),
+            failed: o.failed.map { safe("\($0.path): \($0.reason)") },
+            allGood: o.allGood, manifest: o.manifestURL?.path)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return (try? encoder.encode(dto)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"

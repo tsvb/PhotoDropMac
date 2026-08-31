@@ -79,6 +79,38 @@ enum PreflightCheck {
         return parts.joined(separator: "\n\n")
     }
 
+    /// Returns a human-readable warning naming mirrors that aren't currently
+    /// reachable, or `nil` when every configured destination is present.
+    ///
+    /// Overridable, unlike `missingDestinations` — and the difference is the
+    /// whole point. A missing **primary** is a mistake. A missing **mirror** is
+    /// the routine travel case the 3-2-1 feature exists for: laptop in the field,
+    /// NAS at home. `ArchiveDestinations.identity` tolerates an absent root
+    /// deliberately for exactly this reason.
+    ///
+    /// What was wrong was discovering it 2,000 times instead of once. Nothing
+    /// pre-flighted it, so every bundle failed at `createDirectory`, the log took
+    /// 2,000 lines to say one thing, and `filesFailed` blocked the auto-eject even
+    /// though the library was complete.
+    static func unreachableMirrors(archives: [URL]) -> String? {
+        let fm = FileManager.default
+        let missing = archives.filter { !fm.fileExists(atPath: $0.path) }
+        guard !missing.isEmpty else { return nil }
+
+        let names = missing.map { "“\($0.lastPathComponent)”" }.joined(separator: ", ")
+        let one = missing.count == 1
+        let subject = one ? "isn’t available right now" : "aren’t available right now"
+        let volumes = one ? "That volume may not be mounted."
+                          : "Those volumes may not be mounted."
+        let them = one ? "it" : "them"
+        let theyre = one ? "it’s" : "they’re"
+        return """
+        \(names) \(subject). \(volumes)
+
+        You can ingest to the other destinations now and bring \(them) up to date later by re-running the ingest, or with “photodrop sync” once \(theyre) back.
+        """
+    }
+
     /// Returns a human-readable warning if a destination volume looks too full,
     /// or `nil` if everything fits (or can't be checked).
     static func spaceWarning(plannedBytes: Int64, primary: URL, archives: [URL]) -> String? {

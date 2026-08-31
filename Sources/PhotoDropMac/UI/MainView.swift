@@ -312,6 +312,14 @@ struct MainView: View {
             return
         }
 
+        // A mirror that isn't mounted is a warning, not a refusal — that is the
+        // travel case the 3-2-1 feature exists for. Said once, up front, instead
+        // of once per bundle for the length of the job.
+        if let warning = PreflightCheck.unreachableMirrors(archives: archiveDestinations) {
+            preflightMessage = warning
+            return
+        }
+
         // Preflight on the *selected* bytes: warn (don't hard-block) if a
         // destination volume looks too full. The user can still proceed —
         // dedup may make it fit.
