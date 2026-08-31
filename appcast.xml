@@ -21,5 +21,33 @@
         <description>Updates for PhotoDrop, a macOS photo-ingest tool.</description>
         <language>en</language>
         <!-- NEW ITEMS ARE INSERTED DIRECTLY BELOW THIS LINE, NEWEST FIRST. -->
+        <item>
+            <title>PhotoDrop 0.4.0</title>
+            <pubDate>Mon, 31 Aug 2026 10:28:22 -0400</pubDate>
+            <sparkle:version>188</sparkle:version>
+            <sparkle:shortVersionString>0.4.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/tsvb/PhotoDropMac/releases/tag/v0.4.0</link>
+            <description><![CDATA[
+<h3>Added</h3>
+<ul>
+<li><strong>In-app updates (Sparkle).</strong> PhotoDrop can now keep itself up to date instead of relying on you to notice a new DMG on the Releases page — which, for a security fix, meant a fix that reached nobody. <strong>Settings → Updates</strong> holds the controls; <strong>Help → Check for Updates…</strong> checks on demand.</li>
+<li><strong>Opt-in.</strong> Sparkle asks before its first check and nothing is fetched until you answer. The app sets no "check automatically" default on your behalf.</li>
+<li><strong>Signed.</strong> Every update is verified against an Ed25519 key compiled into the copy you are already running, before anything is unpacked — on top of the existing Developer ID signature and Apple notarization.</li>
+<li><strong>Never during an ingest.</strong> Sparkle's terminal act is to replace and relaunch the app, and a copy's only safe stopping point is a file boundary. Update checks are refused while a job runs, and a pending installation is postponed until the copy has finished and written its manifest — the same reasoning that already routes Quit through the graceful-cancel path.</li>
+<li><strong>A build that cannot update says so.</strong> A build from source carries no signing key; it starts no updater, makes no network connection at all, and Settings states that plainly rather than showing a Check button that does nothing.</li>
+<li>Privacy: the update check is the app's only outbound connection, sends nothing about you or your photos, and Sparkle's system profiling stays off. See PRIVACY.md and SECURITY.md.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li>The app now uses an explicit <code>Info.plist</code> instead of Xcode's generated one. Xcode's <code>INFOPLIST_KEY_*</code> build settings only cover keys it knows about: <code>INFOPLIST_KEY_SUFeedURL</code> was accepted without a warning and <strong>dropped from the built plist</strong>, which would have shipped an app that silently never checks for updates. <code>scripts/release.sh</code> now reads both Sparkle keys back out of the built bundle, and the test suite pins it.</li>
+<li>Sparkle's XCFramework ships ad-hoc signed and embedding it signs only the outer bundle, so a post-build phase re-signs the executables nested inside it with the build's own identity, hardened runtime and secure timestamp. <code>codesign --verify --deep --strict</code> reports such a build as perfectly valid; notarization is what rejects it, after the archive is already submitted. <code>release.sh</code> now fails if any ad-hoc signature survives in the finished bundle.</li>
+<li><code>scripts/release.sh</code> refuses to ship a build whose update key is missing or does not match the private key in the keychain, and signs each release into <code>appcast.xml</code> before tagging — a release absent from the feed is a release no installed copy will ever see.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/tsvb/PhotoDropMac/releases/download/v0.4.0/PhotoDropMac-0.4.0.dmg"
+                       type="application/octet-stream"
+                       sparkle:edSignature="wD7Akmbho1f9nn6jkXxg8G6hcFfuF0sJ8SrSNjlf0+1GuJgY/2UzQMSINTL1L6zfTeNgZhvis5iQZ/T+mZ22AA==" length="3770362" />
+        </item>
     </channel>
 </rss>
