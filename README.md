@@ -101,9 +101,15 @@ Separately from ingest, **Verify Library** (in the toolbar) re-hashes an existin
 
 **RAW (primaries)** — `dng`, `raf`, `arw`, `cr2`, `cr3`, `nef`, `nrw`, `orf`, `rw2`, `pef`, `srw`, `3fr`, `rwl`, `x3f`, `erf`, `mrw`, `mef`, `iiq`, `raw`, `sr2`, `srf`, `dcr`, `kdc`, `mos` — covering Canon, Nikon, Sony, Fujifilm, Panasonic, Olympus/OM, Pentax, Leica, Sigma, Phase One, Hasselblad, Kodak, and more.
 
-**JPEG** — `jpg`, `jpeg`. A JPEG is a companion when a same-stem RAW lives beside it, otherwise it's a primary bundle of its own.
+**JPEG and HEIF** — `jpg`, `jpeg`, `heic`, `heif`, `hif`. One of these is a companion when a same-stem RAW lives beside it, otherwise it's a primary bundle of its own. HEIF is what every recent iPhone writes by default, and what Canon's R-series and Sony write in HEIF mode.
+
+**Video** — `mov`, `mp4`, `m4v`, `avi`, `mts`, `m2ts`, `3gp`, `mpg`, `mpeg`, `wmv`, `mkv`. Always its own bundle, never a RAW's companion: a clip beside a stills frame of the same name is a different shot. Capture dates come from the container's own metadata, and the contact sheet shows a poster frame.
+
+Multi-file clip containers — spanned MXF, BRAW and R3D folders, `.insv` pairs — are **not** supported. They are directory-shaped and need a different atomic unit than a bundle, so PhotoDrop counts them among the files it will not copy rather than taking half of one.
 
 **Companions** — Adobe / DxO / RawTherapee sidecars (`xmp`, `dop`, `pp3`) and camera audio notes (`wav`). Both naming shapes are recognized: long-form `IMG_1234.DNG.xmp` and short-form `IMG_1234.xmp`. Orphan sidecars (a sidecar with no primary) are ignored.
+
+**Anything else is counted, not ignored.** A card holding files PhotoDrop doesn't take is reported as such, and the auto-eject is suppressed — the app will not tell you a card is finished while it still holds photos it can't read.
 
 ## Build and run
 
@@ -185,8 +191,20 @@ From the command line: `photodrop layouts` lists them, and `photodrop ingest --l
 
 Template syntax:
 
-- `{…}` — a token. A known name (`Description`, `OriginalName`, `OriginalStem`, `CardLabel`) renders that value; anything else is treated as a Unicode date-format pattern applied to the capture date (so `{yyyy}`, `{yyyy-MM-dd}`, `{HHmmss}` all work).
+- `{…}` — a token. A known name renders that value; anything else is treated as a Unicode date-format pattern applied to the capture date (so `{yyyy}`, `{yyyy-MM-dd}`, `{HHmmss}` all work).
 - `[…]` — an optional group, dropped entirely when a named token inside it renders empty (e.g. when you've typed no description).
+
+| Token | Renders |
+| --- | --- |
+| `{Description}` | the description field |
+| `{OriginalName}` / `{OriginalStem}` | the camera's filename, with and without its extension |
+| `{CardLabel}` | the card's volume name |
+| `{CameraModel}` / `{BodySerial}` | from EXIF — the serial is what actually separates two identical bodies |
+| `{Sequence}` / `{Sequence:4}` | position in this ingest, optionally zero-padded (`0001`) |
+
+`{Sequence}` works in the **filename** template only, and renders empty in a folder template. That is deliberate: the preview tree is planned over every shot on the card while the copy runs over the ones you've *selected*, so a sequence in a folder name would shift every folder the moment you culled a frame — and the preview would stop describing where the bytes actually go.
+
+Two bodies at one event both write `IMG_0001` and often at the same second. Nothing is ever overwritten, but the `_1` that separates them is assigned by the order you happened to ingest the cards, so the frames end up indistinguishable by name. `{BodySerial}` is how you tell them apart for good.
 
 With the defaults and a description of "Iceland", a Fujifilm frame from May 30, 2026 lands at:
 
@@ -248,6 +266,17 @@ A headless ingest: the same scan, plan, dedup, tee-hash verification and mirrori
 **SIGINT, SIGTERM and SIGHUP are all graceful cancels** — the job stops at the next file boundary and
 still writes its manifest and log for what landed. A second signal exits immediately.
 
+### `photodrop sync <library> --to <mirror> [--no-verify] [--json]`
+
+Brings a mirror that wasn't mounted at ingest time up to date — the field case the 3-2-1 story
+exists for: laptop on the shoot, NAS at home. It reads the library's own manifests for what should
+exist, copies what the mirror is missing, verifies it, and writes the mirror a manifest of its own
+so it becomes verifiable in its own right.
+
+**It only ever adds.** A file already at the mirror is verified and left alone; one whose content
+disagrees is reported and *never* overwritten, because two disagreeing copies is exactly where
+picking a winner automatically kills the good one. The mirror must already exist.
+
 ### `photodrop heal <library> [--json] [--script <path>] [--mirror <path>]…`
 
 Recovery triage, and **strictly report-only** — it never writes to the library. It verifies the
@@ -272,12 +301,14 @@ Swift 6 strict concurrency is on, with a deliberate split:
 
 A few design choices worth knowing:
 
-- **Tee-hashing** streams source → destination in 1 MiB chunks while hashing in flight, so a multi-GB file is read exactly once for both the copy and its digest.
+- **Tee-hashing** streams source → destination in 1 MiB chunks while hashing in flight, so a multi-GB file is read exactly once for both the copy and its digest — and **the card is read once per job, not once per destination**: mirrors copy from the primary that just landed, with their hash checked against the card-side digest, so three destinations cost one card read rather than three.
 - **Dedup is content-based**: a file is a duplicate if its size and hash match anywhere under the destination root, not just at the same path.
 - **Bundles are all-or-nothing.** A failure mid-bundle deletes that bundle's already-written files. A verification mismatch halts the whole job; other errors are logged and the run continues.
 - The `XxHash64` implementation is a pure-Swift, value-type streaming XXH64 — non-cryptographic, used only for copy verification and dedup equality.
 
-State is persisted in the user's Library: the hash cache at `~/Library/Application Support/PhotoDropMac/hash-cache.json`, and per-job logs at `~/Library/Logs/PhotoDrop/`. Each ingest also writes a verification manifest (JSON + CSV) into a `PhotoDrop Manifests/` folder at the destination root, so the receipt travels with the photos.
+- **Dedup confirms before it skips.** A candidate matched from the hash cache is re-read from the device before the copy is skipped — a cached digest is validated by size and timestamps, none of which silent corruption changes.
+
+State is persisted in the user's Library: the hash cache at `~/Library/Application Support/PhotoDropMac/hash-cache.json`, and per-job logs at `~/Library/Logs/PhotoDrop/`. Each ingest also writes a verification manifest (JSON + CSV + [MHL](https://mediahashlist.org), the format post houses read) into a `PhotoDrop Manifests/` folder at **every** destination root, so the receipt travels with the photos and each mirror can be verified on its own.
 
 ## Project layout
 
