@@ -4,10 +4,27 @@ import os
 
 @main
 struct PhotoDropCommand: AsyncParsableCommand {
+    /// Read from the bundle rather than written out here.
+    ///
+    /// This was a literal, and it had drifted two releases behind
+    /// `MARKETING_VERSION` — `photodrop --version` reported 0.1.3 while the app
+    /// it ships inside was 0.2.1. For a tool whose product is "these bytes are
+    /// the bytes that came off the card", a binary that misreports itself
+    /// undermines the manifest it just signed: a support conversation cannot
+    /// establish which code produced a given receipt.
+    ///
+    /// `Bundle.main` is the app bundle when the CLI runs from inside it (the
+    /// normal case — it is embedded at `Contents/MacOS/photodrop`). Standalone,
+    /// there is no Info.plist, hence the fallback.
+    static let toolVersion: String = {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "unknown (built without a bundle)"
+    }()
+
     static let configuration = CommandConfiguration(
         commandName: "photodrop",
         abstract: "Verify and ingest photo libraries from the command line.",
-        version: "0.1.3",
+        version: PhotoDropCommand.toolVersion,
         subcommands: [Verify.self, Ingest.self, Sync.self, Heal.self, Layouts.self]
     )
 }

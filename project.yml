@@ -61,7 +61,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
-        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 tsvb. MIT licensed."
         CODE_SIGN_ENTITLEMENTS: PhotoDropMac.entitlements
     scheme:
       testTargets:
