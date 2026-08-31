@@ -200,6 +200,26 @@ final class IngestEngine {
     /// Folders under the primary root where duplicates were found that this job
     /// would have filed somewhere else. See `CopyResult.duplicatesFoundElsewhere`.
     private var duplicatesFoundElsewhere: Set<String> = []
+    /// For the bundle currently being copied: where each of its files now lives
+    /// under the **primary** root, and the digest the card's copy hashed to.
+    ///
+    /// This is what lets a mirror copy from the primary instead of re-reading the
+    /// card. The destination loop sits outside the copy, and every pass read
+    /// `file.source`, so a 3-destination job read the whole card **three times**,
+    /// serially — the app's headline 3-2-1 feature was also its slowest path, at
+    /// roughly 4¼ hours for a 512 GB CFexpress that takes 85 minutes to read once,
+    /// on reader hardware that heats and throttles.
+    ///
+    /// Fanning out from the primary is *more* rigorous, not less: the mirror's
+    /// tee-hash is checked against the card-side digest recorded here, so a
+    /// primary that no longer holds the bytes that came off the card is caught at
+    /// the first mirror rather than silently propagated.
+    ///
+    /// Cleared at the start of every bundle, and again if the primary rolls back —
+    /// a mirror must fall back to the card rather than read a file that has just
+    /// been deleted.
+    private var primaryLanded: [URL: URL] = [:]
+    private var primaryDigest: [URL: UInt64] = [:]
 
     init(bundles: [AssetBundle],
          description: String,
@@ -347,6 +367,10 @@ final class IngestEngine {
         outer: for i in 0..<bundleCount {
             if isCancelled() { wasCancelled = true; break }
             var primaryOK = true
+            // Per bundle: nothing has landed at the primary yet, so the first
+            // pass reads the card and every later pass reads what it wrote.
+            primaryLanded.removeAll(keepingCapacity: true)
+            primaryDigest.removeAll(keepingCapacity: true)
 
             // Each destination gets its own error handling. A mirror failing must
             // not skip the mirrors *after* it and must not void the primary copy
@@ -365,7 +389,14 @@ final class IngestEngine {
                 } catch let err as FileCopierError {
                     log(.error, rootLabel(d, of: allRoots) + err.description)
                     recordFailure(bundle: plansPerRoot[d][i], root: allRoots[d], reason: err.description)
-                    if d == 0 { primaryOK = false }
+                    // The primary rolled back, so the paths recorded for it no
+                    // longer exist. Mirrors fall back to the card — a failed
+                    // primary must not take its mirrors down with it.
+                    if d == 0 {
+                        primaryOK = false
+                        primaryLanded.removeAll(keepingCapacity: true)
+                        primaryDigest.removeAll(keepingCapacity: true)
+                    }
                     // A mismatch means the bytes on disk are not the bytes we
                     // read: stop the whole job, at every destination.
                     if case .verificationMismatch = err {
@@ -397,7 +428,11 @@ final class IngestEngine {
                     log(.error, rootLabel(d, of: allRoots) + "Bundle failed: \(error.localizedDescription)")
                     recordFailure(bundle: plansPerRoot[d][i], root: allRoots[d],
                                   reason: error.localizedDescription)
-                    if d == 0 { primaryOK = false }
+                    if d == 0 {
+                        primaryOK = false
+                        primaryLanded.removeAll(keepingCapacity: true)
+                        primaryDigest.removeAll(keepingCapacity: true)
+                    }
                     failuresByRoot[d] += 1
                     filesFailed += 1
                     continue
@@ -762,6 +797,12 @@ final class IngestEngine {
                            let rel = Self.relative(foundIn.path(percentEncoded: false), under: root) {
                             duplicatesFoundElsewhere.insert(rel)
                         }
+                        // A file already in the library is just as good a read
+                        // source for the mirrors as one this job wrote, and it is
+                        // on fast local storage rather than the card. It is *not*
+                        // in `writtenFiles`, so rollback will never delete it.
+                        primaryLanded[file.source] = existingDuplicate.url
+                        primaryDigest[file.source] = existingDuplicate.hash
                     }
                     bundleManifest.append(ManifestEntry(
                         name: file.source.lastPathComponent,
@@ -785,13 +826,36 @@ final class IngestEngine {
                 // removes its own partial on failure, so we register the file for
                 // bundle-level rollback only once it is fully written.
                 let dest = file.destination
+                // Mirrors read from the copy the primary just made, not from the
+                // card. See `primaryLanded`. The fallback is the card itself, for
+                // the two cases where the primary has nothing to offer: this *is*
+                // the primary pass, or the primary failed and rolled back.
+                let readFrom = (d == 0) ? file.source : (primaryLanded[file.source] ?? file.source)
                 let copyHash = try FileCopier.copyAndHash(
-                    source: file.source, destination: dest, isCancelled: isCancelled
+                    source: readFrom, destination: dest, isCancelled: isCancelled
                 ) { chunkBytes in
                     self.bytesCopied += chunkBytes
                     self.emitProgress()
                 }
                 writtenFiles.append(dest)
+
+                // The digest this file must have: the one the card's bytes hashed
+                // to on the primary pass. When a mirror reads from the primary,
+                // comparing its tee-hash against that is an end-to-end check the
+                // old card-per-destination scheme never performed — it hashed
+                // three independent reads and never compared them to each other.
+                // A disagreement means the primary no longer holds what came off
+                // the card, which is a whole-job halt, not a mirror failure.
+                let expected = primaryDigest[file.source] ?? copyHash
+                if copyHash != expected {
+                    throw FileCopierError.verificationMismatch(
+                        file: readFrom, expected: expected, actual: copyHash)
+                }
+
+                if d == 0 {
+                    primaryLanded[file.source] = dest
+                    primaryDigest[file.source] = copyHash
+                }
 
                 if verify {
                     try FileCopier.verify(file: dest, expectedHash: copyHash)

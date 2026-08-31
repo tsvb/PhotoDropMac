@@ -295,6 +295,65 @@ final class OppositionFixTests: XCTestCase {
         XCTAssertEqual(report.outOfRoot, 1)
     }
 
+    // MARK: - F7 · mirrors read the primary, not the card
+
+    /// A 3-destination job read the whole card three times, serially: the
+    /// destination loop sits outside the copy and every pass used `file.source`.
+    /// The headline 3-2-1 feature was the slowest path in the app.
+    ///
+    /// What this pins is the property the fan-out must not trade away for speed:
+    /// with three destinations, all three end up byte-identical to the card and
+    /// nothing fails. The read *count* isn't observable from here without
+    /// instrumenting `FileCopier`; the correctness of the rewritten path is, and
+    /// it is what a regression would break first — a mirror reading from a
+    /// primary that hasn't landed, or from the wrong path after a rollback.
+    func testMirrorsCopyFromThePrimaryRatherThanRereadingTheCard() async throws {
+        let tmp = try freshTempDir("FanOut")
+        let card = tmp.appendingPathComponent("card", isDirectory: true)
+        let photo = try write(Data(repeating: 0x5A, count: 8192), named: "IMG_0001.CR2", in: card)
+
+        var components = DateComponents()
+        components.year = 2026; components.month = 5; components.day = 28; components.hour = 12
+        let bundle = AssetBundle(
+            primary: ScannedPhoto(id: photo, url: photo, size: 8192,
+                                  dateTaken: Calendar.current.date(from: components)!,
+                                  dateSource: .fileModification),
+            companions: [])
+
+        let primary = tmp.appendingPathComponent("Library", isDirectory: true)
+        let mirrorA = tmp.appendingPathComponent("NAS", isDirectory: true)
+        let mirrorB = tmp.appendingPathComponent("SSD", isDirectory: true)
+        for root in [primary, mirrorA, mirrorB] {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        }
+
+        let engine = IngestEngine(
+            bundles: [bundle], description: "", primaryRoot: primary,
+            archiveRoots: [mirrorA, mirrorB],
+            verify: true, ejectAfter: false, sourceMountPoint: nil, sourceVolumeID: "fanout-vol",
+            template: .default, cardLabel: "",
+            cache: HashCache(storeURL: tmp.appendingPathComponent("cache.json")),
+            indexStoreURL: tmp.appendingPathComponent("index.json"),
+            logDirectory: tmp.appendingPathComponent("Logs", isDirectory: true))
+        let result = await engine.run()
+
+        XCTAssertEqual(result.filesFailed, 0)
+        XCTAssertEqual(result.filesCopied, 3, "one file at each of three destinations")
+
+        // Every destination holds the same bytes, which is the property the
+        // fan-out must not trade away for speed.
+        let expected = try XxHash64.hash(fileAt: photo)
+        for root in [primary, mirrorA, mirrorB] {
+            let landed = try XCTUnwrap(
+                FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
+                    .compactMap { $0 as? URL }
+                    .first { $0.pathExtension == "CR2" },
+                "nothing landed under \(root.lastPathComponent)")
+            XCTAssertEqual(try XxHash64.hash(fileAt: landed), expected,
+                           "\(root.lastPathComponent) does not match the card")
+        }
+    }
+
     // MARK: - Manifest fixture
 
     /// Writes a manifest into `PhotoDrop Manifests/` the way a job would, so the
