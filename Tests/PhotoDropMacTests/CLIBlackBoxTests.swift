@@ -150,4 +150,39 @@ final class CLIBlackBoxTests: XCTestCase {
         XCTAssertFalse(text.unicodeScalars.contains("\u{202E}"), "a raw bidi override reached the terminal")
         XCTAssertTrue(text.contains("\\x1B"), "…and the escape is still shown to the user: \(text)")
     }
+
+    // MARK: - sync
+
+    /// `sync` writes to a mirror on the strength of a manifest, so its exit codes
+    /// are part of the same contract as `verify`'s: 0 up to date, 1 issues
+    /// (a conflict it refused to overwrite), 2 could not run. Also asserted: the
+    /// mirror is verifiable afterwards, and the user is told that `heal` will
+    /// not search this mirror unaided.
+    func testSyncExitCodesAndTheHealHint() async throws {
+        let library = try makeLibrary(named: "sync-library")
+        let mirror = tmp.appendingPathComponent("sync-mirror", isDirectory: true)
+        try FileManager.default.createDirectory(at: mirror, withIntermediateDirectories: true)
+
+        let synced = try await run(["sync", library.path, "--to", mirror.path])
+        XCTAssertEqual(synced.status, 0, synced.stderrText)
+        XCTAssertTrue(synced.stdoutText.contains("✓"), synced.stdoutText)
+        XCTAssertTrue(synced.stdoutText.contains("--mirror"),
+                      "the library never recorded this mirror; heal needs to be told: \(synced.stdoutText)")
+        let verified = try await run(["verify", mirror.path])
+        XCTAssertEqual(verified.status, 0, "a synced mirror must verify on its own: \(verified.stderrText)")
+
+        let conflicting = tmp.appendingPathComponent("sync-conflict", isDirectory: true)
+        try FileManager.default.createDirectory(at: conflicting.appendingPathComponent("2026/2026-05-28"),
+                                                withIntermediateDirectories: true)
+        try Data("not the same bytes".utf8)
+            .write(to: conflicting.appendingPathComponent("2026/2026-05-28/IMG_0001.CR2"))
+        let conflict = try await run(["sync", library.path, "--to", conflicting.path])
+        XCTAssertEqual(conflict.status, 1, conflict.stdoutText)
+        XCTAssertTrue(conflict.stdoutText.contains("CONFLICT"), conflict.stdoutText)
+        XCTAssertEqual(String(data: try Data(contentsOf: conflicting.appendingPathComponent("2026/2026-05-28/IMG_0001.CR2")),
+                              encoding: .utf8), "not the same bytes", "never overwritten")
+
+        let missing = try await run(["sync", library.path, "--to", tmp.appendingPathComponent("no-such-mirror").path])
+        XCTAssertEqual(missing.status, 2, "a mirror that does not exist must not be created")
+    }
 }

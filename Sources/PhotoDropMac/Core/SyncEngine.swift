@@ -26,6 +26,19 @@ import Foundation
 ///   already hash-verified when it landed.
 /// - It refuses a mirror that is inside the library or vice versa, the same
 ///   topology rule the ingest applies.
+/// - It stops the way an ingest stops. `isCancelled` is polled at every file
+///   boundary and between chunks inside `FileCopier`, and a cancelled run still
+///   writes the mirror's manifest for what landed, marked `partial`. The CLI
+///   wires the termination signals to it (`GracefulStop`); it shipped without
+///   that, and a Ctrl-C mid-file left a truncated file the next sync could only
+///   report as a CONFLICT it must not touch.
+/// - **A synced mirror is not one `heal` will search unaided.** The library's
+///   manifests were written by the ingest and record only the roots that job
+///   wrote; `heal` refuses unrecorded roots by design (the mirror gate in
+///   `VerifyEngine.build`). `Outcome.recordedInLibrary` says which case this
+///   is, so the CLI can tell the user to pass `--mirror` while the fact is
+///   fresh. Writing the mirror *into* the library's records would mean writing
+///   to the library, which this command promises never to do.
 enum SyncEngine {
 
     struct Outcome: Sendable {
@@ -45,6 +58,13 @@ enum SyncEngine {
         var bytesCopied: Int64 = 0
         /// The manifest written at the mirror, if one could be written.
         var manifestURL: URL?
+        /// The run was interrupted before every item was examined. What did
+        /// land is verified and in the mirror's manifest, marked partial.
+        var cancelled = false
+        /// Whether the library's own manifests name this mirror as one of their
+        /// destinations — i.e. whether `heal <library>` will search it without
+        /// being told to. See the type comment.
+        var recordedInLibrary = false
 
         /// Nothing is wrong: everything the library records is now at the mirror.
         var allGood: Bool {
@@ -105,6 +125,7 @@ enum SyncEngine {
         guard plan.manifestCount > 0 else { throw Refusal.noManifests(library) }
 
         var outcome = Outcome()
+        outcome.recordedInLibrary = libraryRecords(mirror: mirror, in: library)
         var entries: [ManifestEntry] = []
         let startedAt = Date()
         let total = plan.items.count
@@ -119,7 +140,7 @@ enum SyncEngine {
         }
 
         for (i, item) in plan.items.enumerated() {
-            if isCancelled() { break }
+            if isCancelled() { outcome.cancelled = true; break }
             onProgress(VerifyProgress(total: total, checked: i + 1, currentFile: item.name))
 
             let destination = mirror.appendingPathComponent(item.relPath)
@@ -177,6 +198,13 @@ enum SyncEngine {
                     xxhash64: String(format: "%016llx", hash),
                     status: "copied"))
                 log(verify ? .verified : .copied, "\(item.relPath)", signature: verify ? hash : nil)
+            } catch is CancellationError {
+                // `copyAndHash` removed its own partial, so nothing is left at
+                // the mirror for the next run to mistake for a conflict. Not a
+                // failure: the user asked to stop, and the file is simply not
+                // there yet.
+                outcome.cancelled = true
+                break
             } catch {
                 outcome.failed.append((item.relPath, "\(error)"))
                 log(.error, "\(item.relPath) — \(error)")
@@ -198,7 +226,7 @@ enum SyncEngine {
             destinations: [mirror.path(percentEncoded: false), library.path(percentEncoded: false)],
             verified: verify,
             // Honest about its own completeness on the same terms as an ingest.
-            partial: !outcome.allGood || isCancelled(),
+            partial: !outcome.allGood || outcome.cancelled,
             filesCopied: outcome.copied,
             filesSkipped: outcome.alreadyPresent,
             filesFailed: outcome.failed.count,
@@ -217,5 +245,27 @@ enum SyncEngine {
                                                        stamp: startedAt, kind: "sync")
         }
         return outcome
+    }
+
+    /// Whether any manifest under `library` names `mirror` among its
+    /// destinations. Compared on standardized paths: a recorded root is a string
+    /// chosen by whoever wrote the manifest, and a trailing slash or a `/var`
+    /// spelling must not read as a different folder.
+    static func libraryRecords(mirror: URL, in library: URL) -> Bool {
+        let wanted = mirror.standardizedFileURL.path(percentEncoded: false)
+        for url in ManifestWriter.manifestURLs(near: library) {
+            guard let data = try? Data(contentsOf: url),
+                  let manifest = ManifestWriter.decode(data) else { continue }
+            // Older manifests carry no `destinations`; the same fallback
+            // `VerifyEngine.build` applies.
+            let recordedRoots = manifest.destinations
+                ?? [manifest.primaryDestination] + [manifest.archiveDestination].compactMap { $0 }
+            for recorded in recordedRoots {
+                let path = URL(fileURLWithPath: recorded, isDirectory: true)
+                    .standardizedFileURL.path(percentEncoded: false)
+                if path == wanted { return true }
+            }
+        }
+        return false
     }
 }

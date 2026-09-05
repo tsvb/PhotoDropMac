@@ -300,62 +300,10 @@ struct Ingest: AsyncParsableCommand {
         let cardLabel = (try? cardURL.resourceValues(forKeys: [.volumeNameKey]).volumeName) ?? cardURL.lastPathComponent
         let showProgress = isatty(FileHandle.standardError.fileDescriptor) != 0
 
-        // A termination signal asks the engine to stop at the next file boundary
-        // instead of killing the process mid-write. Without this the copy is
-        // terminated partway through a file, leaving a partial in the library
-        // with no manifest entry and no checksum xattr — invisible to both verify
-        // modes, and on re-ingest its size differs so dedup misses it and the
-        // *real* file gets pushed to `…_1`.
-        //
-        // SIGTERM and SIGHUP are handled for exactly the same reason as SIGINT
-        // and were missed: closing the terminal window (SIGHUP), `pkill
-        // photodrop`, a launchd job hitting its exit timeout, and logging out all
-        // default to termination, and none of them run `FileCopier`'s Swift
-        // `catch` cleanup. Ctrl-C was the only one of the four anybody tested.
-        // Each is ignored at the POSIX level so its dispatch source sees it.
-        // A **second** signal exits immediately. Without an escalation path there
-        // was none: the handler only re-tripped an already-tripped flag and
-        // reprinted the same line, so hammering Ctrl-C during a multi-GB file on
-        // a slow reader could not stop the process and the user had to `kill`
-        // from another terminal — which then hit the very orphan-file problem the
-        // graceful stop exists to prevent. 130 is the conventional
-        // "terminated by SIGINT" status.
-        let interrupted = InterruptFlag()
-        let stopSignals: [(Int32, String)] = [(SIGINT, "Interrupted"), (SIGTERM, "Terminating"), (SIGHUP, "Hung up")]
-        var signalSources: [DispatchSourceSignal] = []
-        for (number, label) in stopSignals {
-            signal(number, SIG_IGN)
-            let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
-            source.setEventHandler {
-                if interrupted.isTripped {
-                    FileHandle.standardError.write(Data(
-                        "\nStopping now. The file being written is incomplete and is not in the manifest.\n".utf8))
-                    // Qualified: `ParsableCommand` has its own `exit(withError:)`.
-                    // This runs on a dispatch queue, not in a real signal
-                    // handler, so `exit(3)` (with its atexit/flush) is fine.
-                    Darwin.exit(130)
-                }
-                interrupted.trip()
-                FileHandle.standardError.write(Data(
-                    "\n\(label) — finishing the current file, then writing the manifest. Press again to stop immediately.\n".utf8))
-            }
-            source.resume()
-            signalSources.append(source)
-        }
-        // Restore default disposition, not just source cancellation, and do it as
-        // soon as the copy is over — **before** the post-ingest hook.
-        //
-        // The sources were cancelled at scope exit while `SIG_IGN` stayed
-        // installed, so signals were swallowed for the rest of the process. That
-        // covered the hook, which runs after the engine returns: combined with
-        // `ChildProcess` having no timeout, a hook that blocks (on stdin, on a
-        // dead mount) made the CLI un-interruptible — Ctrl-C ignored, SIGTERM
-        // ignored. Idempotent, so the `defer` backstop is free.
-        let restoreSignals = {
-            for source in signalSources { source.cancel() }
-            for (number, _) in stopSignals { signal(number, SIG_DFL) }
-        }
-        defer { restoreSignals() }
+        // SIGINT / SIGTERM / SIGHUP stop at the next file boundary and still
+        // write the manifest — see `GracefulStop`, which `sync` shares.
+        let stop = GracefulStop()
+        defer { stop.restore() }
 
         let engine = IngestEngine(
             bundles: bundles, description: descriptionText, primaryRoot: primaryURL,
@@ -364,7 +312,7 @@ struct Ingest: AsyncParsableCommand {
             template: template, cardLabel: cardLabel,
             cache: HashCache(storeURL: HashCache.defaultURL),
             indexStoreURL: DestinationIndex.defaultStoreURL,
-            isCancelled: { interrupted.isTripped },
+            isCancelled: { stop.isTripped },
             onProgress: { progress in
                 guard showProgress else { return }
                 let size = ByteCountFormatter.string(fromByteCount: progress.bytesCopied, countStyle: .file)
@@ -374,7 +322,7 @@ struct Ingest: AsyncParsableCommand {
         let result = await engine.run()
         // The copy is over; nothing after this point needs a graceful stop, and
         // everything after it (the hook) needs to remain interruptible.
-        restoreSignals()
+        stop.restore()
         if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
 
         if result.cancelled { CLIOutput.error("Ingest cancelled — a manifest was written for what already landed.") }
@@ -411,6 +359,88 @@ private final class InterruptFlag: Sendable {
     private let tripped = OSAllocatedUnfairLock(initialState: false)
     var isTripped: Bool { tripped.withLock { $0 } }
     func trip() { tripped.withLock { $0 = true } }
+}
+
+/// Turns SIGINT, SIGTERM and SIGHUP into a request to stop at the next file
+/// boundary — for **every** command that writes.
+///
+/// A termination signal asks the engine to stop at the next file boundary
+/// instead of killing the process mid-write. Without this the copy is
+/// terminated partway through a file, leaving a partial in the destination with
+/// no manifest entry and no checksum xattr — invisible to both verify modes, and
+/// on re-ingest its size differs so dedup misses it and the *real* file gets
+/// pushed to `…_1`.
+///
+/// SIGTERM and SIGHUP are handled for exactly the same reason as SIGINT and were
+/// missed: closing the terminal window (SIGHUP), `pkill photodrop`, a launchd
+/// job hitting its exit timeout, and logging out all default to termination, and
+/// none of them run `FileCopier`'s Swift `catch` cleanup. Ctrl-C was the only
+/// one of the four anybody tested. Each is ignored at the POSIX level so its
+/// dispatch source sees it. A **second** signal exits immediately. Without an
+/// escalation path there was none: the handler only re-tripped an
+/// already-tripped flag and reprinted the same line, so hammering Ctrl-C during
+/// a multi-GB file on a slow reader could not stop the process and the user had
+/// to `kill` from another terminal — which then hit the very orphan-file problem
+/// the graceful stop exists to prevent. 130 is the conventional "terminated by
+/// SIGINT" status.
+///
+/// **One definition, used by `ingest` and `sync`.** This lived inline in
+/// `ingest`, and `sync` — the second command that writes — shipped without it.
+/// A Ctrl-C mid-file killed the process with the file half written at the
+/// mirror, invisible to the manifest and the xattr stamp; the *next* sync found
+/// bytes at that path that did not match its record, reported CONFLICT and,
+/// correctly, refused to touch them. One interrupted catch-up made a permanent
+/// conflict out of a file that had merely been cut short. The mechanism was
+/// forty lines away; the sink was missed. Anything else that writes goes
+/// through this.
+///
+/// `restore()` puts the default dispositions back — not merely cancels the
+/// sources — and callers run it as soon as the copy is over, **before** any
+/// post-ingest hook. The sources used to be cancelled at scope exit while
+/// `SIG_IGN` stayed installed, so signals were swallowed for the rest of the
+/// process; with a hook that blocks (on stdin, on a dead mount) that made the
+/// CLI un-interruptible — Ctrl-C ignored, SIGTERM ignored. Idempotent, so the
+/// `defer` backstop is free.
+private final class GracefulStop {
+    private let flag = InterruptFlag()
+    private var sources: [DispatchSourceSignal] = []
+    private let signals: [(number: Int32, label: String)] = [
+        (SIGINT, "Interrupted"), (SIGTERM, "Terminating"), (SIGHUP, "Hung up"),
+    ]
+
+    /// True once a signal has arrived. Poll it from the engine's `isCancelled`.
+    var isTripped: Bool { flag.isTripped }
+
+    init() {
+        let flag = self.flag
+        for (number, label) in signals {
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
+            source.setEventHandler {
+                if flag.isTripped {
+                    FileHandle.standardError.write(Data(
+                        "\nStopping now. The file being written is incomplete and is not in the manifest.\n".utf8))
+                    // Qualified: `ParsableCommand` has its own `exit(withError:)`.
+                    // This runs on a dispatch queue, not in a real signal
+                    // handler, so `exit(3)` (with its atexit/flush) is fine.
+                    Darwin.exit(130)
+                }
+                flag.trip()
+                FileHandle.standardError.write(Data(
+                    "\n\(label) — finishing the current file, then writing the manifest. Press again to stop immediately.\n".utf8))
+            }
+            source.resume()
+            sources.append(source)
+        }
+    }
+
+    func restore() {
+        for source in sources { source.cancel() }
+        sources.removeAll()
+        for (number, _) in signals { signal(number, SIG_DFL) }
+    }
+
+    deinit { restore() }
 }
 
 // MARK: - verify
@@ -784,10 +814,17 @@ struct Sync: ParsableCommand {
         let mirrorURL = URL(fileURLWithPath: to, isDirectory: true)
         let showProgress = !json && isatty(FileHandle.standardError.fileDescriptor) != 0
 
+        // This command writes, so it stops the way `ingest` stops: at a file
+        // boundary, with the mirror's manifest written for what landed. It
+        // shipped without this — see `GracefulStop` for what a Ctrl-C did.
+        let stop = GracefulStop()
+        defer { stop.restore() }
+
         let outcome: SyncEngine.Outcome
         do {
             outcome = try SyncEngine.run(
                 library: libraryURL, mirror: mirrorURL, verify: verify,
+                isCancelled: { stop.isTripped },
                 onProgress: { progress in
                     guard showProgress else { return }
                     FileHandle.standardError.write(
@@ -797,20 +834,28 @@ struct Sync: ParsableCommand {
             CLIOutput.error(CLIOutput.safe(refusal.description))
             throw ExitCode(2)
         }
+        stop.restore()
         if showProgress { FileHandle.standardError.write(Data("\r\u{1B}[K".utf8)) }
 
-        print(json ? CLIOutput.syncJSON(outcome) : CLIOutput.syncHuman(outcome))
+        if outcome.cancelled {
+            CLIOutput.error("Sync cancelled — the mirror's manifest records what landed, marked partial.")
+        }
+        print(json ? CLIOutput.syncJSON(outcome, mirror: mirrorURL)
+                   : CLIOutput.syncHuman(outcome, mirror: mirrorURL))
 
-        // Same ladder as the rest: 1 means "issues found", not "could not check".
-        // A conflict or a failure is an issue; nothing to do is a success.
+        // Same ladder as `ingest`: a cancel is 2 (the mirror was not brought up
+        // to date and the tool could not say whether it would have been), an
+        // issue is 1, nothing to do is a success.
+        if outcome.cancelled { throw ExitCode(2) }
         if !outcome.allGood { throw ExitCode(1) }
     }
 }
 
 extension CLIOutput {
-    static func syncHuman(_ o: SyncEngine.Outcome) -> String {
+    static func syncHuman(_ o: SyncEngine.Outcome, mirror: URL) -> String {
         var lines: [String] = []
-        let lead = o.allGood ? "✓ Mirror up to date: " : "⚠ Mirror synced with issues: "
+        let lead = o.cancelled ? "⚠ Sync cancelled — mirror incomplete: "
+                 : o.allGood ? "✓ Mirror up to date: " : "⚠ Mirror synced with issues: "
         var parts = ["\(o.copied) copied"]
         if o.alreadyPresent > 0 { parts.append("\(o.alreadyPresent) already present") }
         if !o.conflicting.isEmpty { parts.append("\(o.conflicting.count) conflicting") }
@@ -841,20 +886,36 @@ extension CLIOutput {
             // manifest on purpose — see `SyncEngine`.
             lines.append("  warning: no manifest could be written at the mirror, so it cannot be verified on its own.")
         }
+        // Whether `heal` will look here. An ingest records only the roots it
+        // wrote, so a mirror brought up to date afterwards is not among the
+        // library's own destinations, and `heal <library>` refuses unrecorded
+        // roots by design (the mirror gate). Said now, while the user has just
+        // made this mirror real, rather than discovered the day it is needed.
+        if !o.recordedInLibrary {
+            lines.append("  note: `photodrop heal <library>` will not search this mirror on its own — the library's")
+            lines.append("        manifests do not record it. Pass --mirror \(safe(mirror.path(percentEncoded: false))) when you run heal.")
+        }
         return lines.joined(separator: "\n")
     }
 
-    static func syncJSON(_ o: SyncEngine.Outcome) -> String {
+    static func syncJSON(_ o: SyncEngine.Outcome, mirror: URL) -> String {
         struct DTO: Encodable {
             let copied: Int, alreadyPresent: Int, bytesCopied: Int64
             let conflicting: [String], missingAtSource: [String]
             let failed: [String], allGood: Bool, manifest: String?
+            /// The run was interrupted; `allGood` says nothing about the items
+            /// it never reached. A consumer must read this before trusting it.
+            let cancelled: Bool
+            /// Whether `heal <library>` will search this mirror without `--mirror`.
+            let mirror: String, recordedInLibrary: Bool
         }
         let dto = DTO(
             copied: o.copied, alreadyPresent: o.alreadyPresent, bytesCopied: o.bytesCopied,
             conflicting: o.conflicting.map(safe), missingAtSource: o.missingAtSource.map(safe),
             failed: o.failed.map { safe("\($0.path): \($0.reason)") },
-            allGood: o.allGood, manifest: o.manifestURL?.path)
+            allGood: o.allGood, manifest: o.manifestURL?.path,
+            cancelled: o.cancelled,
+            mirror: mirror.path(percentEncoded: false), recordedInLibrary: o.recordedInLibrary)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return (try? encoder.encode(dto)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
