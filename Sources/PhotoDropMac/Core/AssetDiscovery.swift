@@ -70,7 +70,17 @@ private let videoExtensions: Set<String> = [
 
 // Recognised sidecar extensions. `.wav` only counts when it shares its
 // stem with a primary — it's treated as a camera audio note.
-private let sidecarExtensions: Set<String> = ["dop", "xmp", "pp3", "wav"]
+//
+// `.aae` is Apple's adjustment sidecar: the edits Photos made to a HEIC or JPEG,
+// written beside it by every Photos export and Image Capture import. It was
+// neither a sidecar nor ignorable, so a folder ingest of an iPhone export —
+// the case "ingest from a folder" was added for — reported every edited frame
+// as a file PhotoDrop will not take and suppressed the eject, over what is the
+// image's own edit record. It travels as a sidecar for the reason an `.xmp`
+// does: the still without it has lost its edits. Photos names an *original's*
+// sidecar `IMG_O1234.AAE`, whose stem matches nothing; that is an orphan
+// sidecar and is dropped the way any orphan sidecar is.
+private let sidecarExtensions: Set<String> = ["dop", "xmp", "pp3", "aae", "wav"]
 
 /// Files the walk deliberately passes over without counting them as unexamined.
 ///
@@ -387,6 +397,7 @@ enum AssetDiscovery {
         case "dop": return .dop
         case "xmp": return .xmp
         case "pp3": return .pp3
+        case "aae": return .aae
         case "jpg", "jpeg": return .jpegPair
         case "wav": return .audioNote
         default: return nil

@@ -126,4 +126,22 @@ final class AssetDiscoveryTests: XCTestCase {
         XCTAssertFalse(bundles.contains { $0.primary.url.lastPathComponent == "LINK.DNG" },
                        "the symlink itself must not be ingested either")
     }
+
+    /// A Photos export or an Image Capture import puts `IMG_1234.AAE` — the
+    /// edits Photos made — beside every edited still. It was neither a sidecar
+    /// nor ignorable, so a folder ingest of an iPhone export reported every one
+    /// as a file PhotoDrop will not take and suppressed the eject.
+    func testAppleAdjustmentSidecarTravelsWithItsStill() throws {
+        let root = try freshTempDir()
+        try touch("IMG_0001.HEIC", in: root)
+        try touch("IMG_0001.AAE", in: root)
+        try touch("IMG_O0001.AAE", in: root)   // the *original's* sidecar: an orphan, its stem matches nothing
+
+        guard case let .scanned(bundles, _, unrecognized) = AssetDiscovery.scanOutcome(root: root) else {
+            return XCTFail("readable folder")
+        }
+        XCTAssertEqual(bundles.count, 1)
+        XCTAssertEqual(kinds(bundle(named: "IMG_0001.HEIC", in: bundles)), [.aae])
+        XCTAssertEqual(unrecognized, 0, "an orphan sidecar is dropped, never counted as a file left behind")
+    }
 }

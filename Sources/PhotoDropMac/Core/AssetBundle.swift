@@ -1,13 +1,14 @@
 import Foundation
 
 // Companion-file classifications recognized by PhotoDrop. The set is
-// deliberately closed: anything outside these four kinds (xmp/dop/pp3
+// deliberately closed: anything outside these five kinds (xmp/dop/pp3/aae
 // sidecars, JPEG pair, camera audio note) is treated as an unrelated file,
 // not a companion.
 enum CompanionKind: Sendable, Hashable {
     case xmp       // Adobe-style XMP sidecar (both IMG_1234.xmp and IMG_1234.DNG.xmp variants)
     case dop       // DxO PhotoLab sidecar
     case pp3       // RawTherapee sidecar
+    case aae       // Apple Photos adjustment sidecar (IMG_1234.AAE beside IMG_1234.HEIC / .JPG)
     case jpegPair  // JPEG shot next to a RAW with matching stem
     case audioNote // Camera audio memo (.wav adjacent to primary with matching stem)
 }
