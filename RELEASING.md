@@ -69,6 +69,19 @@ prerequisites and the per-release steps.
 6. **(Optional) `create-dmg`** for a nicer DMG layout: `brew install create-dmg`.
    Without it the script falls back to `hdiutil`.
 
+7. **The Homebrew tap**, once:
+
+   ```sh
+   gh repo create tsvb/homebrew-tap --public --description "Homebrew tap for tsvb's apps"
+   ```
+
+   `release.sh` renders `homebrew/Casks/photodropmac.rb` for every release (committed
+   here, before the tag) and, with `PUBLISH=1`, copies it into that repo — which is
+   what makes `brew install --cask tsvb/tap/photodropmac` work. A missing tap is
+   reported, not fatal; `scripts/homebrew-cask.sh --publish-to` backfills it. The
+   cask declares `auto_updates`, so `brew upgrade` defers to Sparkle rather than
+   reinstalling over it.
+
 ## Cutting a release
 
 ```sh
@@ -110,8 +123,14 @@ The script runs, in order:
    an app that silently never updates (see the header comment in `Info.plist`).
 8. `scripts/appcast.sh` — sign the DMG with the private key and add an `<item>` to
    `appcast.xml`, with release notes cut from `CHANGELOG.md`. Committed before the
-   tag, so the tag names a commit whose feed already describes the build.
-9. Tag, and — with `PUBLISH=1` — push and create the GitHub release.
+   tag, so the tag names a commit whose feed already describes the build. Then
+   `scripts/homebrew-cask.sh` renders the cask for the same DMG, committed the same way.
+9. Tag, and — with `PUBLISH=1` — push, create the GitHub release, and copy the cask
+   into the tap.
+
+Dependencies are **pinned exactly** in `project.yml` (`exactVersion`), so the archive
+is built against the versions the suite ran on, not whatever resolved newest that day.
+Bumping Sparkle or swift-argument-parser is its own commit, with the suite run.
 
 ### Why the app is stapled too
 

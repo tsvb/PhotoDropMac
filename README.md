@@ -44,7 +44,13 @@ The whole flow is built to be trustworthy and legible: it tells you what was pre
 
 ## Download and install
 
-Grab the latest **`PhotoDropMac-<version>.dmg`** from the [Releases](https://github.com/tsvb/PhotoDropMac/releases) page, open it, and **drag PhotoDrop to your Applications folder**.
+Grab the latest **`PhotoDropMac-<version>.dmg`** from the [Releases](https://github.com/tsvb/PhotoDropMac/releases) page, open it, and **drag PhotoDrop to your Applications folder**. Or, with Homebrew:
+
+```bash
+brew install --cask tsvb/tap/photodropmac
+```
+
+The cask installs the same signed, notarized DMG, puts the `photodrop` command-line tool on your `PATH`, and knows the app updates itself — `brew upgrade` won't fight Sparkle.
 
 The build is signed with a Developer ID and notarized by Apple, and the notarization ticket is stapled to the app *before* it goes into the DMG — so it should open with **no Gatekeeper dialog at all**, even offline. If you do see an "unidentified developer" warning, something is wrong with that download; please [report it](https://github.com/tsvb/PhotoDropMac/issues/new) rather than working around it.
 
@@ -59,7 +65,7 @@ To build from source instead, see [Build and run](#build-and-run). Maintainers c
 | Feature | What it does |
 | --- | --- |
 | **Date-organized library** | Groups every shot into `{year}/{day}/` folders by EXIF capture date, with fully configurable folder and filename templates. |
-| **RAW + companion bundles** | A RAW and its sidecars (`.xmp` / `.dop` / `.pp3`), JPEG pair, and camera audio note (`.wav`) move as one atomic unit — edits never get separated from their RAW. |
+| **RAW + companion bundles** | A RAW and its sidecars (`.xmp` / `.dop` / `.pp3` / `.aae`), JPEG pair, and camera audio note (`.wav`) move as one atomic unit — edits never get separated from their RAW. |
 | **Streaming verification** | Each file is read once and hashed in flight (tee-hashing); the copy is byte-verified against the source before it counts as done. |
 | **Verification receipts** | Every ingest writes a manifest (JSON + CSV) of each file and its xxHash into a `PhotoDrop Manifests/` folder beside the photos — an exportable, chain-of-custody record of exactly what landed. |
 | **Library re-verify** | Point at a library (or a single manifest) and re-hash every recorded file to surface silent corruption (bit-rot) or anything gone missing — long after the original ingest. |
@@ -90,7 +96,7 @@ flowchart LR
 
 1. **`DriveWatcher`** observes `NSWorkspace` mount/unmount events and surfaces the cards that are present.
 2. **`AssetDiscovery`** does a two-pass directory walk: RAW primaries and their same-directory companions first, then standalone JPEGs not already claimed as a RAW's JPEG pair. Companion matching is same-directory only, by design.
-3. **`ExifReader`** reads `DateTimeOriginal` (or `Digitized`) via ImageIO in the local time zone, falling back to file modification time. This date drives all folder grouping.
+3. **`ExifReader`** reads `DateTimeOriginal` (or `Digitized`) via ImageIO in the local time zone, falling back to file modification time. This date drives all folder grouping. A movie's timestamp carries the camera's UTC offset, and its wall clock is used the same way a still's is — so a clip and a frame from the same Tokyo morning land in the same day folder wherever the card is ingested.
 4. **`PathPlanner`** groups bundles into the preview tree; **`CopyPlan`** computes the real destination path and filename for each bundle from your templates.
 5. **`IngestEngine`** builds a per-destination dedup index, then for each file: dedup-check → copy + tee-hash → verify → record the hash. A verification mismatch halts the job; any other per-bundle error is logged and the job continues. On success it optionally ejects the card, writes a log and a **verification manifest** (the receipt of every file and its hash) at *every* destination, and persists the hash cache. Cancelling or halting still writes both, marked `partial`, because the files that landed need a record too. (`Copier` is the main-actor controller that drives the engine and holds the UI state.)
 
@@ -108,7 +114,7 @@ Separately from ingest, **Verify Library** (in the toolbar) re-hashes an existin
 
 Multi-file clip containers — spanned MXF, BRAW and R3D folders, `.insv` pairs — are **not** supported. They are directory-shaped and need a different atomic unit than a bundle, so PhotoDrop counts them among the files it will not copy rather than taking half of one.
 
-**Companions** — Adobe / DxO / RawTherapee sidecars (`xmp`, `dop`, `pp3`) and camera audio notes (`wav`). Both naming shapes are recognized: long-form `IMG_1234.DNG.xmp` and short-form `IMG_1234.xmp`. Orphan sidecars (a sidecar with no primary) are ignored.
+**Companions** — Adobe / DxO / RawTherapee sidecars (`xmp`, `dop`, `pp3`), Apple Photos adjustment sidecars (`aae`, the edits beside a HEIC or JPEG in any Photos export or Image Capture import), and camera audio notes (`wav`). Both naming shapes are recognized: long-form `IMG_1234.DNG.xmp` and short-form `IMG_1234.xmp`. Orphan sidecars (a sidecar with no primary, such as the `IMG_O1234.AAE` Photos writes for an original) are ignored.
 
 **Anything else is counted, not ignored.** A card holding files PhotoDrop doesn't take is reported as such, and the auto-eject is suppressed — the app will not tell you a card is finished while it still holds photos it can't read.
 
@@ -271,7 +277,8 @@ A headless ingest: the same scan, plan, dedup, tee-hash verification and mirrori
 `--folder-template`/`--file-template`, then `--layout`, then `--preset`, then the default.
 
 **SIGINT, SIGTERM and SIGHUP are all graceful cancels** — the job stops at the next file boundary and
-still writes its manifest and log for what landed. A second signal exits immediately.
+still writes its manifest and log for what landed. A second signal exits immediately. `sync` stops the
+same way.
 
 ### `photodrop sync <library> --to <mirror> [--no-verify] [--json]`
 
@@ -282,7 +289,14 @@ so it becomes verifiable in its own right.
 
 **It only ever adds.** A file already at the mirror is verified and left alone; one whose content
 disagrees is reported and *never* overwritten, because two disagreeing copies is exactly where
-picking a winner automatically kills the good one. The mirror must already exist.
+picking a winner automatically kills the good one. The mirror must already exist. A signal stops it
+at a file boundary, exactly as it stops `ingest`, and the mirror's manifest is written for what
+landed, marked partial.
+
+One thing to know afterwards: `heal <library>` searches only the mirrors the library's own manifests
+record, and a mirror brought up to date by `sync` is not among them — the ingest that wrote those
+manifests never wrote there. `sync` says so in its output; pass `--mirror <path>` to `heal` for a
+mirror it should search.
 
 ### `photodrop heal <library> [--json] [--script <path>] [--mirror <path>]…`
 
@@ -323,13 +337,14 @@ State is persisted in the user's Library: the hash cache at `~/Library/Applicati
 PhotoDropMac/
 ├─ project.yml                 # XcodeGen spec (the .xcodeproj is generated, not committed)
 ├─ CLAUDE.md                   # in-repo guide to the codebase
-├─ .github/workflows/ci.yml    # xcodegen + suite + CLI + side-effect assertions + doc links
+├─ .github/workflows/ci.yml    # xcodegen + suite + CLI + side-effect assertions, on two macOS images; doc links
 ├─ Info.plist                  # the app's plist — explicit, because Sparkle's keys live in it
 ├─ appcast.xml                 # the Sparkle update feed; every installed copy reads this file
-├─ scripts/                    # release.sh, appcast.sh, sparkle-keys.sh, sign-sparkle-helpers.sh,
-│                             #   sparkle-tools.sh, make-icon.swift, check-doc-links.sh
+├─ homebrew/Casks/             # the cask release.sh renders; mirrored into the tsvb/homebrew-tap repo
+├─ scripts/                    # release.sh, appcast.sh, homebrew-cask.sh, sparkle-keys.sh,
+│                             #   sign-sparkle-helpers.sh, sparkle-tools.sh, make-icon.swift, check-doc-links.sh
 ├─ docs/
-│  └─ design_handoff_polish_pass/   # design spec, copy, and an HTML prototype
+│  └─ internal/                # the review dossiers, and the design handoff the themes were built from
 ├─ Tests/PhotoDropMacTests/    # the XCTest target (hosted in the app)
 ├─ Sources/PhotoDropCLI/       # the headless `photodrop` front-end (argument-parser)
 └─ Sources/PhotoDropMac/

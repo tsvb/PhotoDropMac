@@ -9,6 +9,60 @@ an older build had no way to learn what a newer one fixed — and no way to diff
 it. They live here now, in the repo, and `scripts/release.sh` cuts the GitHub
 release from this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **`photodrop sync` stops the way `ingest` stops.** SIGINT, SIGTERM and SIGHUP
+  now end a sync at the next file boundary, with the mirror's manifest written
+  for what landed and marked partial; a second signal exits at once. It shipped
+  without this: a Ctrl-C mid-file killed the process with the file half written
+  at the mirror, invisible to the manifest and the checksum attribute, and the
+  *next* sync reported it as a CONFLICT it must never overwrite — a permanent
+  conflict made out of a file that had merely been cut short. Exit 2 on a cancel,
+  as for `ingest`.
+- **A clip and a still from the same moment land on the same day.** A movie's
+  creation date carries the camera's UTC offset, and it was rendered in the Mac's
+  zone — so a clip shot at 08:00 in Tokyo filed under 19:00 the previous day
+  when ingested in New York, while the still beside it filed under the 29th.
+  Movie timestamps now follow the rule stills always have: the camera's wall
+  clock is the capture time. A `Z` timestamp, from a camera that stores a true
+  instant and does not know where it was, is kept as an instant.
+- Clips shorter than a second get a poster frame in the contact sheet. The
+  fallback to the first frame was dead code (the compiler said so), so such a
+  clip showed the same "no preview" cell a corrupt file does.
+- **`sync` tells you what `heal` will do with the mirror.** `heal <library>`
+  searches only the mirrors the library's own manifests record, and a mirror
+  brought up to date afterwards is not among them; `sync` now says so and names
+  the `--mirror` argument to pass. Also in the `--json` report.
+- CI: the appcast check ran `xmllint` on an Ubuntu image that does not ship it,
+  so `main` read as failing for a missing tool.
+
+### Added
+
+- **Apple `.aae` adjustment sidecars travel with their still.** Every Photos
+  export and Image Capture import writes one beside each edited HEIC or JPEG. It
+  was neither a sidecar nor ignorable, so ingesting a folder of iPhone photos
+  reported every edited frame as a file PhotoDrop would not take and suppressed
+  the eject.
+- **A Homebrew cask.** `brew install --cask tsvb/tap/photodropmac` installs the
+  same notarized DMG, puts `photodrop` on `PATH`, and defers updates to Sparkle.
+  `scripts/release.sh` renders it for every release and publishes it to the tap.
+- Tests for `SyncEngine`, which had none: what it copies, what it refuses to
+  overwrite, what it does when the library's own copy is missing or no longer
+  matches its record, how it stops, and why a no-op run writes no manifest.
+
+### Changed
+
+- **Dependencies are pinned exactly.** `project.yml` pins Sparkle and
+  swift-argument-parser with `exactVersion`; the resolved versions live inside
+  the gitignored Xcode project, so a `from:` range meant every fresh resolve —
+  CI, a new machine, release day — took whatever was newest, and the update
+  channel's own in-process code could change under a release unaudited.
+- CI builds and tests on both `macos-15` and `macos-26`, so the toolchain that
+  gates a release includes the one releases are actually cut with.
+- The implemented design handoff moved under `docs/internal/`.
+
 ## [0.4.0] — 2026-08-31
 
 ### Added
