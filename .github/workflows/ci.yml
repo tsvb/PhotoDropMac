@@ -16,11 +16,21 @@ concurrency:
 
 jobs:
   test:
-    name: Build & test
+    name: Build & test (${{ matrix.runner }})
     # The test bundle is HOSTED — it loads into the app, so the app must launch
     # and a GUI session is required. GitHub's macOS runners provide one; a
     # headless container would not.
-    runs-on: macos-15
+    #
+    # Two images on purpose. Releases are cut from the developer's machine on
+    # the current Xcode; CI ran only the previous year's image, so the toolchain
+    # that gated a release was never the one that built it. The older image
+    # stays because it is the slower type checker — the one that has already
+    # failed builds this machine passed (see `ApertureMark.draw`).
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-26]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
 
     steps:
@@ -95,7 +105,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: TestResults
+          name: TestResults-${{ matrix.runner }}
           path: TestResults.xcresult
           retention-days: 7
 
@@ -111,6 +121,12 @@ jobs:
       - name: Check relative markdown links resolve
         run: ./scripts/check-doc-links.sh
 
+      # ubuntu-latest does not ship xmllint. Without this the appcast step
+      # exited 127 on every push after the feed was added, and main read as red
+      # for a missing tool rather than for anything in the repo.
+      - name: Install xmllint
+        run: sudo apt-get update -q && sudo apt-get install -y -q libxml2-utils
+
       # appcast.xml IS the update channel: every installed copy of PhotoDrop
       # reads this one file. A malformed feed does not produce an error anywhere
       # a user can see — Sparkle simply reports "no update available", forever,
@@ -123,3 +139,8 @@ jobs:
             || { echo "::error::appcast.xml has lost the marker scripts/appcast.sh inserts at."; exit 1; }
           grep -q "<key>SUFeedURL</key>" Info.plist \
             || { echo "::error::Info.plist has no SUFeedURL — the app could never check for updates."; exit 1; }
+
+      # The cask is what `brew install --cask tsvb/tap/photodropmac` reads. A
+      # syntax error there is a tap that fails for every brew user at once.
+      - name: Check the Homebrew cask parses
+        run: ruby -c homebrew/Casks/photodropmac.rb
