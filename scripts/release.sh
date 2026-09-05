@@ -305,6 +305,17 @@ else
   echo "⚠ No signing key — appcast.xml not updated. No installed copy will learn about $VERSION."
 fi
 
+# ── 8c. Render the Homebrew cask ────────────────────────────────────────────
+# Same reasoning as the appcast: a cask still naming the previous version is a
+# `brew install` that hands out an old build. Rendered before the tag so the tag
+# names a commit whose cask describes this DMG; pushed to the tap in step 9.
+echo "▸ Rendering the Homebrew cask"
+./scripts/homebrew-cask.sh "$DMG" --version "$VERSION"
+if [[ -n "$(git status --porcelain homebrew/)" ]]; then
+  git add homebrew/
+  git commit -m "chore(release): cask for $VERSION"
+fi
+
 TAG="v$VERSION"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   echo "⚠ Tag $TAG already exists — leaving it alone."
@@ -339,11 +350,24 @@ if [[ "${PUBLISH:-0}" == "1" ]]; then
   fi
   gh release create "$TAG" "$DMG" --title "$APP_NAME $VERSION" "${NOTES_ARG[@]}"
   echo "✓ Published: $(gh release view "$TAG" --json url -q .url)"
+
+  # The tap is what `brew install --cask tsvb/tap/photodropmac` reads. Its
+  # absence is reported rather than fatal: the release above is real either way,
+  # and creating a public repo is a one-time act for a human.
+  TAP_REPO="${HOMEBREW_TAP_REPO:-tsvb/homebrew-tap}"
+  if gh repo view "$TAP_REPO" >/dev/null 2>&1; then
+    echo "▸ Publishing the cask to $TAP_REPO"
+    ./scripts/homebrew-cask.sh "$DMG" --version "$VERSION" --publish-to "$TAP_REPO"
+  else
+    echo "⚠ No tap repo at $TAP_REPO — Homebrew users were not told about $VERSION."
+    echo "  Create it once:  gh repo create $TAP_REPO --public --description 'Homebrew tap for tsvb'"
+    echo "  then publish:    ./scripts/homebrew-cask.sh '$DMG' --version $VERSION --publish-to $TAP_REPO"
+  fi
 else
   echo ""
-  echo "⚠ NOT PUBLISHED. The DMG exists, $TAG is tagged locally and appcast.xml is"
-  echo "  committed locally — so no user can download it and no installed copy can"
-  echo "  see it."
+  echo "⚠ NOT PUBLISHED. The DMG exists, $TAG is tagged locally, and appcast.xml and"
+  echo "  the Homebrew cask are committed locally — so no user can download it, no"
+  echo "  installed copy can see it, and brew still installs the previous version."
   echo "  Publish with:   PUBLISH=1 $0 $VERSION"
   echo "  Or by hand:     git push origin HEAD --follow-tags \\"
   echo "                  && gh release create $TAG '$DMG' --title '$APP_NAME $VERSION' --notes-file CHANGELOG.md"
