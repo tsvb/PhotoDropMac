@@ -123,8 +123,13 @@ actor ThumbnailLoader {
         generator.appliesPreferredTrackTransform = true   // honour rotation metadata
         generator.maximumSize = CGSize(width: maxPixel, height: maxPixel)
         let at = CMTime(seconds: 1, preferredTimescale: 600)
-        guard let cgImage = try? generator.copyCGImage(at: at, actualTime: nil)
-            ?? generator.copyCGImage(at: .zero, actualTime: nil)
+        // Each attempt is wrapped on its own. `try? a ?? b` parses as
+        // `try? (a ?? b)`, and with a non-optional `a` the fallback was dead
+        // code — the compiler said so — so a clip shorter than a second threw
+        // on the one-second request and got no poster frame at all, exactly the
+        // "looks corrupt" cell this fallback exists to prevent.
+        guard let cgImage = (try? generator.copyCGImage(at: at, actualTime: nil))
+                ?? (try? generator.copyCGImage(at: .zero, actualTime: nil))
         else { return nil }
         return Image(decorative: cgImage, scale: 1, orientation: .up)
     }
