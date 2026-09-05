@@ -119,15 +119,15 @@ final class JobStampTests: XCTestCase {
     func testConcurrentClaimsNeverCollide() throws {
         let dir = try freshTempDir()
         let count = 64
-        let lock = NSLock()
-        var claimed: [URL] = []
+        let collector = ClaimCollector()
 
         DispatchQueue.concurrentPerform(iterations: count) { _ in
             if let url = JobStamp.claimUniqueName(in: dir, base: "ingest-20260806-093823-074",
                                                   pathExtension: "json") {
-                lock.lock(); claimed.append(url); lock.unlock()
+                collector.add(url)
             }
         }
+        let claimed = collector.all
 
         XCTAssertEqual(claimed.count, count, "every racer should get a name")
         XCTAssertEqual(Set(claimed).count, count, "no two racers may be handed the same name")
@@ -140,4 +140,14 @@ final class JobStampTests: XCTestCase {
         let missing = URL(fileURLWithPath: "/var/db/definitely-not-writable-\(UUID().uuidString)")
         XCTAssertNil(JobStamp.claimUniqueName(in: missing, base: "ingest-x", pathExtension: "json"))
     }
+}
+
+/// Lock-guarded sink for the racing claims above. A captured `var` mutated from
+/// `concurrentPerform` is a data race by Swift 6's rules — a warning under the
+/// current toolchain and an error on the next language-mode step.
+private final class ClaimCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var urls: [URL] = []
+    func add(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
+    var all: [URL] { lock.lock(); defer { lock.unlock() }; return urls }
 }

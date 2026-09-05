@@ -203,7 +203,6 @@ enum CopyPlan {
     ) -> BundlePlan {
         let primary = bundle.primary
         let primaryOldName = primary.url.lastPathComponent
-        let primaryOldStem = primary.url.deletingPathExtension().lastPathComponent
         let primaryExt = primary.url.pathExtension
 
         let destDir = destinationDirectory(for: bundle, destinationRoot: destinationRoot, description: description, template: template, cardLabel: cardLabel)
