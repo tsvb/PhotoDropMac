@@ -29,17 +29,26 @@ settings:
       OTHER_CODE_SIGN_FLAGS: "--timestamp"
       DEVELOPMENT_TEAM: ""
 
+# Both packages are pinned to an EXACT version, not `from:`. The resolved
+# versions live in Package.resolved inside the generated (gitignored) .xcodeproj,
+# so nothing in the repo recorded what a release was built against and every
+# fresh resolve — CI, a new machine, a release — took whatever was newest.
+# Measured: this machine had resolved swift-argument-parser 1.8.1 while CI was
+# building 1.8.2. For Sparkle that is the update channel's own code, a binary
+# framework that runs in-process; a bump into it should be a deliberate, tested
+# act, not a side effect of `xcodegen generate` on release day. Bump the pin,
+# run the suite, commit.
 packages:
   ArgumentParser:
     url: https://github.com/apple/swift-argument-parser
-    from: "1.3.0"
+    exactVersion: "1.8.2"
   # In-app updates. App target only — Core/ is also compiled into the headless
   # `photodrop` tool, and a CLI must not grow a UI framework or a network feed.
   # Sparkle ships as a binary XCFramework; Xcode embeds and re-signs it (with the
   # Release config's hardened runtime + --timestamp) as part of the app.
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    from: "2.9.6"
+    exactVersion: "2.9.6"
 
 targets:
   PhotoDropMac:
