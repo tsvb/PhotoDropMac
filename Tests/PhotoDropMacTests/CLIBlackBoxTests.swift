@@ -97,6 +97,23 @@ final class CLIBlackBoxTests: XCTestCase {
         XCTAssertEqual(out.status, 2, "a typo'd path must never read as 'all verified'")
     }
 
+    /// A typo'd `--archive` used to become a brand-new tree the job reported as a
+    /// good copy; `--to` was already checked, the mirrors were not. Refused before
+    /// anything is scanned or written — which is also why this one `ingest` can
+    /// run here without touching the real log folder.
+    func testIngestRefusesAMirrorThatDoesNotExist() async throws {
+        let card = tmp.appendingPathComponent("card", isDirectory: true)
+        let library = tmp.appendingPathComponent("lib", isDirectory: true)
+        try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        let typo = tmp.appendingPathComponent("Backpu", isDirectory: true)
+
+        let out = try await run(["ingest", "--from", card.path, "--to", library.path, "--archive", typo.path])
+        XCTAssertEqual(out.status, 2, out.stderrText)
+        XCTAssertTrue(out.stderrText.contains("does not exist"), out.stderrText)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: typo.path), "the typo'd mirror was created")
+    }
+
     /// ArgumentParser's `EX_USAGE`. The tool never chooses it, but anything
     /// branching on `$?` sees it, so it is part of the contract.
     func testUnknownFlagIsAUsageError() async throws {

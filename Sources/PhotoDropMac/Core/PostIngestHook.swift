@@ -17,6 +17,18 @@ struct PostIngestHookError: Error, Sendable {
 enum PostIngestHook {
     static let defaultsKey = "photodrop.postIngestScript"
 
+    /// Whether a finished job earns the hook — **one definition for both front
+    /// ends.** The app ran it after any job that was neither halted nor
+    /// cancelled, including one that lost files to a full disk or a permission
+    /// error, while the CLI already required the primary to be whole. A hook is
+    /// where "this card is done" automation lives — archive it, wipe it, tell
+    /// someone — so running it over a library missing photos, or one whose
+    /// receipt could not be written, is the one outcome it must not have.
+    static func shouldRun(after result: CopyResult) -> Bool {
+        !result.halted && !result.cancelled
+            && result.primaryFailures == 0 && result.manifestFailures.isEmpty
+    }
+
     /// Environment describing the finished job, merged over the current process
     /// environment so the hook still inherits PATH etc.
     static func environment(for result: CopyResult) -> [String: String] {

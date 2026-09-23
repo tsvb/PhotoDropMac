@@ -299,7 +299,7 @@ final class IngestEngine {
         let awake = PowerAssertion(reason: "PhotoDrop is copying photos from a card")
         defer { awake.release() }
 
-        let perDestinationBytes = bundles.reduce(Int64(0)) { $0 + $1.totalSize }
+        let perDestinationBytes = bundles.reduce(Int64(0)) { $0.saturatingAdding($1.totalSize) }
         // Primary at index 0, then each archive mirror. Deduped by filesystem
         // identity: writing one folder twice makes pass 2 collide with pass 1's
         // own file, and `O_EXCL` correctly refuses — reporting every bundle
@@ -309,7 +309,7 @@ final class IngestEngine {
             log(.info, "Ignoring \(1 + archiveRoots.count - allRoots.count) duplicate destination(s) — "
                      + "the same folder was listed more than once.")
         }
-        totalBytes = perDestinationBytes * Int64(allRoots.count)
+        totalBytes = perDestinationBytes.saturatingMultiplied(by: Int64(allRoots.count))
         manifestEntriesByRoot = Array(repeating: [], count: allRoots.count)
         resolvedRoots = allRoots
 
@@ -853,7 +853,7 @@ final class IngestEngine {
                         xxhash64: String(format: "%016llx", existingDuplicate.hash),
                         status: "skipped"
                     ))
-                    bytesCopied += file.size   // count skip bytes so the bar fills smoothly
+                    bytesCopied = bytesCopied.saturatingAdding(file.size)   // count skip bytes so the bar fills smoothly
                     emitProgress()
                     continue
                 }
@@ -869,7 +869,7 @@ final class IngestEngine {
                 // the primary pass, or the primary failed and rolled back.
                 let readFrom = (d == 0) ? file.source : (primaryLanded[file.source] ?? file.source)
                 let copyHash = try FileCopier.copyAndHash(
-                    source: readFrom, destination: dest, isCancelled: isCancelled
+                    source: readFrom, destination: dest, destinationRoot: root, isCancelled: isCancelled
                 ) { chunkBytes in
                     self.bytesCopied += chunkBytes
                     self.emitProgress()

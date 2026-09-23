@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// One ingested file in the verification manifest.
 struct ManifestEntry: Codable, Sendable {
@@ -65,6 +66,11 @@ enum ManifestWriter {
         guard (try? fm.createDirectory(at: dir, withIntermediateDirectories: true)) != nil else {
             return nil
         }
+        // A `PhotoDrop Manifests` that is a symbolic link would put this receipt
+        // — and every later one — wherever it points. Refused, so the failure is
+        // visible (`CopyResult.manifestFailures` gates the eject) rather than the
+        // record quietly landing outside the library. See `FileCopier.openDirectory`.
+        guard !reachesThroughSymlink(dir, under: root) else { return nil }
 
         guard let json = encodeJSON(manifest) else { return nil }
 
@@ -187,6 +193,82 @@ enum ManifestWriter {
               Array(fileComponents.prefix(rootComponents.count)) == rootComponents
         else { return resolved.path(percentEncoded: false) }
         return fileComponents.dropFirst(rootComponents.count).joined(separator: "/")
+    }
+
+    /// Whether the path from `root` down to `resolved` passes through a symbolic
+    /// link — checked with `lstat` on every component *below* the root that
+    /// exists, the file itself included.
+    ///
+    /// `resolve` is lexical by design, so it proves only that the *text* stays
+    /// under the root. A library is a folder the user may not have made — shared,
+    /// downloaded, handed over on a drive — and it can carry its own links:
+    /// `2024 -> ../../Library` makes `<lib>/2024/LaunchAgents/x.plist` a perfectly
+    /// contained string that names `~/Library/LaunchAgents/x.plist` on disk.
+    /// Traced before this check: `heal` reported that file missing, found "a
+    /// healthy copy" in a gated mirror the same download shipped, and `--script`
+    /// emitted `mkdir -p '<lib>/2024/LaunchAgents' && cp -p …` — every path on
+    /// screen inside the library, the write landing outside it. `verify` likewise
+    /// hashed files outside the library under a library name. `cp` follows a
+    /// linked final component too, so the file itself is checked, not only its
+    /// parents.
+    ///
+    /// The root and its ancestors are not examined: they are the user's own
+    /// choice (and `/tmp` is itself a link). Components below the first one that
+    /// does not exist are not examined either — there is nothing there to
+    /// follow, and `mkdir -p` creates real directories.
+    static func reachesThroughSymlink(_ resolved: URL, under root: URL) -> Bool {
+        guard let rootComponents = lexicallyNormalized(root),
+              let fileComponents = lexicallyNormalized(resolved),
+              fileComponents.count > rootComponents.count,
+              Array(fileComponents.prefix(rootComponents.count)) == rootComponents
+        else { return false }
+        var path = "/" + rootComponents.dropFirst().joined(separator: "/")
+        for component in fileComponents.dropFirst(rootComponents.count) {
+            path += path.hasSuffix("/") ? component : "/" + component
+            var info = stat()
+            guard lstat(path, &info) == 0 else { return false }
+            if (info.st_mode & S_IFMT) == S_IFLNK { return true }
+        }
+        return false
+    }
+
+    /// The path components of `url` below `root`, compared lexically: empty when
+    /// `url` is `root` itself, nil when it is not under `root` at all.
+    static func componentsBelow(_ root: URL, of url: URL) -> [String]? {
+        guard let rootComponents = lexicallyNormalized(root),
+              let urlComponents = lexicallyNormalized(url),
+              urlComponents.count >= rootComponents.count,
+              Array(urlComponents.prefix(rootComponents.count)) == rootComponents
+        else { return nil }
+        return Array(urlComponents.dropFirst(rootComponents.count))
+    }
+
+    /// Whether `url` is inside `root`'s own `PhotoDrop Manifests/` folder.
+    ///
+    /// No job ever plans a photo there — `PathPlanner.sanitize` turns the space
+    /// into `_`, so no rendered folder can be spelled `PhotoDrop Manifests` — so
+    /// a manifest entry naming it is not library content. `sync` used to copy
+    /// such an entry into the *mirror's* record folder, where an attacker's JSON
+    /// then read as the mirror's own manifest: planting conflicts so `heal
+    /// <mirror>` refused chosen files, or naming recovery roots. Compared
+    /// case-folded, because on a default APFS volume `photodrop manifests` is the
+    /// same folder.
+    static func isInsideManifestFolder(_ url: URL, under root: URL) -> Bool {
+        guard let first = componentsBelow(root, of: url)?.first else { return false }
+        return first.lowercased() == folderName.lowercased()
+    }
+
+    /// Largest manifest `readManifest` will load: far above any real job
+    /// (roughly four million entries), and finite, which is the point.
+    static let maxManifestBytes = 1 << 30
+
+    /// Reads and decodes one manifest file, or nil if it is not a regular file,
+    /// is implausibly large, or does not decode. Every manifest read goes through
+    /// here — see `RegularFile` for the FIFO and `/dev/zero` cases that
+    /// `Data(contentsOf:)` walked straight into.
+    static func readManifest(at url: URL) -> Manifest? {
+        guard let data = try? RegularFile.contents(of: url, maxBytes: maxManifestBytes) else { return nil }
+        return decode(data)
     }
 
     /// Path components with `.` and `..` resolved textually, without touching the

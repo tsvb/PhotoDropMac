@@ -18,6 +18,11 @@ struct HealReport: Sendable {
     let manifestCount: Int
     /// Recorded mirror roots that were not searched — see `VerifyEngine.build`.
     var refusedMirrorRoots: [String] = []
+    /// Entries `VerifyEngine.build` refused because their path leaves the library
+    /// — by its text, or through a symbolic link inside it. Not candidates (there
+    /// is nowhere safe to restore them to), but never silent: without this a
+    /// library whose every entry was refused printed "✓ All 0 files healthy".
+    var outOfRoot: Int = 0
 
     var recoverable: [HealCandidate] { candidates.filter { $0.recoverableFrom != nil } }
     var unrecoverable: [HealCandidate] { candidates.filter { $0.recoverableFrom == nil } }
@@ -78,8 +83,16 @@ enum HealEngine {
                 // ever be *offered* if it actually holds the expected bytes; and
                 // `restoreScript` lists every source root so the user can refuse
                 // one they don't recognize.
+                // A mirror copy reached through a symbolic link inside the mirror
+                // is not offered either — the same rule `build` applies to the
+                // library side, so the script's `cp` reads only what its listed
+                // source root actually holds.
                 let source = item.mirrors
-                    .compactMap { ManifestWriter.resolve(entryPath: item.relPath, under: $0) }
+                    .compactMap { root -> URL? in
+                        guard let url = ManifestWriter.resolve(entryPath: item.relPath, under: root),
+                              !ManifestWriter.reachesThroughSymlink(url, under: root) else { return nil }
+                        return url
+                    }
                     .first { FileManager.default.fileExists(atPath: $0.path) && hash($0) == item.expected }
                 candidates.append(HealCandidate(
                     relPath: item.relPath,
@@ -94,7 +107,8 @@ enum HealEngine {
         return HealReport(healthy: healthy,
                           candidates: candidates.sorted { $0.relPath < $1.relPath },
                           manifestCount: manifestCount,
-                          refusedMirrorRoots: refusedMirrorRoots)
+                          refusedMirrorRoots: refusedMirrorRoots,
+                          outOfRoot: plan.outOfRoot)
     }
 
     /// A reviewable restore script for the recoverable candidates. PhotoDrop never

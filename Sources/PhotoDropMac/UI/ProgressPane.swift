@@ -156,7 +156,7 @@ struct LogView: View {
                             Image(systemName: iconName(for: entry.kind))
                                 .foregroundStyle(color(for: entry.kind))
                                 .frame(width: 14, alignment: .leading)
-                            Text(entry.line)
+                            Text(SafeText.display(entry.line))
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(color(for: entry.kind))
                                 .lineLimit(1)
