@@ -14,6 +14,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for the token every job receives. Nothing here pushes,
+# comments or publishes; without this block the token gets whatever the
+# repository default is, which can be write access to the whole repo.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Build & test (${{ matrix.runner }})

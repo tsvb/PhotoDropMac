@@ -71,7 +71,8 @@ enum ChildProcess {
                     arguments: [String],
                     environment: [String: String]? = nil,
                     timeout: TimeInterval? = 300,
-                    maxOutputBytes: Int = 8 << 20) async throws -> Output {
+                    maxOutputBytes: Int = 8 << 20,
+                    drainGrace: TimeInterval = 5) async throws -> Output {
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, Error>) in
             let process = Process()
             process.executableURL = executable
@@ -93,19 +94,14 @@ enum ChildProcess {
                     // The reading itself never stops early: an unread pipe fills
                     // at ~64 KiB and the child then blocks in `write()` forever,
                     // which is the deadlock this whole type exists to prevent.
+                    // Kept incrementally, so an answer given before EOF (see
+                    // `drainGrace`) still carries what was read.
                     let handle = pipe.fileHandleForReading
-                    var kept = Data()
-                    var truncated = false
                     while true {
                         let chunk = handle.availableData
                         if chunk.isEmpty { break }
-                        let room = maxOutputBytes - kept.count
-                        if room > 0 {
-                            kept.append(chunk.prefix(room))
-                        }
-                        if chunk.count > room { truncated = true }
+                        collected.append(chunk, to: stream, limit: maxOutputBytes)
                     }
-                    collected.set(kept, truncated: truncated, for: stream)
                     drains.leave()
                 }
             }
@@ -118,14 +114,24 @@ enum ChildProcess {
             }
 
             process.terminationHandler = { @Sendable finished in
-                // Both readers are at EOF by now (or about to be); notify keeps
-                // this off the termination queue rather than blocking it.
-                drains.notify(queue: DispatchQueue.global(qos: .utility)) {
-                    continuation.resume(returning: Output(status: finished.terminationStatus,
+                // Normally both readers reach EOF as the child exits. But EOF
+                // arrives only when *every* holder of a pipe's write end has
+                // closed it, and a grandchild the child left running — a hook's
+                // `nohup rsync … &`, or a process that outlived SIGTERM to its
+                // shell — inherits those ends and holds them for as long as it
+                // lives. `run` then never returned: the timeout signals only the
+                // direct child, which had already exited. So wait a bounded grace
+                // for the drains and answer with what was read by then. A reader
+                // still parked on the pipe stays parked until the grandchild lets
+                // go; it holds nothing the answer needs.
+                let status = finished.terminationStatus
+                DispatchQueue.global(qos: .utility).async {
+                    let drained = drains.wait(timeout: .now() + drainGrace) == .success
+                    continuation.resume(returning: Output(status: status,
                                                           stdout: collected.get(.out),
                                                           stderr: collected.get(.err),
                                                           timedOut: killer.didKill,
-                                                          truncated: collected.wasTruncated))
+                                                          truncated: collected.wasTruncated || !drained))
                 }
             }
 
@@ -150,13 +156,18 @@ enum ChildProcess {
         private let storage = OSAllocatedUnfairLock(
             initialState: (out: Data(), err: Data(), truncated: false))
 
-        func set(_ data: Data, truncated: Bool, for stream: Stream) {
+        /// Appends `chunk`, keeping at most `limit` bytes per stream. Bytes past
+        /// the limit are dropped, never left unread — see the drain loop.
+        func append(_ chunk: Data, to stream: Stream, limit: Int) {
             storage.withLock { state in
-                switch stream {
-                case .out: state.out = data
-                case .err: state.err = data
+                let room = limit - (stream == .out ? state.out.count : state.err.count)
+                if room > 0 {
+                    switch stream {
+                    case .out: state.out.append(chunk.prefix(room))
+                    case .err: state.err.append(chunk.prefix(room))
+                    }
                 }
-                state.truncated = state.truncated || truncated
+                if chunk.count > room { state.truncated = true }
             }
         }
 

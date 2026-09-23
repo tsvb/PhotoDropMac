@@ -124,7 +124,7 @@ struct ContactSheet: View {
     private var summaryBar: some View {
         let all = allBundles
         let selected = all.filter { isSelected($0.id) }
-        let bytes = selected.reduce(Int64(0)) { $0 + $1.totalSize }
+        let bytes = selected.reduce(Int64(0)) { $0.saturatingAdding($1.totalSize) }
         return HStack(spacing: 8) {
             Text("\(selected.count) of \(all.count) selected")
                 .font(.headline).monospacedDigit()

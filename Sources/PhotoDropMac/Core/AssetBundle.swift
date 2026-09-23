@@ -34,10 +34,30 @@ struct AssetBundle: Sendable, Hashable, Identifiable {
     // Total bytes across the primary and every companion — used by the
     // UI summary and the copy-progress accounting.
     var totalSize: Int64 {
-        companions.reduce(primary.size) { $0 + $1.size }
+        companions.reduce(primary.size) { $0.saturatingAdding($1.size) }
     }
 
     // Total file count including the primary and its companions. The UI
     // "X files" label reflects what will actually be copied.
     var fileCount: Int { 1 + companions.count }
+}
+
+extension Int64 {
+    /// `self + other`, pinned at the bound instead of trapping.
+    ///
+    /// File sizes come off the card, and Swift traps on overflow: two sparse
+    /// files of ~2^62 bytes on an APFS/HFS+ stick, or a forged exFAT
+    /// `DataLength`, crashed the app while it was still *planning* — adding up
+    /// the preview totals. A byte count that saturates is wrong only for a card
+    /// that could never be copied anyway.
+    func saturatingAdding(_ other: Int64) -> Int64 {
+        let (sum, overflow) = addingReportingOverflow(other)
+        return overflow ? (other < 0 ? .min : .max) : sum
+    }
+
+    /// `self * other`, pinned at the bound instead of trapping. See `saturatingAdding`.
+    func saturatingMultiplied(by other: Int64) -> Int64 {
+        let (product, overflow) = multipliedReportingOverflow(by: other)
+        return overflow ? ((self < 0) != (other < 0) ? .min : .max) : product
+    }
 }

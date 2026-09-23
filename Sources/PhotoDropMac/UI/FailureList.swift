@@ -27,9 +27,12 @@ struct FailureList: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(failures) { failure in
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(failure.name)
+                            // Card filenames: neutralized for display, as in the
+                            // log and the CLI (see `SafeText`) — a bidi override
+                            // otherwise reorders the row it sits in.
+                            Text(SafeText.display(failure.name))
                                 .font(.system(.caption, design: .monospaced))
-                            Text(failure.reason)
+                            Text(SafeText.display(failure.reason))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
@@ -79,8 +82,8 @@ struct FailureList: View {
     private func copyToPasteboard() {
         var lines = ["\(totalFailures) file(s) failed to copy:"]
         for failure in failures {
-            lines.append("  \(failure.name) → \(failure.destination)")
-            lines.append("      \(failure.reason)")
+            lines.append("  \(SafeText.display(failure.name)) → \(failure.destination)")
+            lines.append("      \(SafeText.display(failure.reason))")
         }
         if totalFailures > failures.count {
             lines.append("  …and \(totalFailures - failures.count) more (see the job log).")

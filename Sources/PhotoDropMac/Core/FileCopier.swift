@@ -86,9 +86,16 @@ enum FileCopier {
         // `RegularFile`. `sync` hands this manifest-named paths from a library the
         // user may not have made: a FIFO there hung `open()` forever, and a
         // device streamed into the mirror until it filled.
+        //
+        // And never through a link at the final component. Every caller's source
+        // was vetted with lstat semantics — the card scan's `isRegularFile`,
+        // `VerifyEngine.build`'s link refusal, or a file this engine wrote — but
+        // that was earlier: a source on an SMB share or a misbehaving USB device
+        // swapped for `-> ~/.ssh/id_ed25519` after the preview was copied into
+        // the library under a photo's name.
         let inHandle: FileHandle
         do {
-            inHandle = try FileHandle(fileDescriptor: RegularFile.openForReading(source),
+            inHandle = try FileHandle(fileDescriptor: RegularFile.openForReading(source, followSymlinks: false),
                                       closeOnDealloc: false)
         } catch {
             throw FileCopierError.open(source, error)

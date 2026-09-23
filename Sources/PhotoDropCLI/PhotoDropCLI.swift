@@ -227,6 +227,21 @@ struct Ingest: AsyncParsableCommand {
         } else {
             archiveURLs = []
         }
+        // Every mirror must already exist too, for the reason `--to` must: the
+        // copy creates a missing root, so a typo'd `--archive` under a writable
+        // parent became a brand-new tree the job reported as a good copy. The
+        // app already refuses a missing destination (`missingDestinations`); this
+        // was the CLI's gap. A mirror that is not mounted today is what `sync`
+        // is for.
+        for mirror in archiveURLs {
+            var mirrorIsDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: mirror.path, isDirectory: &mirrorIsDirectory),
+                  mirrorIsDirectory.boolValue else {
+                CLIOutput.error("Mirror “\(CLIOutput.safe(mirror.path(percentEncoded: false)))” does not exist. "
+                              + "Create it (or mount it) first, or bring it up to date later with `photodrop sync`.")
+                throw ExitCode(2)
+            }
+        }
 
         // Precedence, narrowest wins: an explicit template option, then a named
         // layout, then the preset, then the shipped default.
@@ -281,8 +296,8 @@ struct Ingest: AsyncParsableCommand {
         // which let a card of stills + clips report a complete ingest of the
         // stills alone and then eject.
         if unrecognizedFiles > 0 {
-            CLIOutput.error("\(unrecognizedFiles) file(s) on the card are not a format PhotoDrop ingests "
-                          + "and will be left behind. Not ejecting.")
+            CLIOutput.error("\(unrecognizedFiles) file(s) on the card are not a format PhotoDrop ingests, "
+                          + "or are hidden, and will be left behind. Not ejecting.")
         }
         guard !bundles.isEmpty else {
             print("No recognized photos found on \(cardURL.path).")
@@ -293,7 +308,18 @@ struct Ingest: AsyncParsableCommand {
         // whatever the walk couldn't see, and ejecting is the one step that puts
         // it out of reach. (`IngestEngine` separately refuses to eject when files
         // failed; this covers what was never planned in the first place.)
-        let doEject = (eject ?? loadedPreset?.ejectAfterIngest ?? false)
+        //
+        // And only ever a *volume*. `DriveEjector` unmounts the volume the path is
+        // on, so `--from /Volumes/Ext/dumps/card7 --eject` (or a preset with eject
+        // on) unmounted the whole external drive, every partition with it. The
+        // app never ejects a folder source (`isEjectable`); this was the CLI's gap.
+        let wantsEject = eject ?? loadedPreset?.ejectAfterIngest ?? false
+        let sourceValues = try? cardURL.resourceValues(forKeys: [.isVolumeKey, .volumeIsRootFileSystemKey])
+        let sourceIsEjectableVolume = sourceValues?.isVolume == true && sourceValues?.volumeIsRootFileSystem != true
+        if wantsEject && !sourceIsEjectableVolume {
+            CLIOutput.error("“\(CLIOutput.safe(cardURL.path))” is a folder, not a card, so it will not be ejected.")
+        }
+        let doEject = wantsEject && sourceIsEjectableVolume
             && unreadableDirectories == 0 && unrecognizedFiles == 0
 
         let volumeID = (try? cardURL.resourceValues(forKeys: [.volumeUUIDStringKey]).volumeUUIDString) ?? cardURL.path
@@ -332,8 +358,7 @@ struct Ingest: AsyncParsableCommand {
         // run silently skipped it. Taken as an explicit option rather than read
         // from the app's defaults, because a command-line tool's UserDefaults
         // domain isn't the app's.
-        if let postIngestHook, !postIngestHook.isEmpty,
-           !result.halted, !result.cancelled, result.primaryFailures == 0 {
+        if let postIngestHook, !postIngestHook.isEmpty, PostIngestHook.shouldRun(after: result) {
             do {
                 try await PostIngestHook.run(scriptPath: postIngestHook, result: result)
             } catch let error as PostIngestHookError {
@@ -407,6 +432,15 @@ private final class GracefulStop {
     private let signals: [(number: Int32, label: String)] = [
         (SIGINT, "Interrupted"), (SIGTERM, "Terminating"), (SIGHUP, "Hung up"),
     ]
+    /// The disposition each signal had on entry, put back by `restore()`.
+    ///
+    /// A signal the process *inherited* as ignored is left ignored. `nohup
+    /// photodrop ingest …` runs with SIGHUP ignored precisely so a logout does
+    /// not stop it, and this used to install a handler over that — so the
+    /// logout the user had guarded against cancelled the ingest — and then
+    /// restore `SIG_DFL`, which let the hook, and the hook's children, die on a
+    /// hangup they were meant to survive.
+    private var inherited: [(number: Int32, handler: sig_t?)] = []
 
     /// True once a signal has arrived. Poll it from the engine's `isCancelled`.
     var isTripped: Bool { flag.isTripped }
@@ -414,7 +448,11 @@ private final class GracefulStop {
     init() {
         let flag = self.flag
         for (number, label) in signals {
-            signal(number, SIG_IGN)
+            let previous: sig_t? = signal(number, SIG_IGN)
+            inherited.append((number, previous))
+            if let previous, unsafeBitCast(previous, to: Int.self) == unsafeBitCast(SIG_IGN, to: Int.self) {
+                continue   // ignored on entry: the caller asked for this signal not to stop us
+            }
             let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
             source.setEventHandler {
                 if flag.isTripped {
@@ -437,7 +475,8 @@ private final class GracefulStop {
     func restore() {
         for source in sources { source.cancel() }
         sources.removeAll()
-        for (number, _) in signals { signal(number, SIG_DFL) }
+        for (number, handler) in inherited { signal(number, handler) }
+        inherited.removeAll()
     }
 
     deinit { restore() }
@@ -625,10 +664,10 @@ enum CLIOutput {
                 case .missing:    kind = "missing"
                 case .conflicted: kind = "conflicted"
                 }
-                return CandidateDTO(kind: kind, path: $0.relPath,
-                                    badPath: $0.badPath, recoverableFrom: $0.recoverableFrom)
+                return CandidateDTO(kind: kind, path: safe($0.relPath),
+                                    badPath: safe($0.badPath), recoverableFrom: $0.recoverableFrom.map(safe))
             },
-            refusedMirrorRoots: r.refusedMirrorRoots,
+            refusedMirrorRoots: r.refusedMirrorRoots.map(safe),
             outOfRoot: r.outOfRoot
         )
         let encoder = JSONEncoder()

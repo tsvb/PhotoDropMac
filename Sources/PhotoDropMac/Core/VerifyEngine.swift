@@ -267,9 +267,12 @@ enum VerifyEngine {
                 // by its text, or on disk through a symbolic link inside the
                 // library (see `ManifestWriter.reachesThroughSymlink`). Refusing it
                 // here is what keeps `heal`'s script and `sync`'s reads inside the
-                // library too: both derive their work from this plan.
+                // library too: both derive their work from this plan. Entries in
+                // the library's own record folder are refused on the same count
+                // (see `ManifestWriter.isInsideManifestFolder`).
                 guard let fileURL = ManifestWriter.resolve(entryPath: entry.path, under: record.root),
-                      !ManifestWriter.reachesThroughSymlink(fileURL, under: record.root) else {
+                      !ManifestWriter.reachesThroughSymlink(fileURL, under: record.root),
+                      !ManifestWriter.isInsideManifestFolder(fileURL, under: record.root) else {
                     outOfRoot += 1
                     continue
                 }

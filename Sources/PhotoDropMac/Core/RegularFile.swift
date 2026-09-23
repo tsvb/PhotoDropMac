@@ -35,7 +35,7 @@ enum RegularFile {
         var errorDescription: String? {
             switch self {
             case .notARegularFile(let url):
-                return "\(url.lastPathComponent) is not a regular file (a device, FIFO, socket or folder), so it was not read."
+                return "\(url.lastPathComponent) is not a regular file (a device, FIFO, socket, folder or link), so it was not read."
             case .tooLarge(let url, let limit):
                 return "\(url.lastPathComponent) is larger than \(limit) bytes, so it was not read."
             }
@@ -44,10 +44,16 @@ enum RegularFile {
 
     /// Opens `url` read-only and returns its descriptor, or throws if it cannot be
     /// opened or is not a regular file. The caller owns the descriptor.
-    static func openForReading(_ url: URL) throws -> Int32 {
-        let fd = open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+    ///
+    /// `followSymlinks: false` also refuses a link at the final component, for
+    /// callers whose path was vetted with lstat semantics and must not have
+    /// changed shape since — see `FileCopier.copyAndHash`.
+    static func openForReading(_ url: URL, followSymlinks: Bool = true) throws -> Int32 {
+        let fd = open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | (followSymlinks ? 0 : O_NOFOLLOW))
         guard fd >= 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            let code = errno
+            if !followSymlinks && code == ELOOP { throw RefusalError.notARegularFile(url) }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
         }
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {

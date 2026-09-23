@@ -31,6 +31,33 @@ release from this file.
   them as inside the library. That bundle now fails at that destination and says
   why; the other destinations are unaffected. A linked `PhotoDrop Manifests`
   folder is refused the same way.
+- **The post-ingest hook no longer runs after a job that lost files** or could
+  not write its manifest. The app ran it after any job that was not halted or
+  cancelled; the app and the CLI now share one rule.
+- **A card is only recorded as ingested when the job was clean** — no failed
+  files, manifests written, and a scan that could read the whole card.
+- **Hidden photos on a card are reported.** Media inside a folder flagged hidden
+  (the way USB malware hides DCIM) was skipped without a count, so the card read
+  as finished and could be ejected. It is still not copied, but it now counts as
+  left behind, which also stops the auto-eject.
+- **`photodrop ingest --eject` only ejects a card**, never the drive that holds a
+  source *folder*. **`--archive` must already exist**, like `--to`.
+- **`photodrop` under `nohup` keeps ignoring hangups**, and restores the signal
+  handling it started with once the copy ends.
+- **A post-ingest hook that leaves a background process running no longer
+  hangs PhotoDrop** waiting for its output.
+- **Scheduled verification refuses a `photodrop` tool on a removable volume**,
+  where a different disk mounted under the same name could supply it.
+- **One-click ingest is dropped if the selected card changes** before it starts,
+  instead of ingesting whichever card the selection landed on.
+- Smaller hardening: nested-destination checks ignore letter case; card-reported
+  sizes can no longer crash the app by overflowing; more invisible characters
+  are escaped in logs and refused in restore scripts; card and manifest text is
+  escaped in the app's failure list, log pane and saved verify report, and in
+  `heal --json`; `sync` no longer copies entries from a library's own
+  `PhotoDrop Manifests` folder; the copy refuses a source that became a link
+  after the scan; checksum attributes are never read or written through a link;
+  CI's token is read-only.
 - **`sync`, `verify` and `heal` no longer hang or fill a disk on special files.**
   A FIFO or device in a library, or a FIFO named like a manifest, is refused
   before it is read.

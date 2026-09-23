@@ -243,6 +243,21 @@ enum ManifestWriter {
         return Array(urlComponents.dropFirst(rootComponents.count))
     }
 
+    /// Whether `url` is inside `root`'s own `PhotoDrop Manifests/` folder.
+    ///
+    /// No job ever plans a photo there — `PathPlanner.sanitize` turns the space
+    /// into `_`, so no rendered folder can be spelled `PhotoDrop Manifests` — so
+    /// a manifest entry naming it is not library content. `sync` used to copy
+    /// such an entry into the *mirror's* record folder, where an attacker's JSON
+    /// then read as the mirror's own manifest: planting conflicts so `heal
+    /// <mirror>` refused chosen files, or naming recovery roots. Compared
+    /// case-folded, because on a default APFS volume `photodrop manifests` is the
+    /// same folder.
+    static func isInsideManifestFolder(_ url: URL, under root: URL) -> Bool {
+        guard let first = componentsBelow(root, of: url)?.first else { return false }
+        return first.lowercased() == folderName.lowercased()
+    }
+
     /// Largest manifest `readManifest` will load: far above any real job
     /// (roughly four million entries), and finite, which is the point.
     static let maxManifestBytes = 1 << 30

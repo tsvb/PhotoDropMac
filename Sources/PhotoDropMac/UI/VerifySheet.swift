@@ -153,10 +153,12 @@ struct VerifySheet: View {
                                 .foregroundStyle(color(for: issue.kind))
                                 .frame(width: 16)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(issue.name)
+                                // Manifest-supplied names: neutralized for display
+                                // like every other sink (see `SafeText`).
+                                Text(SafeText.display(issue.name))
                                     .lineLimit(1)
                                     .truncationMode(.middle)
-                                Text(issue.path)
+                                Text(SafeText.display(issue.path))
                                     .font(.caption)
                                     .foregroundStyle(.tertiary)
                                     .lineLimit(1)
@@ -197,8 +199,13 @@ struct VerifySheet: View {
     }
 
     /// Plain text: it pastes into a note, an email or an issue unchanged.
+    ///
+    /// Paths go through `SafeText.display`, as they do in the CLI's report and
+    /// the job log. This is the same kind of sink — a saved `verify-report.txt`
+    /// gets `cat`ed — and a planted manifest path carrying `\e[2K\e[1A` or a
+    /// newline erased or forged lines in it.
     private func issueText(_ issues: [VerifyIssue]) -> String {
-        issues.map { "\(label(for: $0.kind))\t\($0.path)" }.joined(separator: "\n") + "\n"
+        issues.map { "\(label(for: $0.kind))\t\(SafeText.display($0.path))" }.joined(separator: "\n") + "\n"
     }
 
     private func copyIssues(_ issues: [VerifyIssue]) {

@@ -20,7 +20,7 @@ enum FileChecksumXattr {
         return url.withUnsafeFileSystemRepresentation { path -> Bool in
             guard let path else { return false }
             return bytes.withUnsafeBytes { raw in
-                setxattr(path, name, raw.baseAddress, raw.count, 0, 0) == 0
+                setxattr(path, name, raw.baseAddress, raw.count, 0, XATTR_NOFOLLOW) == 0
             }
         }
     }
@@ -29,10 +29,10 @@ enum FileChecksumXattr {
     static func read(from url: URL) -> UInt64? {
         url.withUnsafeFileSystemRepresentation { path -> UInt64? in
             guard let path else { return nil }
-            let size = getxattr(path, name, nil, 0, 0, 0)
+            let size = getxattr(path, name, nil, 0, 0, XATTR_NOFOLLOW)
             guard size > 0 else { return nil }
             var buffer = [UInt8](repeating: 0, count: size)
-            guard getxattr(path, name, &buffer, size, 0, 0) == size else { return nil }
+            guard getxattr(path, name, &buffer, size, 0, XATTR_NOFOLLOW) == size else { return nil }
             return UInt64(String(decoding: buffer, as: UTF8.self), radix: 16)
         }
     }
