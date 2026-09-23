@@ -22,6 +22,53 @@
         <language>en</language>
         <!-- NEW ITEMS ARE INSERTED DIRECTLY BELOW THIS LINE, NEWEST FIRST. -->
         <item>
+            <title>PhotoDrop 0.5.0</title>
+            <pubDate>Wed, 23 Sep 2026 12:52:23 -0400</pubDate>
+            <sparkle:version>205</sparkle:version>
+            <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/tsvb/PhotoDropMac/releases/tag/v0.5.0</link>
+            <description><![CDATA[
+<h3>Fixed</h3>
+<ul>
+<li><strong>A crafted card can no longer hang the app.</strong> Two sidecars that collide only after a near-maximum-length name is shortened (<code>S.CR2.xmp</code> and <code>S.xmp</code>) sent the planner into an endless loop before the job could be cancelled, so Cancel, Ctrl-C and Quit all hung. The collision suffix now survives shortening.</li>
+<li><strong><code>heal --script</code> cannot write outside the library through a symbolic link.</strong> A link inside a library (<code>2024 -&gt; ../../Library</code>) made a restore line that read as a path inside the library write somewhere else. <code>verify</code>, <code>heal</code> and <code>sync</code> now refuse manifest entries reached through a link inside the library, and report them; <code>heal</code> no longer counts them as healthy.</li>
+<li><strong>The Verify sheet no longer shows "Library verified" over an incomplete record.</strong> A manifest marked partial, or entries with no checksum or that were refused, now earn a caveated verdict that says why, as the CLI already did.</li>
+<li><strong>Ingest and <code>sync</code> no longer write through a symbolic link inside the destination.</strong> A library whose folder was a link elsewhere (<code>2026 -&gt; …</code>) received the photos wherever the link pointed, while the manifest recorded them as inside the library. That bundle now fails at that destination and says why; the other destinations are unaffected. A linked <code>PhotoDrop Manifests</code> folder is refused the same way.</li>
+<li><strong>The post-ingest hook no longer runs after a job that lost files</strong> or could not write its manifest. The app ran it after any job that was not halted or cancelled; the app and the CLI now share one rule.</li>
+<li><strong>A card is only recorded as ingested when the job was clean</strong> — no failed files, manifests written, and a scan that could read the whole card.</li>
+<li><strong>Hidden photos on a card are reported.</strong> Media inside a folder flagged hidden (the way USB malware hides DCIM) was skipped without a count, so the card read as finished and could be ejected. It is still not copied, but it now counts as left behind, which also stops the auto-eject.</li>
+<li><strong><code>photodrop ingest --eject</code> only ejects a card</strong>, never the drive that holds a source <em>folder</em>. <strong><code>--archive</code> must already exist</strong>, like <code>--to</code>.</li>
+<li><strong><code>photodrop</code> under <code>nohup</code> keeps ignoring hangups</strong>, and restores the signal handling it started with once the copy ends.</li>
+<li><strong>A post-ingest hook that leaves a background process running no longer hangs PhotoDrop</strong> waiting for its output.</li>
+<li><strong>Scheduled verification refuses a <code>photodrop</code> tool on a removable volume</strong>, where a different disk mounted under the same name could supply it.</li>
+<li><strong>One-click ingest is dropped if the selected card changes</strong> before it starts, instead of ingesting whichever card the selection landed on.</li>
+<li>Smaller hardening: nested-destination checks ignore letter case; card-reported sizes can no longer crash the app by overflowing; more invisible characters are escaped in logs and refused in restore scripts; card and manifest text is escaped in the app's failure list, log pane and saved verify report, and in <code>heal --json</code>; <code>sync</code> no longer copies entries from a library's own <code>PhotoDrop Manifests</code> folder; the copy refuses a source that became a link after the scan; checksum attributes are never read or written through a link; CI's token is read-only.</li>
+<li><strong><code>sync</code>, <code>verify</code> and <code>heal</code> no longer hang or fill a disk on special files.</strong> A FIFO or device in a library, or a FIFO named like a manifest, is refused before it is read.</li>
+<li><strong><code>photodrop sync</code> stops the way <code>ingest</code> stops.</strong> SIGINT, SIGTERM and SIGHUP now end a sync at the next file boundary, with the mirror's manifest written for what landed and marked partial; a second signal exits at once. It shipped without this: a Ctrl-C mid-file killed the process with the file half written at the mirror, invisible to the manifest and the checksum attribute, and the <em>next</em> sync reported it as a CONFLICT it must never overwrite — a permanent conflict made out of a file that had merely been cut short. Exit 2 on a cancel, as for <code>ingest</code>.</li>
+<li><strong>A clip and a still from the same moment land on the same day.</strong> A movie's creation date carries the camera's UTC offset, and it was rendered in the Mac's zone — so a clip shot at 08:00 in Tokyo filed under 19:00 the previous day when ingested in New York, while the still beside it filed under the 29th. Movie timestamps now follow the rule stills always have: the camera's wall clock is the capture time. A <code>Z</code> timestamp, from a camera that stores a true instant and does not know where it was, is kept as an instant.</li>
+<li>Clips shorter than a second get a poster frame in the contact sheet. The fallback to the first frame was dead code (the compiler said so), so such a clip showed the same "no preview" cell a corrupt file does.</li>
+<li><strong><code>sync</code> tells you what <code>heal</code> will do with the mirror.</strong> <code>heal &lt;library&gt;</code> searches only the mirrors the library's own manifests record, and a mirror brought up to date afterwards is not among them; <code>sync</code> now says so and names the <code>--mirror</code> argument to pass. Also in the <code>--json</code> report.</li>
+<li>CI: the appcast check ran <code>xmllint</code> on an Ubuntu image that does not ship it, so <code>main</code> read as failing for a missing tool.</li>
+</ul>
+<h3>Added</h3>
+<ul>
+<li><strong>Apple <code>.aae</code> adjustment sidecars travel with their still.</strong> Every Photos export and Image Capture import writes one beside each edited HEIC or JPEG. It was neither a sidecar nor ignorable, so ingesting a folder of iPhone photos reported every edited frame as a file PhotoDrop would not take and suppressed the eject.</li>
+<li><strong>A Homebrew cask.</strong> <code>brew install --cask tsvb/tap/photodropmac</code> installs the same notarized DMG, puts <code>photodrop</code> on <code>PATH</code>, and defers updates to Sparkle. <code>scripts/release.sh</code> renders it for every release and publishes it to the tap.</li>
+<li>Tests for <code>SyncEngine</code>, which had none: what it copies, what it refuses to overwrite, what it does when the library's own copy is missing or no longer matches its record, how it stops, and why a no-op run writes no manifest.</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Dependencies are pinned exactly.</strong> <code>project.yml</code> pins Sparkle and swift-argument-parser with <code>exactVersion</code>; the resolved versions live inside the gitignored Xcode project, so a <code>from:</code> range meant every fresh resolve — CI, a new machine, release day — took whatever was newest, and the update channel's own in-process code could change under a release unaudited.</li>
+<li>CI builds and tests on both <code>macos-15</code> and <code>macos-26</code>, so the toolchain that gates a release includes the one releases are actually cut with.</li>
+<li>The implemented design handoff moved under <code>docs/internal/</code>.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/tsvb/PhotoDropMac/releases/download/v0.5.0/PhotoDropMac-0.5.0.dmg"
+                       type="application/octet-stream"
+                       sparkle:edSignature="dp2WdYIV/p77Bhwhr/+ZCrWaqv1j1P7FyrBUMlwUCbrE/5gUJ/9w28ofDIZSa4QMn2lHqdKIXvHxqf0F/w0SAQ==" length="3777064" />
+        </item>
+        <item>
             <title>PhotoDrop 0.4.0</title>
             <pubDate>Mon, 31 Aug 2026 10:28:22 -0400</pubDate>
             <sparkle:version>188</sparkle:version>
