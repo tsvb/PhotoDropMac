@@ -9,7 +9,7 @@ an older build had no way to learn what a newer one fixed — and no way to diff
 it. They live here now, in the repo, and `scripts/release.sh` cuts the GitHub
 release from this file.
 
-## [Unreleased]
+## [0.5.0] — 2026-09-23
 
 ### Fixed
 
