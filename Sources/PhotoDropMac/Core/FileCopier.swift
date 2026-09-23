@@ -20,6 +20,9 @@ enum FileCopierError: Error, CustomStringConvertible {
     case write(URL, any Error)
     case open(URL, any Error)
     case destinationExists(URL)
+    /// A folder *below* the destination root is a symbolic link, so the copy
+    /// would have landed outside the library. Carries the link itself.
+    case destinationThroughSymlink(URL)
 
     /// The file this error is about. `read` and `open` can name either side of a
     /// copy, which is why callers deciding "did the *source* go away?" have to
@@ -31,6 +34,7 @@ enum FileCopierError: Error, CustomStringConvertible {
         case let .write(url, _):                    return url
         case let .open(url, _):                     return url
         case let .destinationExists(url):           return url
+        case let .destinationThroughSymlink(url):   return url
         }
     }
 
@@ -43,6 +47,8 @@ enum FileCopierError: Error, CustomStringConvertible {
         case .open(let f, let err):  return "Open failed on \(f.lastPathComponent): \(err.localizedDescription)"
         case .destinationExists(let f):
             return "Refused to overwrite existing file \(f.lastPathComponent) — a destination-name collision the planner did not catch (e.g. a case-insensitive or Unicode-normalization match). Source left untouched."
+        case .destinationThroughSymlink(let link):
+            return "Refused to write through \(link.path(percentEncoded: false)) — it is a symbolic link inside the destination, so the copy would have landed outside it. Source left untouched."
         }
     }
 }
@@ -59,15 +65,22 @@ enum FileCopier {
     // cancelled). An explicit signal is needed because the only caller runs this
     // in a Task.detached, which doesn't inherit Task cancellation — see
     // `CancellationFlag`.
+    //
+    // `destinationRoot` is the library the file belongs to. No symbolic link
+    // *below* it is followed — see `openDirectory(_:under:)`. Nil treats the
+    // destination's own folder as the root, which protects only the file itself.
     static func copyAndHash(
         source: URL,
         destination: URL,
+        destinationRoot: URL? = nil,
         bufferSize: Int = 1 << 20,
         isCancelled: () -> Bool = { false },
         onProgress: (Int64) -> Void
     ) throws -> UInt64 {
         let destDir = destination.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+        let dirFD = try openDirectory(destDir, under: destinationRoot ?? destDir)
+        defer { close(dirFD) }
+        let name = destination.lastPathComponent
 
         // Only a regular file is read, and the open cannot block — see
         // `RegularFile`. `sync` hands this manifest-named paths from a library the
@@ -91,7 +104,12 @@ enum FileCopier {
         // failure (rollback + continue), never as data loss. This is the only
         // thing standing between "nothing is ever overwritten" and a collision-
         // detection miss, so it lives at the syscall, not in a prior string check.
-        let fd = open(destination.path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+        //
+        // Created relative to the folder descriptor opened above, so the path is
+        // not re-walked (and cannot be redirected) between the check and the
+        // create; O_NOFOLLOW states outright what O_EXCL already implies for a
+        // link sitting at the final name.
+        let fd = openat(dirFD, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o644)
         if fd < 0 {
             let code = errno
             if code == EEXIST { throw FileCopierError.destinationExists(destination) }
@@ -163,9 +181,64 @@ enum FileCopier {
             return hasher.finalize()
         } catch {
             // We created this file; don't leave a partial behind on any failure.
-            try? FileManager.default.removeItem(at: destination)
+            // Unlinked through the folder descriptor it was created in, for the
+            // same reason it was created through it.
+            _ = unlinkat(dirFD, name, 0)
             throw error
         }
+    }
+
+    /// Opens `directory` for use as an `openat` base, creating whatever is
+    /// missing, **without following a symbolic link anywhere below `root`**.
+    ///
+    /// `createDirectory(withIntermediateDirectories:)` and `open()` both follow
+    /// links in every component but the last, and `O_EXCL` guards only the last.
+    /// So a destination library carrying its own link — a shared or downloaded
+    /// one, `2026 -> /Users/Shared/x` or `-> ../..` — sent the user's photos and
+    /// sidecars outside the library, while the manifest recorded them as
+    /// `2026/…` and `verify` followed the same link and called them fine. A card
+    /// author who could also plant the link chose the bytes written into any
+    /// folder the user can write to. `DestinationTopology` checks the roots only.
+    ///
+    /// Each component below the root is made with `mkdirat` and entered with
+    /// `openat(O_NOFOLLOW | O_DIRECTORY)`, one level at a time from the root's
+    /// own descriptor, so there is no window between checking a component and
+    /// using it. The root itself is the user's choice and may be reached through
+    /// a link (`/tmp`, an alias); it is created if missing, exactly as before.
+    /// This matches the rule `VerifyEngine.build` applies on the read side
+    /// (`ManifestWriter.reachesThroughSymlink`), so nothing is written where a
+    /// later `verify` would refuse to look.
+    private static func openDirectory(_ directory: URL, under root: URL) throws -> Int32 {
+        guard let below = ManifestWriter.componentsBelow(root, of: directory) else {
+            throw FileCopierError.open(directory, NSError(domain: NSPOSIXErrorDomain, code: Int(EINVAL)))
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var fd = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard fd >= 0 else {
+            throw FileCopierError.open(root, NSError(domain: NSPOSIXErrorDomain, code: Int(errno)))
+        }
+        var reached = root
+        for component in below {
+            reached = reached.appendingPathComponent(component, isDirectory: true)
+            if mkdirat(fd, component, 0o777) != 0, errno != EEXIST {
+                let code = errno
+                close(fd)
+                throw FileCopierError.write(reached, NSError(domain: NSPOSIXErrorDomain, code: Int(code)))
+            }
+            let next = openat(fd, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            if next < 0 {
+                let code = errno
+                var info = stat()
+                let isLink = fstatat(fd, component, &info, AT_SYMLINK_NOFOLLOW) == 0
+                    && (info.st_mode & S_IFMT) == S_IFLNK
+                close(fd)
+                if isLink { throw FileCopierError.destinationThroughSymlink(reached) }
+                throw FileCopierError.open(reached, NSError(domain: NSPOSIXErrorDomain, code: Int(code)))
+            }
+            close(fd)
+            fd = next
+        }
+        return fd
     }
 
     /// Copy the source's access/modification times, and its birth time where the

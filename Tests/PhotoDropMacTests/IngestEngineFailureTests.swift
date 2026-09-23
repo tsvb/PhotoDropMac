@@ -9,6 +9,9 @@ import XCTest
 ///  * one folder used as both primary and archive reported a clean job as a total failure
 ///  * cancelling wrote no manifest, leaving copied files with no integrity record
 ///  * `verifiedBundles` counted bundles that were never hash-checked
+///  * a symbolic link planted inside a destination sent the copy outside it
+///    (traced from the code: `createDirectory` and `open()` follow every link but
+///    the last, and `DestinationTopology` checks only the roots)
 final class IngestEngineFailureTests: XCTestCase {
 
     // MARK: - Fixtures
@@ -377,5 +380,29 @@ final class IngestEngineFailureTests: XCTestCase {
         let (_, sink) = await ingest(bundles, primary: primary, archives: [mirror], tmp: tmp, verify: true)
 
         XCTAssertEqual(sink.progress.last?.verifiedBundles, 0)
+    }
+
+    // MARK: - A link inside a destination is not followed
+
+    /// A shared library whose year folder is a link elsewhere. The bundle fails at
+    /// that destination — it does not land where the link points — and the
+    /// mirror still gets its copy.
+    func testSymlinkPlantedInThePrimaryDoesNotRedirectTheCopy() async throws {
+        let tmp = try freshTempDir()
+        let primary = try dir("primary", in: tmp)
+        let mirror = try dir("mirror", in: tmp)
+        let outside = try dir("outside", in: tmp)
+        // captureDate() is 2026-05-28, so the default layout plans into `2026/`.
+        try FileManager.default.createSymbolicLink(at: primary.appendingPathComponent("2026"),
+                                                   withDestinationURL: outside)
+
+        let bundles = [try makeBundle("IMG_0001.JPG", bytes: 4096, in: tmp)]
+        let (result, sink) = await ingest(bundles, primary: primary, archives: [mirror], tmp: tmp)
+
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [],
+                       "the copy followed the link out of the library")
+        XCTAssertEqual(result.primaryFailures, 1, "the refusal is a failure at the primary, not a silent skip")
+        XCTAssertTrue(sink.errors.contains { $0.contains("symbolic link") }, "the log must say why: \(sink.errors)")
+        XCTAssertEqual(photoNames(in: mirror).count, 1, "the mirror is unaffected")
     }
 }

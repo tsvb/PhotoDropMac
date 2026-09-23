@@ -869,7 +869,7 @@ final class IngestEngine {
                 // the primary pass, or the primary failed and rolled back.
                 let readFrom = (d == 0) ? file.source : (primaryLanded[file.source] ?? file.source)
                 let copyHash = try FileCopier.copyAndHash(
-                    source: readFrom, destination: dest, isCancelled: isCancelled
+                    source: readFrom, destination: dest, destinationRoot: root, isCancelled: isCancelled
                 ) { chunkBytes in
                     self.bytesCopied += chunkBytes
                     self.emitProgress()

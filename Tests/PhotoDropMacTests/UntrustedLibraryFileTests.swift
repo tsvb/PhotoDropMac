@@ -26,6 +26,13 @@ import Darwin
 /// - **Special files among the manifests.** Every `*.json` in
 ///   `PhotoDrop Manifests/` went through `Data(contentsOf:)`, so a FIFO named
 ///   `x.json` hung `verify`, `heal`, `sync` and the nightly agent.
+/// - **Symlinks inside a destination.** The same library is also somewhere the
+///   app *writes*. `FileCopier` made folders with
+///   `createDirectory(withIntermediateDirectories:)` and the file with `open()`,
+///   both of which follow links in every component but the last, so
+///   `<lib>/2026 -> /Users/Shared/x` sent the user's photos outside the library
+///   while the manifest recorded them as `2026/…`. A `PhotoDrop Manifests` link
+///   did the same to the receipts.
 final class UntrustedLibraryFileTests: XCTestCase {
 
     // MARK: - Symlinks inside the library (verify, heal)
@@ -204,6 +211,66 @@ final class UntrustedLibraryFileTests: XCTestCase {
         try Data("12345".utf8).write(to: file)
         XCTAssertThrowsError(try RegularFile.contents(of: file, maxBytes: 4))
         XCTAssertEqual(try RegularFile.contents(of: file, maxBytes: 5), Data("12345".utf8))
+    }
+
+    // MARK: - Symlinks inside a destination (ingest and sync writes)
+
+    /// A folder below the root that is a link: nothing may land where it points.
+    func testCopyRefusesToWriteThroughASymlinkedFolderBelowTheRoot() throws {
+        let base = try freshTempDir()
+        let lib = try makeDir(base, "lib")
+        let outside = try makeDir(base, "outside")
+        try FileManager.default.createSymbolicLink(at: lib.appendingPathComponent("2026"),
+                                                   withDestinationURL: outside)
+        let source = base.appendingPathComponent("IMG_0001.CR2")
+        try Data("photo".utf8).write(to: source)
+        let destination = lib.appendingPathComponent("2026/2026-05-28/IMG_0001.CR2")
+
+        XCTAssertThrowsError(try FileCopier.copyAndHash(source: source, destination: destination,
+                                                        destinationRoot: lib) { _ in }) { error in
+            guard let copyError = error as? FileCopierError,
+                  case .destinationThroughSymlink = copyError else {
+                return XCTFail("expected a refusal naming the link, got \(error)")
+            }
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [],
+                       "nothing may land outside the library — not a folder, not a file")
+    }
+
+    /// The root itself may be reached through a link — an alias the user made, or
+    /// `/tmp` — and the folders below it are still created as before.
+    func testCopyWritesWhenOnlyTheRootIsReachedThroughALink() throws {
+        let base = try freshTempDir()
+        let lib = try makeDir(base, "lib")
+        let alias = base.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: lib)
+        let source = base.appendingPathComponent("IMG_0001.CR2")
+        try Data("photo".utf8).write(to: source)
+
+        _ = try FileCopier.copyAndHash(source: source,
+                                       destination: alias.appendingPathComponent("2026/2026-05-28/IMG_0001.CR2"),
+                                       destinationRoot: alias) { _ in }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: lib.appendingPathComponent("2026/2026-05-28/IMG_0001.CR2").path))
+    }
+
+    /// The receipt is not written through a linked `PhotoDrop Manifests` either;
+    /// the failure is returned, where it gates the eject.
+    func testManifestIsNotWrittenThroughASymlinkedManifestFolder() throws {
+        let base = try freshTempDir()
+        let lib = try makeDir(base, "lib")
+        let outside = try makeDir(base, "outside")
+        try FileManager.default.createSymbolicLink(at: lib.appendingPathComponent(ManifestWriter.folderName),
+                                                   withDestinationURL: outside)
+        let manifest = Manifest(
+            schema: Manifest.schemaID, app: Manifest.appName, createdAt: Date(), source: nil,
+            primaryDestination: lib.path(percentEncoded: false), archiveDestination: nil,
+            destinations: [lib.path(percentEncoded: false)], verified: true, partial: false,
+            filesCopied: 0, filesSkipped: 0, filesFailed: 0,
+            totalBytes: 0, elapsedSeconds: 0, files: [])
+
+        XCTAssertNil(ManifestWriter.write(manifest, intoRoot: lib, stamp: Date()))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), [])
     }
 
     // MARK: - Helpers

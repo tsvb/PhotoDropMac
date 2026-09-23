@@ -25,6 +25,12 @@ release from this file.
 - **The Verify sheet no longer shows "Library verified" over an incomplete
   record.** A manifest marked partial, or entries with no checksum or that were
   refused, now earn a caveated verdict that says why, as the CLI already did.
+- **Ingest and `sync` no longer write through a symbolic link inside the
+  destination.** A library whose folder was a link elsewhere (`2026 -> …`)
+  received the photos wherever the link pointed, while the manifest recorded
+  them as inside the library. That bundle now fails at that destination and says
+  why; the other destinations are unaffected. A linked `PhotoDrop Manifests`
+  folder is refused the same way.
 - **`sync`, `verify` and `heal` no longer hang or fill a disk on special files.**
   A FIFO or device in a library, or a FIFO named like a manifest, is refused
   before it is read.

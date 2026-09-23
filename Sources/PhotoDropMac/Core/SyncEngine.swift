@@ -175,7 +175,8 @@ enum SyncEngine {
 
             do {
                 let hash = try FileCopier.copyAndHash(
-                    source: item.url, destination: destination, isCancelled: isCancelled
+                    source: item.url, destination: destination, destinationRoot: mirror,
+                    isCancelled: isCancelled
                 ) { _ in }
                 guard hash == item.expected else {
                     // The library no longer holds what its manifest says. Copying

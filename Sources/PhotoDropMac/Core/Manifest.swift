@@ -66,6 +66,11 @@ enum ManifestWriter {
         guard (try? fm.createDirectory(at: dir, withIntermediateDirectories: true)) != nil else {
             return nil
         }
+        // A `PhotoDrop Manifests` that is a symbolic link would put this receipt
+        // — and every later one — wherever it points. Refused, so the failure is
+        // visible (`CopyResult.manifestFailures` gates the eject) rather than the
+        // record quietly landing outside the library. See `FileCopier.openDirectory`.
+        guard !reachesThroughSymlink(dir, under: root) else { return nil }
 
         guard let json = encodeJSON(manifest) else { return nil }
 
@@ -225,6 +230,17 @@ enum ManifestWriter {
             if (info.st_mode & S_IFMT) == S_IFLNK { return true }
         }
         return false
+    }
+
+    /// The path components of `url` below `root`, compared lexically: empty when
+    /// `url` is `root` itself, nil when it is not under `root` at all.
+    static func componentsBelow(_ root: URL, of url: URL) -> [String]? {
+        guard let rootComponents = lexicallyNormalized(root),
+              let urlComponents = lexicallyNormalized(url),
+              urlComponents.count >= rootComponents.count,
+              Array(urlComponents.prefix(rootComponents.count)) == rootComponents
+        else { return nil }
+        return Array(urlComponents.dropFirst(rootComponents.count))
     }
 
     /// Largest manifest `readManifest` will load: far above any real job
