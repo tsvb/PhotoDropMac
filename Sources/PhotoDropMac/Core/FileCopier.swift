@@ -69,9 +69,14 @@ enum FileCopier {
         let destDir = destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
 
+        // Only a regular file is read, and the open cannot block — see
+        // `RegularFile`. `sync` hands this manifest-named paths from a library the
+        // user may not have made: a FIFO there hung `open()` forever, and a
+        // device streamed into the mirror until it filled.
         let inHandle: FileHandle
         do {
-            inHandle = try FileHandle(forReadingFrom: source)
+            inHandle = try FileHandle(fileDescriptor: RegularFile.openForReading(source),
+                                      closeOnDealloc: false)
         } catch {
             throw FileCopierError.open(source, error)
         }

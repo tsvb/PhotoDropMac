@@ -560,8 +560,8 @@ enum CLIOutput {
 
     static func healHuman(_ r: HealReport) -> String {
         guard !r.allHealthy else {
-            return (["✓ All \(r.total) file\(r.total == 1 ? "" : "s") healthy."] + refusedMirrorNote(r))
-                .joined(separator: "\n")
+            let verdict = "✓ All \(r.total) file\(r.total == 1 ? "" : "s") healthy."
+            return ([verdict] + refusedEntriesNote(r) + refusedMirrorNote(r)).joined(separator: "\n")
         }
         var lines = ["⚠ \(r.candidates.count) of \(r.total) files damaged/missing — \(r.recoverable.count) recoverable, \(r.unrecoverable.count) unrecoverable:"]
         for c in r.candidates {
@@ -581,7 +581,16 @@ enum CLIOutput {
                 lines.append("    ↳ UNRECOVERABLE — no healthy mirror copy")
             }
         }
-        return (lines + refusedMirrorNote(r)).joined(separator: "\n")
+        return (lines + refusedEntriesNote(r) + refusedMirrorNote(r)).joined(separator: "\n")
+    }
+
+    /// Manifest entries heal would not act on because their path leaves the
+    /// library — see `HealReport.outOfRoot`. Printed on the healthy verdict too:
+    /// "all healthy" is a claim about the whole library.
+    private static func refusedEntriesNote(_ r: HealReport) -> [String] {
+        guard r.outOfRoot > 0 else { return [] }
+        return ["", "\(r.outOfRoot) manifest entr(y/ies) name a path outside the library, or reach one through a "
+                  + "symbolic link, and were refused — neither checked nor offered for restore."]
     }
 
     /// Recorded mirror roots that were not searched, and why. Never silent: "we
@@ -604,6 +613,7 @@ enum CLIOutput {
             let recoverable: Int, unrecoverable: Int, allHealthy: Bool
             let candidates: [CandidateDTO]
             let refusedMirrorRoots: [String]
+            let outOfRoot: Int
         }
         let dto = ReportDTO(
             healthy: r.healthy, total: r.total, manifestCount: r.manifestCount,
@@ -618,7 +628,8 @@ enum CLIOutput {
                 return CandidateDTO(kind: kind, path: $0.relPath,
                                     badPath: $0.badPath, recoverableFrom: $0.recoverableFrom)
             },
-            refusedMirrorRoots: r.refusedMirrorRoots
+            refusedMirrorRoots: r.refusedMirrorRoots,
+            outOfRoot: r.outOfRoot
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -732,9 +743,9 @@ enum CLIOutput {
                        + "checked. Older manifests recorded none for duplicate-skipped files.")
         }
         if r.outOfRoot > 0 {
-            lines.append("  \(r.outOfRoot) manifest entr(y/ies) name a path outside the library and were "
-                       + "refused. A manifest is unauthenticated data; entries that escape its root are "
-                       + "never followed.")
+            lines.append("  \(r.outOfRoot) manifest entr(y/ies) name a path outside the library, or reach one "
+                       + "through a symbolic link, and were refused. A manifest is unauthenticated data; "
+                       + "entries that escape its root are never followed.")
         }
         if r.partialManifests > 0 {
             lines.append("  \(r.partialManifests) of \(r.manifestCount) manifest(s) are marked partial — "

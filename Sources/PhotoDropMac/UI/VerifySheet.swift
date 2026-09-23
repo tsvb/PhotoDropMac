@@ -72,7 +72,7 @@ struct VerifySheet: View {
 
     @ViewBuilder
     private func reportView(_ report: VerifyReport) -> some View {
-        if report.allGood {
+        if Verifier.isCleanPass(report) {
             Image(systemName: "checkmark.seal.fill")
                 .font(.system(size: 44))
                 .foregroundStyle(.green)
@@ -82,6 +82,20 @@ struct VerifySheet: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+        } else if report.allGood {
+            // Everything checked matches, but the record does not cover the whole
+            // library — no seal, and the reasons are stated rather than implied.
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 44))
+                .foregroundStyle(.orange)
+                .symbolRenderingMode(.hierarchical)
+            Text("Checked files match")
+                .font(.title2.weight(.semibold))
+            Text("All \(report.verified) checked file\(report.verified == 1 ? "" : "s") match their recorded checksum, but the record does not cover the whole library.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            caveatList(Verifier.caveats(report))
         } else {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 44))
@@ -93,12 +107,30 @@ struct VerifySheet: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            caveatList(Verifier.caveats(report))
             issueList(report.issues)
         }
 
         Button("Done", action: onDismiss)
             .keyboardShortcut(.defaultAction)
             .buttonStyle(.borderedProminent)
+    }
+
+    /// What the verdict above does not cover — see `Verifier.caveats`. Renders
+    /// nothing when there is nothing to say.
+    @ViewBuilder
+    private func caveatList(_ lines: [String]) -> some View {
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(lines, id: \.self) { line in
+                    Label(line, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: 420, alignment: .leading)
+        }
     }
 
     private func summaryLine(_ report: VerifyReport) -> String {

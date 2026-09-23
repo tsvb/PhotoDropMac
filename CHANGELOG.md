@@ -13,6 +13,21 @@ release from this file.
 
 ### Fixed
 
+- **A crafted card can no longer hang the app.** Two sidecars that collide only
+  after a near-maximum-length name is shortened (`S.CR2.xmp` and `S.xmp`) sent the
+  planner into an endless loop before the job could be cancelled, so Cancel,
+  Ctrl-C and Quit all hung. The collision suffix now survives shortening.
+- **`heal --script` cannot write outside the library through a symbolic link.**
+  A link inside a library (`2024 -> ../../Library`) made a restore line that read
+  as a path inside the library write somewhere else. `verify`, `heal` and `sync`
+  now refuse manifest entries reached through a link inside the library, and
+  report them; `heal` no longer counts them as healthy.
+- **The Verify sheet no longer shows "Library verified" over an incomplete
+  record.** A manifest marked partial, or entries with no checksum or that were
+  refused, now earn a caveated verdict that says why, as the CLI already did.
+- **`sync`, `verify` and `heal` no longer hang or fill a disk on special files.**
+  A FIFO or device in a library, or a FIFO named like a manifest, is refused
+  before it is read.
 - **`photodrop sync` stops the way `ingest` stops.** SIGINT, SIGTERM and SIGHUP
   now end a sync at the next file boundary, with the mirror's manifest written
   for what landed and marked partial; a second signal exits at once. It shipped

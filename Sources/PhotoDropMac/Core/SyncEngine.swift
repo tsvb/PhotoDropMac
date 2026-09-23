@@ -254,8 +254,7 @@ enum SyncEngine {
     static func libraryRecords(mirror: URL, in library: URL) -> Bool {
         let wanted = mirror.standardizedFileURL.path(percentEncoded: false)
         for url in ManifestWriter.manifestURLs(near: library) {
-            guard let data = try? Data(contentsOf: url),
-                  let manifest = ManifestWriter.decode(data) else { continue }
+            guard let manifest = ManifestWriter.readManifest(at: url) else { continue }
             // Older manifests carry no `destinations`; the same fallback
             // `VerifyEngine.build` applies.
             let recordedRoots = manifest.destinations
