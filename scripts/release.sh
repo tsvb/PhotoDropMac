@@ -3,8 +3,9 @@
 # release.sh — build, sign, notarize, and package PhotoDropMac for distribution.
 #
 # Produces a signed + notarized + stapled DMG that opens cleanly (no Gatekeeper
-# prompt) on any Mac. The embedded `photodrop` CLI is signed as part of the
-# app's signature and covered by the same notarization.
+# prompt) on any Mac — the disk image carries its own Developer ID signature as
+# well as the app inside it. The embedded `photodrop` CLI is signed as part of
+# the app's signature and covered by the same notarization.
 #
 # Prerequisites (one-time — see RELEASING.md):
 #   • Paid Apple Developer Program membership.
@@ -231,6 +232,31 @@ else
   dmg_fallback
 fi
 
+# ── 4b. Sign the DMG with the identity that signed the app ──────────────────
+# The DMG used to ship unsigned: notarized and stapled, with no code signature of
+# its own. Gatekeeper let it through on the ticket alone, but
+# `spctl -a -t open --context context:primary-signature` rejected the 0.5.0
+# download ("no usable signature"), and nothing on the disk image itself said who
+# made it. Apple's order is sign → notarize → staple, and it has to be here:
+# notarization covers the signed bytes, the ticket is stapled into a part of the
+# image the signature excludes, and Sparkle's EdDSA signature (step 8) is taken
+# over the final file.
+#
+# The identity is the one that signed the app, found by its team, rather than the
+# bare "Developer ID Application" prefix, which is ambiguous — and refused by
+# codesign — with a renewed certificate or a second team in the keychain. awk
+# reads to the end rather than `exit`ing on the first match: an early exit can
+# SIGPIPE `security`, which `pipefail` would turn into a failed release.
+APP_TEAM="$(codesign -dvv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+DMG_IDENTITY="$(security find-identity -v -p codesigning \
+  | awk -v team="$APP_TEAM" '!found && index($0, "\"Developer ID Application: ") && index($0, "(" team ")\"") { print $2; found = 1 }')"
+if [[ -z "$APP_TEAM" || -z "$DMG_IDENTITY" ]]; then
+  echo "✗ Could not find the Developer ID identity that signed the app (team '${APP_TEAM:-unknown}')." >&2
+  exit 1
+fi
+echo "▸ codesign — dmg (team $APP_TEAM)"
+codesign --force --sign "$DMG_IDENTITY" --timestamp "$DMG"
+
 # ── 5. Notarize the DMG and wait for the verdict ────────────────────────────
 echo "▸ notarytool submit — dmg (profile: $NOTARY_PROFILE)"
 xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
@@ -245,6 +271,11 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 spctl -a -t exec -vvv "$APP" || true          # informational
 xcrun stapler validate "$APP"                 # the copy the user keeps
 xcrun stapler validate "$DMG"                 # the download itself
+# The disk image's own signature, still intact after stapling, and Gatekeeper's
+# verdict on it. Not informational like the app's `spctl` above: this is the
+# check the 0.5.0 DMG failed, and a release should never publish that again.
+codesign --verify --strict --verbose=2 "$DMG"
+spctl -a -t open --context context:primary-signature -v "$DMG"
 
 # The update keys have to survive the build, not just the repo. They were first
 # declared as INFOPLIST_KEY_* build settings, which Xcode accepted without a
@@ -377,6 +408,8 @@ echo ""
 echo "✓ Done: $DMG"
 echo "  Spot-check the embedded CLI is hardened:"
 echo "    codesign -dvvv '$APP/Contents/MacOS/photodrop' 2>&1 | grep -E 'Authority|flags'"
+echo "  Gatekeeper's verdict on the disk image itself (accepted, Notarized Developer ID):"
+echo "    spctl -a -t open --context context:primary-signature -v '$DMG'"
 echo "  Simulate a clean download (should open with NO Gatekeeper dialog at all —"
 echo "  a prompt here means the staple did not take):"
 echo "    SPOT=\"\$(mktemp -d)\"; cp -R '$APP' \"\$SPOT/\"; xattr -w com.apple.quarantine '0081;0;Safari;' \"\$SPOT/$APP_NAME.app\"; open \"\$SPOT/$APP_NAME.app\""

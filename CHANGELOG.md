@@ -9,6 +9,17 @@ an older build had no way to learn what a newer one fixed — and no way to diff
 it. They live here now, in the repo, and `scripts/release.sh` cuts the GitHub
 release from this file.
 
+## [Unreleased]
+
+### Changed
+
+- **The DMG is code-signed**, with the same Developer ID as the app inside it.
+  It was already notarized and stapled, so it opened without a warning, but it
+  carried no signature of its own: Gatekeeper's check of the disk image
+  (`spctl --context context:primary-signature`) rejected it with "no usable
+  signature". `scripts/release.sh` now signs it before notarizing, and a DMG
+  that fails that check stops the release.
+
 ## [0.5.0] — 2026-09-23
 
 ### Fixed
