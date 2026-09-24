@@ -351,8 +351,19 @@ TAG="v$VERSION"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
   echo "⚠ Tag $TAG already exists — leaving it alone."
 else
-  echo "▸ git tag $TAG"
-  git tag -a "$TAG" -m "$APP_NAME $VERSION (build $BUILD)"
+  # Signed when git has a signing key — GPG, or SSH with `gpg.format ssh` — so
+  # anyone can check that $TAG names the source that was shipped (and GitHub
+  # shows it as Verified once the key is added to the account). `git tag -a`
+  # records who tagged but proves nothing. Not required: a machine with no key
+  # still releases, with a warning, rather than failing after notarization.
+  if [[ -n "$(git config --get user.signingkey || true)" || "$(git config --bool --get tag.gpgSign || true)" == "true" ]]; then
+    echo "▸ git tag -s $TAG"
+    git tag -s "$TAG" -m "$APP_NAME $VERSION (build $BUILD)"
+  else
+    echo "⚠ No git signing key (git config user.signingkey) — $TAG is annotated but not signed."
+    echo "  See RELEASING.md → Prerequisites to set one up."
+    git tag -a "$TAG" -m "$APP_NAME $VERSION (build $BUILD)"
+  fi
 fi
 
 # ── 9. Publish, or say loudly that nothing is published ─────────────────────

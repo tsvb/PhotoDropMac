@@ -11,6 +11,13 @@
   signature or length — an item Sparkle cannot verify is silently ignored, which
   looks exactly like "there is no update".
 
+  The feed itself is signed too: the `sparkle-signatures` comment at the end of
+  this file is an EdDSA signature over every byte above it. ANY edit — even to
+  this comment — must be followed by re-signing on the release Mac (appcast.sh
+  in its sign-only mode), or installed copies that require a signed feed will
+  refuse it. CI (scripts/check-appcast-signature.sh) fails a push that breaks it.
+  (No double hyphens in here: XML forbids them inside a comment.)
+
   Served from raw.githubusercontent.com over HTTPS; the DMGs themselves are
   GitHub release assets.
 -->

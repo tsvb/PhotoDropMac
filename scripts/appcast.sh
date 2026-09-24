@@ -3,6 +3,7 @@
 # appcast.sh — sign a released DMG and add it to appcast.xml.
 #
 #   ./scripts/appcast.sh build/PhotoDropMac-0.4.0.dmg --version 0.4.0 --build 123
+#   ./scripts/appcast.sh --sign-only      # (re)sign the feed as it stands
 #
 # Options:
 #   --version <v>    marketing version (CFBundleShortVersionString)
@@ -12,6 +13,9 @@
 #   --feed <path>    appcast to edit (default: appcast.xml)
 #   --changelog <p>  file to cut release notes from (default: CHANGELOG.md)
 #   --force          replace an existing item for this version
+#   --sign-only      add nothing: just sign the feed and verify the signature —
+#                    after fixing the file by hand, or to sign a feed that
+#                    predates feed signing
 #
 # Environment:
 #   SPARKLE_PRIVATE_KEY_FILE  sign with an exported private key instead of the
@@ -31,7 +35,7 @@ cd "$(dirname "$0")/.."
 # shellcheck source=scripts/sparkle-tools.sh
 source "scripts/sparkle-tools.sh"
 
-DMG=""; VERSION=""; BUILD=""; URL=""; FEED="appcast.xml"; CHANGELOG="CHANGELOG.md"; FORCE=0
+DMG=""; VERSION=""; BUILD=""; URL=""; FEED="appcast.xml"; CHANGELOG="CHANGELOG.md"; FORCE=0; SIGN_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version)   VERSION="$2"; shift 2 ;;
@@ -40,16 +44,19 @@ while [[ $# -gt 0 ]]; do
     --feed)      FEED="$2";    shift 2 ;;
     --changelog) CHANGELOG="$2"; shift 2 ;;
     --force)     FORCE=1;      shift ;;
-    -h|--help)   sed -n '2,25p' "$0"; exit 0 ;;
+    --sign-only) SIGN_ONLY=1;  shift ;;
+    -h|--help)   sed -n '2,29p' "$0"; exit 0 ;;
     -*)          echo "✗ Unknown option: $1" >&2; exit 64 ;;
     *)           DMG="$1";     shift ;;
   esac
 done
 
-[[ -n "$DMG"     ]] || { echo "✗ No DMG given. Usage: $0 <dmg> --version <v> --build <n>" >&2; exit 64; }
-[[ -f "$DMG"     ]] || { echo "✗ No such file: $DMG" >&2; exit 2; }
-[[ -n "$VERSION" ]] || { echo "✗ --version is required." >&2; exit 64; }
-[[ -n "$BUILD"   ]] || { echo "✗ --build is required — it is the number Sparkle compares." >&2; exit 64; }
+if [[ "$SIGN_ONLY" != "1" ]]; then
+  [[ -n "$DMG"     ]] || { echo "✗ No DMG given. Usage: $0 <dmg> --version <v> --build <n>" >&2; exit 64; }
+  [[ -f "$DMG"     ]] || { echo "✗ No such file: $DMG" >&2; exit 2; }
+  [[ -n "$VERSION" ]] || { echo "✗ --version is required." >&2; exit 64; }
+  [[ -n "$BUILD"   ]] || { echo "✗ --build is required — it is the number Sparkle compares." >&2; exit 64; }
+fi
 [[ -f "$FEED"    ]] || { echo "✗ No such feed: $FEED" >&2; exit 2; }
 
 # The public key in the plist and the private key in the keychain are two halves
@@ -60,6 +67,51 @@ if [[ -z "$PUBKEY" ]]; then
   echo "✗ Info.plist carries no SUPublicEDKey, so no build can verify this item." >&2
   echo "  Run ./scripts/sparkle-keys.sh first." >&2
   exit 2
+fi
+
+SIGN_UPDATE="$(sparkle_tool sign_update)"
+# By default the private key is read from the login keychain. SPARKLE_PRIVATE_KEY_FILE
+# points at an exported key instead (`generate_keys -x`), which is how a CI runner
+# or a second machine signs without the developer's keychain.
+KEY_ARGS=()
+if [[ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
+  [[ -f "$SPARKLE_PRIVATE_KEY_FILE" ]] || { echo "✗ SPARKLE_PRIVATE_KEY_FILE does not exist: $SPARKLE_PRIVATE_KEY_FILE" >&2; exit 2; }
+  KEY_ARGS=(--ed-key-file "$SPARKLE_PRIVATE_KEY_FILE")
+fi
+
+# ── Sign the feed itself ─────────────────────────────────────────────────────
+# The enclosure signature covers the DMG's bytes and nothing else. The version
+# numbers, the download URL and the release notes in this file were
+# unauthenticated, so anyone who could push to main could relabel an older,
+# genuinely signed build as the newest release — walking every installed copy
+# back to code with known bugs — or quietly stop announcing updates. `sign_update`
+# on an .xml file signs every byte of it and appends the signature as a trailing
+# `<!-- sparkle-signatures: … -->` comment, stripping any previous one first, so
+# re-signing after every edit is always correct. (Read from Sparkle 2.9.6's
+# sign_update and SPUExtractAppcastContent.)
+#
+# --disable-signing-warning: without it sign_update re-serializes the whole
+# document through XMLDocument to insert a warning comment at the top. The header
+# comment in appcast.xml already says the same thing, and the file keeps its
+# formatting.
+#
+# An installed copy only checks this when its Info.plist sets SURequireSignedFeed,
+# and none does yet; to one that doesn't, the trailing comment is just a comment.
+# scripts/check-appcast-signature.sh verifies the same signature in CI, so a hand
+# edit after signing is caught at push time rather than by users.
+sign_feed() {
+  echo "▸ Signing $FEED"
+  "$SIGN_UPDATE" "${KEY_ARGS[@]+"${KEY_ARGS[@]}"}" --disable-signing-warning "$FEED"
+  "$SIGN_UPDATE" "${KEY_ARGS[@]+"${KEY_ARGS[@]}"}" --verify "$FEED" || {
+    echo "✗ $FEED does not verify against the signing key. Not committing this." >&2; exit 2; }
+  xmllint --noout "$FEED" 2>/dev/null || {
+    echo "✗ $FEED is no longer well-formed XML after signing. Not committing this." >&2; exit 2; }
+}
+
+if [[ "$SIGN_ONLY" == "1" ]]; then
+  sign_feed
+  echo "✓ $FEED is signed. Commit and push it."
+  exit 0
 fi
 
 if grep -q "sparkle:shortVersionString>$VERSION<" "$FEED"; then
@@ -84,15 +136,6 @@ DOWNLOAD_URL="${URL:-https://github.com/tsvb/PhotoDropMac/releases/download/v$VE
 MIN_OS="$(awk '/deploymentTarget:/{found=1} found && /macOS:/{gsub(/[^0-9.]/,"",$2); print $2; exit}' project.yml)"
 MIN_OS="${MIN_OS:-14.0}"
 
-SIGN_UPDATE="$(sparkle_tool sign_update)"
-# By default the private key is read from the login keychain. SPARKLE_PRIVATE_KEY_FILE
-# points at an exported key instead (`generate_keys -x`), which is how a CI runner
-# or a second machine signs without the developer's keychain.
-KEY_ARGS=()
-if [[ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ]]; then
-  [[ -f "$SPARKLE_PRIVATE_KEY_FILE" ]] || { echo "✗ SPARKLE_PRIVATE_KEY_FILE does not exist: $SPARKLE_PRIVATE_KEY_FILE" >&2; exit 2; }
-  KEY_ARGS=(--ed-key-file "$SPARKLE_PRIVATE_KEY_FILE")
-fi
 echo "▸ Signing $DMG"
 # Prints, verbatim: sparkle:edSignature="…" length="…" — embedded as-is rather
 # than parsed and reassembled, so there is nothing to get subtly wrong.
@@ -211,6 +254,9 @@ awk -v marker="$MARKER" -v itemfile="$ITEM_FILE" '
 # invisible from the app: Sparkle just reports no update, forever.
 xmllint --noout "$FEED" 2>/dev/null || {
   echo "✗ $FEED is no longer well-formed XML. Not committing this." >&2; exit 2; }
+
+# Last, because the signature covers every byte above it.
+sign_feed
 
 echo "✓ Added $VERSION (build $BUILD) to $FEED"
 echo "  Download URL: $DOWNLOAD_URL"
