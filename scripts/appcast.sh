@@ -95,10 +95,10 @@ fi
 # comment in appcast.xml already says the same thing, and the file keeps its
 # formatting.
 #
-# An installed copy only checks this when its Info.plist sets SURequireSignedFeed,
-# and none does yet; to one that doesn't, the trailing comment is just a comment.
-# scripts/check-appcast-signature.sh verifies the same signature in CI, so a hand
-# edit after signing is caught at push time rather than by users.
+# An installed copy checks this when its Info.plist sets SURequireSignedFeed,
+# which this repo's does; to a copy built before that, the trailing comment is
+# just a comment. scripts/check-appcast-signature.sh verifies the same signature
+# in CI, so a hand edit after signing is caught at push time rather than by users.
 sign_feed() {
   echo "▸ Signing $FEED"
   "$SIGN_UPDATE" "${KEY_ARGS[@]+"${KEY_ARGS[@]}"}" --disable-signing-warning "$FEED"

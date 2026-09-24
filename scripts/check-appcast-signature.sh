@@ -6,7 +6,7 @@
 #   ./scripts/check-appcast-signature.sh [feed] [plist]
 #
 # Exit 0 when the feed is signed and the signature verifies — or when it is not
-# signed at all and REQUIRE_SIGNED_FEED is not 1. Exit 1 on anything else.
+# signed at all and nothing requires it to be. Exit 1 on anything else.
 #
 # Why this exists. `scripts/appcast.sh` signs the feed with `sign_update` after
 # every edit: an EdDSA signature over every byte of the file, appended as a
@@ -20,8 +20,10 @@
 # not exist, which is why it uses openssl: Sparkle's signature is plain Ed25519
 # over the bytes before the signing block.
 #
-# An unsigned feed passes (with a notice) until the app requires a signed one;
-# CI sets REQUIRE_SIGNED_FEED=1 from then on.
+# A signature is required whenever the plist sets SURequireSignedFeed — read
+# from the same file the key comes from, so the check cannot fall out of step
+# with what the app enforces — or when REQUIRE_SIGNED_FEED=1. Otherwise an
+# unsigned feed passes with a notice.
 
 set -euo pipefail
 
@@ -30,10 +32,12 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 FEED="${1:-$REPO/appcast.xml}"
 PLIST="${2:-$REPO/Info.plist}"
-REQUIRE="${REQUIRE_SIGNED_FEED:-0}"
 
 [[ -f "$FEED"  ]] || { echo "✗ No such feed: $FEED" >&2; exit 1; }
 [[ -f "$PLIST" ]] || { echo "✗ No such plist: $PLIST" >&2; exit 1; }
+
+REQUIRE="$(python3 -c 'import plistlib, sys; print(1 if plistlib.load(open(sys.argv[1], "rb")).get("SURequireSignedFeed") is True else 0)' "$PLIST")"
+if [[ "${REQUIRE_SIGNED_FEED:-0}" == "1" ]]; then REQUIRE=1; fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -84,7 +88,7 @@ PY
 case "$STATUS" in
   unsigned)
     if [[ "$REQUIRE" == "1" ]]; then
-      echo "✗ $FEED is not signed, and installed copies require a signed feed." >&2
+      echo "✗ $FEED is not signed, and a signed feed is required (SURequireSignedFeed in $PLIST, or REQUIRE_SIGNED_FEED=1)." >&2
       echo "  Sign it on the release Mac: ./scripts/appcast.sh --sign-only" >&2
       exit 1
     fi
