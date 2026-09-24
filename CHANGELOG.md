@@ -9,7 +9,7 @@ an older build had no way to learn what a newer one fixed — and no way to diff
 it. They live here now, in the repo, and `scripts/release.sh` cuts the GitHub
 release from this file.
 
-## [Unreleased]
+## [0.5.1] — 2026-09-24
 
 ### Changed
 
@@ -22,7 +22,8 @@ release from this file.
 - **Updates are verified before the disk image is mounted.** The 0.5.0 notes
   said each update was verified "before anything is unpacked". That was not
   quite true: Sparkle mounted the downloaded DMG first and checked its signature
-  before installing anything from it. It now checks the signature first.
+  before installing anything from it. From this release on, it checks the
+  signature first.
 - **Release tags are signed** when the release machine has a git signing key.
 - **The DMG is code-signed**, with the same Developer ID as the app inside it.
   It was already notarized and stapled, so it opened without a warning, but it
