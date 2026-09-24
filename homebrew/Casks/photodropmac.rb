@@ -1,8 +1,8 @@
 # Rendered by scripts/homebrew-cask.sh — do not edit by hand. The tap repo
 # (tsvb/homebrew-tap) receives a copy of this file on every published release.
 cask "photodropmac" do
-  version "0.5.0"
-  sha256 "18471652807272a419a7f298b81f3f4410c768fd856cf6b3a6a9dfa0d81b27de"
+  version "0.5.1"
+  sha256 "5d4d383a853044fc42299136c8a2fd957258b050cca6c5ec2d2e68043735b998"
 
   url "https://github.com/tsvb/PhotoDropMac/releases/download/v#{version}/PhotoDropMac-#{version}.dmg"
   name "PhotoDrop"
