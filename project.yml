@@ -72,7 +72,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tsvb.PhotoDropMac
         PRODUCT_NAME: PhotoDropMac
-        MARKETING_VERSION: "0.5.0"
+        MARKETING_VERSION: "0.5.1"
         CURRENT_PROJECT_VERSION: "1"
         # An explicit Info.plist rather than GENERATE_INFOPLIST_FILE, because
         # Sparkle's SUFeedURL / SUPublicEDKey are not keys Xcode's
