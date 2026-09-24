@@ -29,6 +29,26 @@
         <language>en</language>
         <!-- NEW ITEMS ARE INSERTED DIRECTLY BELOW THIS LINE, NEWEST FIRST. -->
         <item>
+            <title>PhotoDrop 0.5.1</title>
+            <pubDate>Thu, 24 Sep 2026 10:29:11 -0400</pubDate>
+            <sparkle:version>213</sparkle:version>
+            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <link>https://github.com/tsvb/PhotoDropMac/releases/tag/v0.5.1</link>
+            <description><![CDATA[
+<h3>Changed</h3>
+<ul>
+<li><strong>The update feed is signed, and the app requires it.</strong> <code>appcast.xml</code> now carries an EdDSA signature over its own contents, made with the same key as the updates. The update itself was always signed, but the feed that names versions and download links was not, so someone able to push to the repository could have offered an older build as the newest one. From this release on, the app refuses a feed whose signature does not verify.</li>
+<li><strong>Updates are verified before the disk image is mounted.</strong> The 0.5.0 notes said each update was verified "before anything is unpacked". That was not quite true: Sparkle mounted the downloaded DMG first and checked its signature before installing anything from it. From this release on, it checks the signature first.</li>
+<li><strong>Release tags are signed</strong> when the release machine has a git signing key.</li>
+<li><strong>The DMG is code-signed</strong>, with the same Developer ID as the app inside it. It was already notarized and stapled, so it opened without a warning, but it carried no signature of its own: Gatekeeper's check of the disk image (<code>spctl --context context:primary-signature</code>) rejected it with "no usable signature". <code>scripts/release.sh</code> now signs it before notarizing, and a DMG that fails that check stops the release.</li>
+</ul>
+]]></description>
+            <enclosure url="https://github.com/tsvb/PhotoDropMac/releases/download/v0.5.1/PhotoDropMac-0.5.1.dmg"
+                       type="application/octet-stream"
+                       sparkle:edSignature="X7keJhCpIKGQ0f27YrFGPiCv321qdpLtdfpmuWJDSwgTg5sIHCxChrj/GiKSdNHQ7GQ5EvNk3vfGZEqy7o4nBA==" length="3786649" />
+        </item>
+        <item>
             <title>PhotoDrop 0.5.0</title>
             <pubDate>Wed, 23 Sep 2026 12:52:23 -0400</pubDate>
             <sparkle:version>205</sparkle:version>
@@ -106,6 +126,6 @@
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: qIYMaO/7cKovh/evAhLOMFs+GjPSuwsCixZiw6Jj+cBF4szsaBV5hFqJfLNRKwy2mbdxNYbnZjSCAXHUL04xDg==
-length: 13613
+edSignature: 61X6O9zHbNdmQAEr15PVDKFX1jZof1V//JB8l/tATE1EyI+1R4x8u51bq/nF2lCQ4kD2xTUpEGBxTwrooQf1Bw==
+length: 15802
 -->
