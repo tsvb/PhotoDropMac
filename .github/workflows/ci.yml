@@ -146,14 +146,15 @@ jobs:
           grep -q "<key>SUFeedURL</key>" Info.plist \
             || { echo "::error::Info.plist has no SUFeedURL — the app could never check for updates."; exit 1; }
 
-      # scripts/appcast.sh signs appcast.xml over its own bytes. Once the app sets
-      # SURequireSignedFeed, a feed edited after it was signed — even a comment —
-      # is refused by every installed copy, which to a user looks like "no updates,
-      # ever". Verified here against Info.plist's key with openssl, since Sparkle's
-      # tools only run on macOS. An unsigned feed passes until the app requires a
-      # signed one; set REQUIRE_SIGNED_FEED=1 on this step from that release on.
+      # scripts/appcast.sh signs appcast.xml over its own bytes. The app sets
+      # SURequireSignedFeed, so a feed edited after it was signed — even a comment —
+      # is refused by every installed copy that carries that key, which to a user
+      # looks like "no updates, ever". Verified here against Info.plist's key with
+      # openssl, since Sparkle's tools only run on macOS. An unsigned feed fails.
       - name: Check the appcast's signature
         run: ./scripts/check-appcast-signature.sh
+        env:
+          REQUIRE_SIGNED_FEED: "1"
 
       # The cask is what `brew install --cask tsvb/tap/photodropmac` reads. A
       # syntax error there is a tap that fails for every brew user at once.

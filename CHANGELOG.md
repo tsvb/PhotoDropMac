@@ -13,12 +13,16 @@ release from this file.
 
 ### Changed
 
-- **The update feed is signed.** `appcast.xml` now carries an EdDSA signature
-  over its own contents, made with the same key as the updates. The update itself
-  was always signed, but the feed that names versions and download links was not,
-  so someone able to push to the repository could have offered an older build as
-  the newest one. Installed copies do not require the signature yet; a later
-  release will switch that on.
+- **The update feed is signed, and the app requires it.** `appcast.xml` now
+  carries an EdDSA signature over its own contents, made with the same key as the
+  updates. The update itself was always signed, but the feed that names versions
+  and download links was not, so someone able to push to the repository could
+  have offered an older build as the newest one. From this release on, the app
+  refuses a feed whose signature does not verify.
+- **Updates are verified before the disk image is mounted.** The 0.5.0 notes
+  said each update was verified "before anything is unpacked". That was not
+  quite true: Sparkle mounted the downloaded DMG first and checked its signature
+  before installing anything from it. It now checks the signature first.
 - **Release tags are signed** when the release machine has a git signing key.
 - **The DMG is code-signed**, with the same Developer ID as the app inside it.
   It was already notarized and stapled, so it opened without a warning, but it

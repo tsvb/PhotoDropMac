@@ -220,27 +220,39 @@ Re-signing strips the old block first, so it is correct after any edit.
   ./scripts/appcast.sh --sign-only     # sign the feed as it stands, and verify it
   ```
 
-  Run that once now to sign the feed that predates this — it signs the live
-  0.5.0 feed without adding anything.
+  The feed was first signed as it stood after 0.5.0 shipped (commit "Sign the
+  update feed"), so every build that requires a signature has only ever met a
+  signed feed.
 - **CI verifies it** (`scripts/check-appcast-signature.sh`, against
   `Info.plist`'s `SUPublicEDKey`, with openssl since Sparkle's tools only run on
-  macOS), so a push that breaks the signature fails before anyone is affected. An
-  unsigned feed passes until the app requires a signed one.
-- **Installed copies do not check it yet.** An app only verifies the feed when its
-  `Info.plist` sets `SURequireSignedFeed`; to every copy shipped so far the
-  signature is just a comment. Requiring it is a separate, later release, and the
-  order matters — require it before a signed feed is live and every copy that
-  gets the requiring build stops seeing updates:
-  1. Ship at least one release with a signed feed (this change), and check
-     `./scripts/check-appcast-signature.sh` passes on `main`.
-  2. In a later release, set **both** `SURequireSignedFeed` and
-     `SUVerifyUpdateBeforeExtraction` to `true` in `Info.plist` — Sparkle 2.9.6
-     refuses to start the updater with the first and not the second
-     (`SPUUpdater.m`) — and set `REQUIRE_SIGNED_FEED=1` on the CI step.
-  3. Sparkle falls back to accepting an unverifiable feed after it has failed
-     for `SUSignedFeedFailureExpirationInterval` (a built-in default when unset),
-     which is its escape hatch for key rotation; leave it at the default unless
-     there is a reason not to.
+  macOS), so a push that breaks the signature fails before anyone is affected. The
+  check requires a signature whenever `Info.plist` sets `SURequireSignedFeed`,
+  read from the plist itself so it cannot fall out of step with the app; CI also
+  sets `REQUIRE_SIGNED_FEED=1`.
+- **The app requires it.** `Info.plist` sets `SURequireSignedFeed`, so every
+  copy built from here on refuses a feed that does not verify. Copies of 0.5.0
+  and earlier do not check, and to them the signature is just a comment. The
+  order was the point: a signed feed went live on `main` *before* any build that
+  requires one existed, because a requiring build that meets an unsigned feed
+  never sees an update.
+  - `SUVerifyUpdateBeforeExtraction` is set alongside it. Sparkle 2.9.6 refuses
+    to start the updater with the first and not the second (`SPUUpdater.m`), and
+    `SoftwareUpdateTests` pins the pair in the built bundle.
+  - Verifying before extraction checks the DMG's EdDSA signature before
+    unpacking it. Its key-rotation fallback accepts a DMG that fails that check
+    only if the DMG itself is Developer ID signed by the installed app's team —
+    which is why the DMG is signed (step 4).
+  - `SUSignedFeedFailureExpirationInterval` is left unset, on purpose. After a
+    feed has failed verification for 20 days (Sparkle's default), Sparkle
+    accepts it again in a restricted mode: no release notes, no critical-update
+    flag, the version string sanitized, and the download still signature-checked.
+    That is the way back from a lost or rotated key; `0` would remove it, and the
+    test refuses `0`.
+- **A lost key now also stops the feed.** A feed signed with any other key
+  fails verification, so copies that require a signed feed report a failed check
+  on every attempt until the 20-day fallback above opens. Only then can they see
+  a build signed with a new key, which they accept through the Developer ID
+  fallback. Keep the backup from prerequisite 5.
 
 ## Verifying a build by hand
 
