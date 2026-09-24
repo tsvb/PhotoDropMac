@@ -82,6 +82,19 @@ prerequisites and the per-release steps.
    cask declares `auto_updates`, so `brew upgrade` defers to Sparkle rather than
    reinstalling over it.
 
+8. **(Recommended) A git signing key**, so release tags are signed. `release.sh`
+   uses `git tag -s` whenever `user.signingkey` (or `tag.gpgSign`) is set, and
+   otherwise tags unsigned with a warning. An SSH key is the least setup:
+
+   ```sh
+   git config --global gpg.format ssh
+   git config --global user.signingkey ~/.ssh/id_ed25519.pub
+   ```
+
+   Add the same key to GitHub as a **Signing key** (Settings → SSH and GPG keys)
+   and the tag shows as Verified. `git config --global commit.gpgsign true` signs
+   the release commits too.
+
 ## Cutting a release
 
 ```sh
@@ -127,10 +140,13 @@ The script runs, in order:
    bundle, because a key that is right in the repo and missing from the product is
    an app that silently never updates (see the header comment in `Info.plist`).
 8. `scripts/appcast.sh` — sign the DMG with the private key and add an `<item>` to
-   `appcast.xml`, with release notes cut from `CHANGELOG.md`. Committed before the
-   tag, so the tag names a commit whose feed already describes the build. Then
-   `scripts/homebrew-cask.sh` renders the cask for the same DMG, committed the same way.
-9. Tag, and — with `PUBLISH=1` — push, create the GitHub release, and copy the cask
+   `appcast.xml`, with release notes cut from `CHANGELOG.md`, then **sign the feed
+   itself** and verify that signature (see "The feed is signed" below). Committed
+   before the tag, so the tag names a commit whose feed already describes the
+   build. Then `scripts/homebrew-cask.sh` renders the cask for the same DMG,
+   committed the same way.
+9. Tag — **signed** (`git tag -s`) when git has a signing key, see Prerequisites
+   — and, with `PUBLISH=1`, push, create the GitHub release, and copy the cask
    into the tap.
 
 Dependencies are **pinned exactly** in `project.yml` (`exactVersion`), so the archive
@@ -186,6 +202,45 @@ Release notes come from the matching `## [<version>]` section of `CHANGELOG.md`,
 converted to the small subset of HTML Sparkle renders, and are **embedded** in the
 item — so a user deciding whether to install does not need a second network fetch
 to read what changed.
+
+### The feed is signed
+
+The enclosure signature covers the DMG's bytes and nothing else. The version
+numbers, download URL and release notes in `appcast.xml` were unauthenticated, so
+anyone able to push to `main` could relabel an older, genuinely signed build as
+the newest release — walking every installed copy back to code with known bugs —
+or quietly stop announcing updates. `appcast.sh` therefore finishes by running
+`sign_update` on the feed: an EdDSA signature over every byte of the file, with
+the same key, appended as a trailing `<!-- sparkle-signatures: … -->` comment.
+Re-signing strips the old block first, so it is correct after any edit.
+
+- **Any edit to `appcast.xml` must be re-signed**, even a comment:
+
+  ```sh
+  ./scripts/appcast.sh --sign-only     # sign the feed as it stands, and verify it
+  ```
+
+  Run that once now to sign the feed that predates this — it signs the live
+  0.5.0 feed without adding anything.
+- **CI verifies it** (`scripts/check-appcast-signature.sh`, against
+  `Info.plist`'s `SUPublicEDKey`, with openssl since Sparkle's tools only run on
+  macOS), so a push that breaks the signature fails before anyone is affected. An
+  unsigned feed passes until the app requires a signed one.
+- **Installed copies do not check it yet.** An app only verifies the feed when its
+  `Info.plist` sets `SURequireSignedFeed`; to every copy shipped so far the
+  signature is just a comment. Requiring it is a separate, later release, and the
+  order matters — require it before a signed feed is live and every copy that
+  gets the requiring build stops seeing updates:
+  1. Ship at least one release with a signed feed (this change), and check
+     `./scripts/check-appcast-signature.sh` passes on `main`.
+  2. In a later release, set **both** `SURequireSignedFeed` and
+     `SUVerifyUpdateBeforeExtraction` to `true` in `Info.plist` — Sparkle 2.9.6
+     refuses to start the updater with the first and not the second
+     (`SPUUpdater.m`) — and set `REQUIRE_SIGNED_FEED=1` on the CI step.
+  3. Sparkle falls back to accepting an unverifiable feed after it has failed
+     for `SUSignedFeedFailureExpirationInterval` (a built-in default when unset),
+     which is its escape hatch for key rotation; leave it at the default unless
+     there is a reason not to.
 
 ## Verifying a build by hand
 

@@ -13,6 +13,13 @@ release from this file.
 
 ### Changed
 
+- **The update feed is signed.** `appcast.xml` now carries an EdDSA signature
+  over its own contents, made with the same key as the updates. The update itself
+  was always signed, but the feed that names versions and download links was not,
+  so someone able to push to the repository could have offered an older build as
+  the newest one. Installed copies do not require the signature yet; a later
+  release will switch that on.
+- **Release tags are signed** when the release machine has a git signing key.
 - **The DMG is code-signed**, with the same Developer ID as the app inside it.
   It was already notarized and stapled, so it opened without a warning, but it
   carried no signature of its own: Gatekeeper's check of the disk image
