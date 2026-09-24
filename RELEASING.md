@@ -113,12 +113,17 @@ The script runs, in order:
    staple` it. This happens **before** the DMG is built, so the copy the user
    drags to /Applications carries its own ticket — see "Why the app is stapled
    too" below.
-4. Package the stapled `.app` into `build/PhotoDropMac-<version>.dmg`.
+4. Package the stapled `.app` into `build/PhotoDropMac-<version>.dmg`, and
+   `codesign` the DMG with the Developer ID identity that signed the app (found by
+   its team, so a renewed certificate or a second team in the keychain cannot make
+   the choice ambiguous). Releases up to 0.5.0 shipped the disk image unsigned —
+   notarized and stapled, but `spctl --context context:primary-signature` rejected
+   it with "no usable signature".
 5. `xcrun notarytool submit … --wait` — upload the DMG and block until the
    verdict.
 6. `xcrun stapler staple` — attach the ticket so the DMG validates offline too.
 7. Verify (`codesign --verify`, `spctl`, `stapler validate` on **both** the app
-   and the DMG) — and read `SUFeedURL` / `SUPublicEDKey` back out of the **built**
+   and the DMG; the DMG's `spctl` verdict fails the release) — and read `SUFeedURL` / `SUPublicEDKey` back out of the **built**
    bundle, because a key that is right in the repo and missing from the product is
    an app that silently never updates (see the header comment in `Info.plist`).
 8. `scripts/appcast.sh` — sign the DMG with the private key and add an `<item>` to
@@ -200,6 +205,10 @@ spctl -a -t exec -vvv "$APP"          # → accepted, source=Notarized Developer
 # makes an offline first launch succeed after the DMG is discarded:
 xcrun stapler validate "$APP"
 xcrun stapler validate build/PhotoDropMac-*.dmg
+
+# The disk image is signed in its own right:
+spctl -a -t open --context context:primary-signature -v build/PhotoDropMac-*.dmg
+                                      # → accepted, source=Notarized Developer ID
 
 # The real test — simulate a downloaded, quarantined copy. Should open with no dialog:
 SPOT="$(mktemp -d)"
