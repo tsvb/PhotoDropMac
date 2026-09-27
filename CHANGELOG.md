@@ -51,6 +51,11 @@ release from this file.
 - Tests for `SyncEngine`, which had none: what it copies, what it refuses to
   overwrite, what it does when the library's own copy is missing or no longer
   matches its record, how it stops, and why a no-op run writes no manifest.
+- **`scripts/photolab-flatten.py`, for browsing a library in DxO PhotoLab.**
+  PhotoLab shows only the top level of a folder, so a library of day folders
+  never appears in one grid. The script builds a flat folder of symlinks to
+  every image in the tree, which PhotoLab follows. It is in the repository, not
+  the app, and never writes into the library. See the README.
 
 ### Changed
 
