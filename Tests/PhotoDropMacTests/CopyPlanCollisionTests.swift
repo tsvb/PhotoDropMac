@@ -17,6 +17,16 @@ import XCTest
 /// `plan` returned, so a collision between two files of the same bundle was
 /// structurally invisible: `IMG_1234.xmp` and `IMG_1234.v2.xmp` (both short-form
 /// sidecars by `classifyCompanion`'s prefix rule) planned onto one path.
+///
+/// **Truncation undid the separation, forever.** `separateInternalCollisions`
+/// built each retry with `PathPlanner.fileName(stem: "<stem>_<n>", …)`, which
+/// trims the stem's *end* to fit NAME_MAX — the `_n`. A card holding `S.CR2`,
+/// `S.CR2.xmp` and `S.xmp` with a 235–247 character `S` renders a 251-byte stem;
+/// both sidecars trim to one `<stem>.xmp`, and every retry trimmed back to it.
+/// Traced from the code and reproduced with a port of the arithmetic (10,000
+/// iterations, no escape): the planner spun before the engine's first cancel
+/// check, so Cancel, Ctrl-C and Quit all hung — from card insertion alone with
+/// one-click ingest on.
 final class CopyPlanCollisionTests: XCTestCase {
 
     private func captureDate() -> Date {
@@ -129,4 +139,40 @@ final class CopyPlanCollisionTests: XCTestCase {
         XCTAssertEqual(Set(paths.map(CopyPlan.collisionKey)).count, 3)
         XCTAssertTrue(paths[0].contains("_1.CR2"), "the primary moved around the on-disk file: \(paths[0])")
     }
+
+    // MARK: - Truncation must not undo the separation
+
+    /// The crafted card from the header. Run under a watchdog: the defect is a
+    /// hang, and a timeout **fails** here rather than stalling the suite.
+    func testMaximumLengthSidecarsCollidingAfterTruncationStillSeparate() {
+        let stem = String(repeating: "A", count: 240)
+        let crafted = self.bundle("\(stem).CR2",
+                                  companions: [("\(stem).CR2.xmp", CompanionKind.xmp),
+                                               ("\(stem).xmp", CompanionKind.xmp)],
+                                  in: card)
+        let destRoot = self.root
+        let box = PlanBox()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            box.plan = CopyPlan.plan(bundle: crafted, destinationRoot: destRoot,
+                                     description: "", template: .default, cardLabel: "")
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + 10) == .success, let plan = box.plan else {
+            return XCTFail("planning spun forever — the `_n` was truncated back off every retry")
+        }
+
+        let paths = plan.files.map(\.destination.path)
+        XCTAssertEqual(paths.count, 3, "every file in the bundle is still planned — none dropped")
+        XCTAssertEqual(Set(paths.map(CopyPlan.collisionKey)).count, 3, "each file needs its own path: \(paths)")
+        for path in paths {
+            XCTAssertLessThanOrEqual((path as NSString).lastPathComponent.utf8.count,
+                                     PathPlanner.maxComponentBytes, "over NAME_MAX: \(path)")
+        }
+    }
+}
+
+/// Carries the planner's result out of the watchdog's background queue.
+private final class PlanBox: @unchecked Sendable {
+    var plan: BundlePlan?
 }

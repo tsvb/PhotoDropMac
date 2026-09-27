@@ -9,6 +9,14 @@ import XCTest
 /// recorded hash", which was replaced precisely because every ordering signal is
 /// attacker-chosen; see `VerifyEngine.build`. Agreement dedupes quietly,
 /// disagreement is a `.conflict`.
+///
+/// **The seal is a claim about the whole library.** The sheet showed the green
+/// "Library verified" seal whenever `allGood` held, and `allGood` deliberately
+/// ignores `partialManifests`, `undigested` and `outOfRoot` — they are reported,
+/// never failed on. Traced before the fix: a manifest with one good entry and 999
+/// refused or checksum-less ones, or a cancelled ingest's `partial` manifest,
+/// earned the seal with none of the three shown anywhere (the sheet consulted them
+/// only when *nothing* could be checked). The CLI had already been fixed for this.
 @MainActor
 final class VerifierTests: XCTestCase {
 
@@ -151,6 +159,50 @@ final class VerifierTests: XCTestCase {
         XCTAssertEqual(report.conflicts, 0)
         XCTAssertEqual(report.total, 1)
         XCTAssertEqual(report.verified, 1)
+    }
+
+    // MARK: - What the verdict covers
+
+    /// A record known not to cover the library never earns the seal, even though
+    /// everything it did check matched — and the reason is always given.
+    func testIncompleteRecordNeverEarnsTheSeal() {
+        XCTAssertTrue(Verifier.isCleanPass(VerifyReport(verified: 3, issues: [], manifestCount: 1)))
+        XCTAssertTrue(Verifier.caveats(VerifyReport(verified: 3, issues: [], manifestCount: 1)).isEmpty)
+
+        let incomplete = [
+            VerifyReport(verified: 40, issues: [], manifestCount: 1, partialManifests: 1),
+            VerifyReport(verified: 1, issues: [], manifestCount: 1, undigested: 999),
+            VerifyReport(verified: 1, issues: [], manifestCount: 1, outOfRoot: 999),
+        ]
+        for report in incomplete {
+            XCTAssertTrue(report.allGood, "these are reported, never failed on — the exit code is unchanged")
+            XCTAssertFalse(Verifier.isCleanPass(report), "no seal over an incomplete record: \(report)")
+            XCTAssertEqual(Verifier.caveats(report).count, 1, "the reason must be stated: \(report)")
+        }
+    }
+
+    /// End to end: a cancelled ingest's manifest is marked `partial`, and the
+    /// verdict built from it must say so.
+    func testPartialManifestIsCaveatedEndToEnd() async throws {
+        let root = try freshTempDir()
+        let hash = try writeFile("2026/photo.bin", content: "bytes that landed", in: root)
+        let manifest = Manifest(
+            schema: Manifest.schemaID, app: Manifest.appName, createdAt: date(2026, 1, 1),
+            source: nil, primaryDestination: root.path(percentEncoded: false),
+            archiveDestination: nil, destinations: [root.path(percentEncoded: false)],
+            verified: true, partial: true,
+            filesCopied: 1, filesSkipped: 0, filesFailed: 0,
+            totalBytes: 0, elapsedSeconds: 0, files: [entry("2026/photo.bin", hash: hash)])
+        let folder = root.appendingPathComponent(ManifestWriter.folderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(manifest).write(to: folder.appendingPathComponent("ingest-partial.json"))
+
+        let report = try await runVerifier(target: root)
+        XCTAssertTrue(report.allGood)
+        XCTAssertEqual(report.partialManifests, 1)
+        XCTAssertFalse(Verifier.isCleanPass(report))
     }
 }
 

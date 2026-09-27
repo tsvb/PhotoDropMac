@@ -4,7 +4,8 @@ import XCTest
 /// The update channel — the one outbound network connection in the app, and a
 /// path by which code from the internet becomes code running on the user's Mac.
 ///
-/// Three measured before-states are pinned here:
+/// Three measured before-states are pinned here, and one traced from Sparkle's
+/// source (4, below):
 ///
 /// 1. **The Sparkle keys silently vanished from the built app.** They were first
 ///    declared as `INFOPLIST_KEY_SUFeedURL` / `INFOPLIST_KEY_SUPublicEDKey`
@@ -23,6 +24,12 @@ import XCTest
 ///    relaunch the running application; this app's job is a copy whose only safe
 ///    stopping point is a file boundary (the same reason Quit routes through
 ///    `TerminationPolicy` instead of `NSApp.terminate`).
+/// 4. **The feed was unauthenticated.** The enclosure signature covers the DMG
+///    and nothing else, so the versions and links in `appcast.xml` were whatever
+///    the last push said. `scripts/appcast.sh` signs the feed and CI verifies
+///    it, but an installed copy checks it only when its bundle sets
+///    `SURequireSignedFeed` — and Sparkle 2.9.6 will not start an updater that
+///    sets it without `SUVerifyUpdateBeforeExtraction` (`SPUUpdater.m`).
 @MainActor
 final class SoftwareUpdateTests: XCTestCase {
 
@@ -61,6 +68,24 @@ final class SoftwareUpdateTests: XCTestCase {
         guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard case .ready = UpdateConfiguration.read(feedURL: "https://example.com/appcast.xml", publicKey: key) else {
             return XCTFail("SUPublicEDKey is present but is not a 32-byte Ed25519 public key: \(key)")
+        }
+    }
+
+    /// The feed's own signature is only checked when the app asks for it, and
+    /// Sparkle 2.9.6 will not start an updater that asks for it without also
+    /// verifying the download before extraction (`SPUUpdater.m`). One key without
+    /// the other is an app whose update channel is dead on arrival, reported to
+    /// the user as a failed check and to nobody else.
+    func testTheShippedBundleRequiresASignedFeed() {
+        XCTAssertEqual(appBundle.object(forInfoDictionaryKey: "SURequireSignedFeed") as? Bool, true,
+                       "without SURequireSignedFeed the feed's signature is just a comment to the app")
+        XCTAssertEqual(appBundle.object(forInfoDictionaryKey: "SUVerifyUpdateBeforeExtraction") as? Bool, true,
+                       "Sparkle refuses to start the updater with SURequireSignedFeed and not this")
+        // Zero switches off Sparkle's recovery from a feed that has stopped
+        // verifying, which is the only way back after losing the signing key.
+        if let interval = appBundle.object(forInfoDictionaryKey: "SUSignedFeedFailureExpirationInterval") as? NSNumber {
+            XCTAssertGreaterThan(interval.doubleValue, 0,
+                                 "a zero interval makes a signing mistake permanent for every installed copy")
         }
     }
 

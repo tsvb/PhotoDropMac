@@ -34,9 +34,14 @@ your account's privileges, so it is worth stating exactly what guards it:
   a non-HTTPS feed outright.
 - Every update is **signed with an Ed25519 key** whose public half is compiled
   into the copy of PhotoDrop you are already running. Sparkle verifies that
-  signature over the downloaded DMG **before** unpacking it. An unsigned or
+  signature over the downloaded DMG **before** mounting it. An unsigned or
   wrongly-signed update is refused — a compromised feed or a hijacked download
-  URL is not enough to install anything.
+  URL is not enough to install anything. (0.5.0 and earlier mounted the DMG
+  first and checked the signature before installing anything from it.)
+- The **feed is signed** with the same key, and the app refuses a feed whose
+  signature does not verify, so the versions and download links it offers are
+  the ones the maintainer published: an older signed build cannot be relabeled
+  as the newest. 0.5.0 and earlier do not check the feed's signature.
 - The DMG is *also* Developer ID-signed and notarized by Apple, so Gatekeeper
   checks it independently.
 - A build with no signing key configured (any build from source) **starts no

@@ -74,15 +74,32 @@ enum SafeText {
     /// Characters that reorder or hide the text around them rather than doing
     /// anything themselves: the bidi marks, embeddings, overrides and isolates;
     /// the zero-width space/joiner range; the invisible-operator range; the
-    /// BOM/ZWNBSP; and the Unicode line and paragraph separators.
+    /// BOM/ZWNBSP; the Unicode line and paragraph separators; and the scalars
+    /// that render as nothing at all — the soft hyphen, the grapheme joiner, the
+    /// Hangul fillers, the Mongolian vowel separator, the interlinear annotation
+    /// controls and the tag block. The last group reorders nothing, but it lets
+    /// two different paths *look* identical to the person reviewing a restore
+    /// script, which is the same failure by another route.
+    ///
+    /// Variation selectors (U+FE00–FE0F, U+E0100–E01EF) are deliberately **not**
+    /// here: U+FE0F sits inside ordinary emoji and the ideographic selectors in
+    /// real CJK names, so flagging them would push honest filenames out of the
+    /// restore script and escape them in every log.
     private static func isLayoutOverride(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
-        case 0x061C,               // Arabic letter mark
+        case 0x00AD,               // soft hyphen
+             0x034F,               // combining grapheme joiner
+             0x061C,               // Arabic letter mark
+             0x115F, 0x1160,       // Hangul choseong/jungseong fillers
+             0x180E,               // Mongolian vowel separator
              0x200B...0x200F,      // zero-width space/joiners, LRM, RLM
              0x2028...0x202E,      // line/paragraph separators, embeddings, overrides
              0x2060...0x2064,      // word joiner, invisible operators
              0x2066...0x2069,      // isolates
-             0xFEFF:               // BOM / zero-width no-break space
+             0x3164, 0xFFA0,       // Hangul filler, halfwidth Hangul filler
+             0xFEFF,               // BOM / zero-width no-break space
+             0xFFF9...0xFFFB,      // interlinear annotation anchor/separator/terminator
+             0xE0000...0xE007F:    // tag characters
             return true
         default:
             return false

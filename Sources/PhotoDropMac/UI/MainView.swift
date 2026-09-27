@@ -30,6 +30,12 @@ struct MainView: View {
     @State private var descriptionText: String = ""
     @State private var showInspector: Bool = true
     @State private var autoIngestPending = false
+    /// The card a one-click request was made for. The request is for *that*
+    /// card: if the selection moves (the card is pulled mid-scan and
+    /// `DriveSelection.reconcile` falls back to another), the request is
+    /// dropped rather than transferred — it used to stay armed and ingest, and
+    /// possibly eject, whichever card the selection landed on.
+    @State private var autoIngestTargetID: DetectedDrive.ID?
     @State private var showVerifySheet = false
     @State private var previewMode: PreviewMode = .tree
     @State private var deselectedIDs: Set<AssetBundle.ID> = []
@@ -233,6 +239,7 @@ struct MainView: View {
             onTemplateChanged: { planner.updateTemplate(template) },
             onOneClickRequested: { id in
                 selectedSourceID = id
+                autoIngestTargetID = id
                 autoIngestPending = true
                 tryAutoIngest()
             },
@@ -398,7 +405,8 @@ struct MainView: View {
             sourceMountPoint: source.mountPoint,
             sourceVolumeID: source.id,
             template: template,
-            cardLabel: source.label
+            cardLabel: source.label,
+            scanWasComplete: planner.scanWasComplete
         )
     }
 
@@ -429,6 +437,12 @@ struct MainView: View {
     // has been scanned and a destination is set, start the ingest through the
     // normal path so progress shows in this window.
     private func tryAutoIngest() {
+        if autoIngestPending, selectedSourceID != autoIngestTargetID {
+            autoIngestPending = false
+            autoIngestTargetID = nil
+            coordinator.pendingOneClickCardID = nil
+            return
+        }
         switch AutoIngestGate.decide(pending: autoIngestPending,
                                      isScanning: planner.isScanning,
                                      totalFiles: planner.totalFiles,

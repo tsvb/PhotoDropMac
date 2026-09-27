@@ -226,8 +226,7 @@ enum VerifyEngine {
         var refused: [String] = []
         var partialCount = 0
         for manifestURL in ManifestWriter.manifestURLs(near: target) {
-            guard let data = try? Data(contentsOf: manifestURL),
-                  let manifest = ManifestWriter.decode(data) else { continue }
+            guard let manifest = ManifestWriter.readManifest(at: manifestURL) else { continue }
             let root = manifestURL.deletingLastPathComponent().deletingLastPathComponent()
             // Recorded destinations (primary at 0, then mirrors); fall back for
             // manifests written before the `destinations` field existed.
@@ -264,8 +263,16 @@ enum VerifyEngine {
                     undigested += 1
                     continue
                 }
-                // Untrusted path: dropped outright if it escapes the library root.
-                guard let fileURL = ManifestWriter.resolve(entryPath: entry.path, under: record.root) else {
+                // Untrusted path: dropped outright if it escapes the library root —
+                // by its text, or on disk through a symbolic link inside the
+                // library (see `ManifestWriter.reachesThroughSymlink`). Refusing it
+                // here is what keeps `heal`'s script and `sync`'s reads inside the
+                // library too: both derive their work from this plan. Entries in
+                // the library's own record folder are refused on the same count
+                // (see `ManifestWriter.isInsideManifestFolder`).
+                guard let fileURL = ManifestWriter.resolve(entryPath: entry.path, under: record.root),
+                      !ManifestWriter.reachesThroughSymlink(fileURL, under: record.root),
+                      !ManifestWriter.isInsideManifestFolder(fileURL, under: record.root) else {
                     outOfRoot += 1
                     continue
                 }

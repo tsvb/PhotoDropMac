@@ -226,10 +226,11 @@ extension XxHash64 {
     /// `zero` therefore passed every existing check and had `heal` read
     /// `/dev/zero`: measured still running at 12 s and **1,896 MB RSS**, killed
     /// by hand. The same shape reaches `verify` through any non-regular file
-    /// sitting at a recorded path. The check precedes `open(2)` because opening a
-    /// FIFO for reading *blocks* until a writer appears — an `fstat` on the
-    /// descriptor would never run. The descriptor is re-checked after the open
-    /// anyway, so swapping the path between the two only costs a refusal.
+    /// sitting at a recorded path. Opening a FIFO for reading *blocks* until a
+    /// writer appears, so the open is made with `O_NONBLOCK` and the type is
+    /// checked on the descriptor — see `RegularFile`, which this shares with the
+    /// copy and the manifest reader. (It used to `stat` the path first and open
+    /// it second, which a FIFO swapped in between still hung.)
     ///
     /// **Each chunk is released as it is consumed.** `read(upToCount:)` returns
     /// an autoreleased `Data`; with no pool inside the loop every chunk survived
@@ -239,18 +240,14 @@ extension XxHash64 {
     static func hash(fileAt url: URL, bufferSize: Int = 1 << 20, bypassCache: Bool = false) throws -> UInt64 {
         precondition(bufferSize > 0, "bufferSize must be positive")
 
-        var pathInfo = stat()
-        guard stat(url.path, &pathInfo) == 0, (pathInfo.st_mode & S_IFMT) == S_IFREG else {
+        let fd: Int32
+        do {
+            fd = try RegularFile.openForReading(url)
+        } catch RegularFile.RefusalError.notARegularFile {
             throw HashError.notARegularFile(url)
         }
-
-        let handle = try FileHandle(forReadingFrom: url)
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
         defer { try? handle.close() }
-
-        var openInfo = stat()
-        guard fstat(handle.fileDescriptor, &openInfo) == 0, (openInfo.st_mode & S_IFMT) == S_IFREG else {
-            throw HashError.notARegularFile(url)
-        }
 
         // F_NOCACHE makes reads on this descriptor bypass the unified buffer
         // cache and come from the device. Copy verification uses it so a

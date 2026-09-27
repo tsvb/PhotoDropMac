@@ -175,7 +175,8 @@ enum SyncEngine {
 
             do {
                 let hash = try FileCopier.copyAndHash(
-                    source: item.url, destination: destination, isCancelled: isCancelled
+                    source: item.url, destination: destination, destinationRoot: mirror,
+                    isCancelled: isCancelled
                 ) { _ in }
                 guard hash == item.expected else {
                     // The library no longer holds what its manifest says. Copying
@@ -254,8 +255,7 @@ enum SyncEngine {
     static func libraryRecords(mirror: URL, in library: URL) -> Bool {
         let wanted = mirror.standardizedFileURL.path(percentEncoded: false)
         for url in ManifestWriter.manifestURLs(near: library) {
-            guard let data = try? Data(contentsOf: url),
-                  let manifest = ManifestWriter.decode(data) else { continue }
+            guard let manifest = ManifestWriter.readManifest(at: url) else { continue }
             // Older manifests carry no `destinations`; the same fallback
             // `VerifyEngine.build` applies.
             let recordedRoots = manifest.destinations

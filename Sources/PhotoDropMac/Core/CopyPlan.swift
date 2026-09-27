@@ -278,6 +278,20 @@ enum CopyPlan {
     /// — the RAW included — failed and rolled back. Suffixing the later file keeps
     /// the bundle atomic and loses nothing; the primary is index 0 and is never
     /// the one moved.
+    ///
+    /// **The suffix must survive truncation, or this loop never ends.** It used to
+    /// build each candidate with `PathPlanner.fileName(stem: "\(stem)_\(n)", …)`,
+    /// which trims the *end* of the stem to fit NAME_MAX — the end being the
+    /// `_n`. A card holding `S.CR2`, `S.CR2.xmp` and `S.xmp` with a 235–247
+    /// character `S` renders a 251-byte stem under the default template; both
+    /// sidecars then trim to the same `<stem>.xmp`, and every `_n` was trimmed
+    /// straight back off, so each candidate was the name already in `seen`.
+    /// Traced from the code and reproduced with a port of the arithmetic: 10,000
+    /// iterations, no escape. It ran before the engine's first cancellation
+    /// check, so Cancel, Ctrl-C and Quit all waited on it forever — reachable
+    /// from card insertion alone with one-click ingest on. `suffixedName` trims
+    /// the stem *before* appending, so each `n` yields a distinct name and the
+    /// finite `seen` set guarantees termination.
     private static func separateInternalCollisions(_ files: [PlannedFile]) -> [PlannedFile] {
         var seen = Set<String>()
         var result: [PlannedFile] = []
@@ -291,7 +305,7 @@ enum CopyPlan {
                 var n = 1
                 repeat {
                     destination = dir.appendingPathComponent(
-                        PathPlanner.fileName(stem: "\(stem)_\(n)", extension: ext))
+                        suffixedName(stem: stem, suffix: "_\(n)", extension: ext))
                     n += 1
                 } while !seen.insert(collisionKey(destination.path)).inserted
             }
@@ -299,6 +313,21 @@ enum CopyPlan {
                                       size: file.size, role: file.role))
         }
         return result
+    }
+
+    /// `stem` + `suffix` + `.ext`, trimming the **stem** so the suffix is never
+    /// what gets cut — see `separateInternalCollisions`. Distinct suffixes
+    /// therefore always give distinct names: the text after the last `_` is
+    /// exactly `n`. The same trim-then-append rule `plan` applies to its own
+    /// disambiguator. Only a pathological extension (~250 bytes, which no
+    /// companion kind has) could push the result past NAME_MAX, and that fails
+    /// the bundle's copy loudly rather than spinning here.
+    private static func suffixedName(stem: String, suffix: String, extension ext: String) -> String {
+        let room = PathPlanner.maxComponentBytes
+            - suffix.utf8.count
+            - (ext.isEmpty ? 0 : ext.utf8.count + 1)
+        let name = PathPlanner.truncatedToByteLimit(stem, max(0, room)) + suffix
+        return ext.isEmpty ? name : name + "." + ext
     }
 
     // Default stem when a filename template renders empty: the canonical

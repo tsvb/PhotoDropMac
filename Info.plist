@@ -68,5 +68,30 @@
 	     so this may already be a key you use elsewhere. -->
 	<key>SUPublicEDKey</key>
 	<string>WKOnGAu8QlsO9cDxBQ8peCSLDuVRTmx+p5MsruHqUFE=</string>
+	<!-- Refuse a feed whose signature does not verify against the key above.
+	     The enclosure signature covers only the DMG's bytes; without this, the
+	     version numbers, download URLs and notes in appcast.xml were whatever
+	     the last push to main said, so an older genuinely signed build could be
+	     relabeled as the newest. From the first build carrying this key, EVERY
+	     edit to appcast.xml, even a comment, must be re-signed
+	     (scripts/appcast.sh does it; CI checks it) or the copies running that
+	     build see a failed check instead of an update.
+
+	     Sparkle 2.9.6 refuses to start the updater when this is set without
+	     SUVerifyUpdateBeforeExtraction (SPUUpdater.m), so the two travel
+	     together, and SoftwareUpdateTests pins the pair. Verifying before
+	     extraction also narrows Sparkle's key-rotation fallback to a DMG that
+	     is Developer ID signed by this app's own team. release.sh signs the DMG
+	     that way now; 0.5.0 and earlier shipped it unsigned.
+
+	     SUSignedFeedFailureExpirationInterval is deliberately unset: after a
+	     feed has failed verification for 20 days (Sparkle's default), Sparkle
+	     accepts it again in a restricted mode, with no release notes, no
+	     critical-update flag, and the download still signature-checked. That
+	     is the way back from a lost or rotated key. 0 would remove it. -->
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 </dict>
 </plist>

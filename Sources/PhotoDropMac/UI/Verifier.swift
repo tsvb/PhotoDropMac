@@ -28,14 +28,37 @@ final class Verifier {
     /// `xattrNothingChecked`.
     static func nothingToCheckMessage(_ report: VerifyReport) -> String {
         guard report.manifestCount > 0 else { return noManifestMessage }
-        var lines = ["\(report.manifestCount) manifest(s) were found, but none of their entries could be checked."]
+        let lines = ["\(report.manifestCount) manifest(s) were found, but none of their entries could be checked."]
+            + caveats(report)
+        return lines.joined(separator: "\n\n")
+    }
+
+    /// What a run's verdict does not cover — the GUI's counterpart of the CLI's
+    /// `unexaminedLines`, and shown beside *either* verdict for the same reason.
+    ///
+    /// The sheet used to consult these only when nothing at all could be checked,
+    /// so a manifest with one good entry and 999 refused or checksum-less ones —
+    /// or a cancelled ingest's manifest marked `partial` — earned the green
+    /// "Library verified" seal over a record known not to cover the library. The
+    /// CLI was fixed for exactly this; the app was not.
+    static func caveats(_ report: VerifyReport) -> [String] {
+        var lines: [String] = []
+        if report.partialManifests > 0 {
+            lines.append("\(report.partialManifests) of \(report.manifestCount) manifest(s) are marked partial — the job that wrote them was cancelled, halted, or lost files, so this library is known to be missing photos the card held. What is here is intact.")
+        }
         if report.undigested > 0 {
             lines.append("\(report.undigested) entr(y/ies) record no checksum — older manifests recorded none for duplicate-skipped files.")
         }
         if report.outOfRoot > 0 {
-            lines.append("\(report.outOfRoot) entr(y/ies) name a path outside this library and were refused.")
+            lines.append("\(report.outOfRoot) entr(y/ies) name a path outside this library, or reach one through a symbolic link, and were refused.")
         }
-        return lines.joined(separator: "\n\n")
+        return lines
+    }
+
+    /// Whether the run may claim the whole library: nothing wrong *and* nothing
+    /// the record left out. Only this earns the "Library verified" seal.
+    static func isCleanPass(_ report: VerifyReport) -> Bool {
+        report.allGood && caveats(report).isEmpty
     }
 
     var isRunning: Bool {

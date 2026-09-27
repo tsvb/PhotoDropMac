@@ -14,6 +14,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege for the token every job receives. Nothing here pushes,
+# comments or publishes; without this block the token gets whatever the
+# repository default is, which can be write access to the whole repo.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Build & test (${{ matrix.runner }})
@@ -139,6 +145,16 @@ jobs:
             || { echo "::error::appcast.xml has lost the marker scripts/appcast.sh inserts at."; exit 1; }
           grep -q "<key>SUFeedURL</key>" Info.plist \
             || { echo "::error::Info.plist has no SUFeedURL — the app could never check for updates."; exit 1; }
+
+      # scripts/appcast.sh signs appcast.xml over its own bytes. The app sets
+      # SURequireSignedFeed, so a feed edited after it was signed — even a comment —
+      # is refused by every installed copy that carries that key, which to a user
+      # looks like "no updates, ever". Verified here against Info.plist's key with
+      # openssl, since Sparkle's tools only run on macOS. An unsigned feed fails.
+      - name: Check the appcast's signature
+        run: ./scripts/check-appcast-signature.sh
+        env:
+          REQUIRE_SIGNED_FEED: "1"
 
       # The cask is what `brew install --cask tsvb/tap/photodropmac` reads. A
       # syntax error there is a tap that fails for every brew user at once.

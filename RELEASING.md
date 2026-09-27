@@ -82,6 +82,19 @@ prerequisites and the per-release steps.
    cask declares `auto_updates`, so `brew upgrade` defers to Sparkle rather than
    reinstalling over it.
 
+8. **(Recommended) A git signing key**, so release tags are signed. `release.sh`
+   uses `git tag -s` whenever `user.signingkey` (or `tag.gpgSign`) is set, and
+   otherwise tags unsigned with a warning. An SSH key is the least setup:
+
+   ```sh
+   git config --global gpg.format ssh
+   git config --global user.signingkey ~/.ssh/id_ed25519.pub
+   ```
+
+   Add the same key to GitHub as a **Signing key** (Settings → SSH and GPG keys)
+   and the tag shows as Verified. `git config --global commit.gpgsign true` signs
+   the release commits too.
+
 ## Cutting a release
 
 ```sh
@@ -113,19 +126,27 @@ The script runs, in order:
    staple` it. This happens **before** the DMG is built, so the copy the user
    drags to /Applications carries its own ticket — see "Why the app is stapled
    too" below.
-4. Package the stapled `.app` into `build/PhotoDropMac-<version>.dmg`.
+4. Package the stapled `.app` into `build/PhotoDropMac-<version>.dmg`, and
+   `codesign` the DMG with the Developer ID identity that signed the app (found by
+   its team, so a renewed certificate or a second team in the keychain cannot make
+   the choice ambiguous). Releases up to 0.5.0 shipped the disk image unsigned —
+   notarized and stapled, but `spctl --context context:primary-signature` rejected
+   it with "no usable signature".
 5. `xcrun notarytool submit … --wait` — upload the DMG and block until the
    verdict.
 6. `xcrun stapler staple` — attach the ticket so the DMG validates offline too.
 7. Verify (`codesign --verify`, `spctl`, `stapler validate` on **both** the app
-   and the DMG) — and read `SUFeedURL` / `SUPublicEDKey` back out of the **built**
+   and the DMG; the DMG's `spctl` verdict fails the release) — and read `SUFeedURL` / `SUPublicEDKey` back out of the **built**
    bundle, because a key that is right in the repo and missing from the product is
    an app that silently never updates (see the header comment in `Info.plist`).
 8. `scripts/appcast.sh` — sign the DMG with the private key and add an `<item>` to
-   `appcast.xml`, with release notes cut from `CHANGELOG.md`. Committed before the
-   tag, so the tag names a commit whose feed already describes the build. Then
-   `scripts/homebrew-cask.sh` renders the cask for the same DMG, committed the same way.
-9. Tag, and — with `PUBLISH=1` — push, create the GitHub release, and copy the cask
+   `appcast.xml`, with release notes cut from `CHANGELOG.md`, then **sign the feed
+   itself** and verify that signature (see "The feed is signed" below). Committed
+   before the tag, so the tag names a commit whose feed already describes the
+   build. Then `scripts/homebrew-cask.sh` renders the cask for the same DMG,
+   committed the same way.
+9. Tag — **signed** (`git tag -s`) when git has a signing key, see Prerequisites
+   — and, with `PUBLISH=1`, push, create the GitHub release, and copy the cask
    into the tap.
 
 Dependencies are **pinned exactly** in `project.yml` (`exactVersion`), so the archive
@@ -182,6 +203,57 @@ converted to the small subset of HTML Sparkle renders, and are **embedded** in t
 item — so a user deciding whether to install does not need a second network fetch
 to read what changed.
 
+### The feed is signed
+
+The enclosure signature covers the DMG's bytes and nothing else. The version
+numbers, download URL and release notes in `appcast.xml` were unauthenticated, so
+anyone able to push to `main` could relabel an older, genuinely signed build as
+the newest release — walking every installed copy back to code with known bugs —
+or quietly stop announcing updates. `appcast.sh` therefore finishes by running
+`sign_update` on the feed: an EdDSA signature over every byte of the file, with
+the same key, appended as a trailing `<!-- sparkle-signatures: … -->` comment.
+Re-signing strips the old block first, so it is correct after any edit.
+
+- **Any edit to `appcast.xml` must be re-signed**, even a comment:
+
+  ```sh
+  ./scripts/appcast.sh --sign-only     # sign the feed as it stands, and verify it
+  ```
+
+  The feed was first signed as it stood after 0.5.0 shipped (commit "Sign the
+  update feed"), so every build that requires a signature has only ever met a
+  signed feed.
+- **CI verifies it** (`scripts/check-appcast-signature.sh`, against
+  `Info.plist`'s `SUPublicEDKey`, with openssl since Sparkle's tools only run on
+  macOS), so a push that breaks the signature fails before anyone is affected. The
+  check requires a signature whenever `Info.plist` sets `SURequireSignedFeed`,
+  read from the plist itself so it cannot fall out of step with the app; CI also
+  sets `REQUIRE_SIGNED_FEED=1`.
+- **The app requires it.** `Info.plist` sets `SURequireSignedFeed`, so every
+  copy built from here on refuses a feed that does not verify. Copies of 0.5.0
+  and earlier do not check, and to them the signature is just a comment. The
+  order was the point: a signed feed went live on `main` *before* any build that
+  requires one existed, because a requiring build that meets an unsigned feed
+  never sees an update.
+  - `SUVerifyUpdateBeforeExtraction` is set alongside it. Sparkle 2.9.6 refuses
+    to start the updater with the first and not the second (`SPUUpdater.m`), and
+    `SoftwareUpdateTests` pins the pair in the built bundle.
+  - Verifying before extraction checks the DMG's EdDSA signature before
+    unpacking it. Its key-rotation fallback accepts a DMG that fails that check
+    only if the DMG itself is Developer ID signed by the installed app's team —
+    which is why the DMG is signed (step 4).
+  - `SUSignedFeedFailureExpirationInterval` is left unset, on purpose. After a
+    feed has failed verification for 20 days (Sparkle's default), Sparkle
+    accepts it again in a restricted mode: no release notes, no critical-update
+    flag, the version string sanitized, and the download still signature-checked.
+    That is the way back from a lost or rotated key; `0` would remove it, and the
+    test refuses `0`.
+- **A lost key now also stops the feed.** A feed signed with any other key
+  fails verification, so copies that require a signed feed report a failed check
+  on every attempt until the 20-day fallback above opens. Only then can they see
+  a build signed with a new key, which they accept through the Developer ID
+  fallback. Keep the backup from prerequisite 5.
+
 ## Verifying a build by hand
 
 ```sh
@@ -200,6 +272,10 @@ spctl -a -t exec -vvv "$APP"          # → accepted, source=Notarized Developer
 # makes an offline first launch succeed after the DMG is discarded:
 xcrun stapler validate "$APP"
 xcrun stapler validate build/PhotoDropMac-*.dmg
+
+# The disk image is signed in its own right:
+spctl -a -t open --context context:primary-signature -v build/PhotoDropMac-*.dmg
+                                      # → accepted, source=Notarized Developer ID
 
 # The real test — simulate a downloaded, quarantined copy. Should open with no dialog:
 SPOT="$(mktemp -d)"

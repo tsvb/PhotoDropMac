@@ -104,9 +104,17 @@ enum DestinationTopology {
     /// is a different check from `ManifestWriter.resolve`, which stays lexical
     /// because it validates *untrusted* manifest paths and must behave identically
     /// for files that exist and files that don't.)
+    ///
+    /// Components are compared **case-folded**. APFS and HFS+ are
+    /// case-insensitive by default, so `--to ~/pictures/lib --archive
+    /// ~/Pictures/Lib/Backup` names a mirror inside the library, and an exact
+    /// comparison let it through — the overlap this check exists to refuse.
+    /// On a case-sensitive volume the fold can refuse two folders that differ
+    /// only in case; a refusal is the safe error. (Canonical equivalence is
+    /// already handled: Swift's `==` treats NFC and NFD spellings as equal.)
     static func contains(_ outer: URL, _ inner: URL) -> Bool {
-        let a = components(of: outer)
-        let b = components(of: inner)
+        let a = components(of: outer).map { $0.lowercased() }
+        let b = components(of: inner).map { $0.lowercased() }
         guard b.count > a.count else { return false }
         return Array(b.prefix(a.count)) == a
     }

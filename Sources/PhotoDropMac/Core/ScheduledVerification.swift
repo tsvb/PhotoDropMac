@@ -147,6 +147,13 @@ enum ScheduledVerification {
     static func install(photodropPath: String, libraryPath: String,
                         schedule: VerifySchedule, logPath: String = defaultLogPath,
                         agent: Agent = .live) async throws {
+        if isOnRemovableVolume(URL(fileURLWithPath: photodropPath)) {
+            throw ScheduledVerificationError(message:
+                "The photodrop tool is on a removable volume (\(photodropPath)). A scheduled job runs "
+                + "whatever is at that path when it fires — including a different disk later mounted "
+                + "under the same name. Move PhotoDrop to Applications, or choose a copy of the tool "
+                + "on your startup disk.")
+        }
         let data = try plistData(photodropPath: photodropPath, libraryPath: libraryPath,
                                  schedule: schedule, logPath: logPath)
         let fm = FileManager.default
@@ -166,6 +173,23 @@ enum ScheduledVerification {
             try? fm.removeItem(at: plistURL)
             throw error
         }
+    }
+
+    /// Whether `url` lives on a removable or ejectable volume — a card, a USB
+    /// stick, a mounted disk image.
+    ///
+    /// The agent bakes the tool's *path* in and launchd runs it, as the user, at
+    /// 03:00, long after anyone looked. `/Volumes/<name>` is whatever volume is
+    /// mounted under that name at the time, and a card is free to be called
+    /// anything: an app run from its DMG, or a typed path onto a stick, meant a
+    /// card with the right label and a `#!/bin/sh` file at the right path was
+    /// executed nightly. An exFAT file reads as executable with no quarantine
+    /// attribute to stop it. Unknown (the path does not resolve) is not refused:
+    /// there is nothing to judge, and `bootstrap` reports a missing binary.
+    static func isOnRemovableVolume(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.volumeIsRemovableKey, .volumeIsEjectableKey])
+        else { return false }
+        return values.volumeIsRemovable == true || values.volumeIsEjectable == true
     }
 
     /// Turning it off has to actually turn it off. The plist is removed even

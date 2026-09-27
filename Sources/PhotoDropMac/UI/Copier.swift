@@ -151,7 +151,12 @@ final class Copier {
         sourceMountPoint: String?,
         sourceVolumeID: String,
         template: NamingTemplate,
-        cardLabel: String
+        cardLabel: String,
+        /// Whether the scan that planned this job saw the whole card. False when
+        /// folders could not be read or files were left behind — the card then
+        /// still holds something this job did not take, and `CardHistory` must
+        /// not call it done.
+        scanWasComplete: Bool = true
     ) {
         cancel()                          // abort any in-flight run (trips its flag)
         isVerifyingCurrentJob = verify
@@ -219,13 +224,21 @@ final class Copier {
                 // unfinished business, and a sidebar row claiming otherwise is
                 // worse than no row at all. See `CardHistory` for the 2am problem
                 // this exists to solve.
-                CardHistory.record(CardHistoryEntry(
-                    volumeID: sourceVolumeID,
-                    label: cardLabel,
-                    ingestedAt: Date(),
-                    filesLanded: result.filesCopied + result.filesSkipped,
-                    manifestPath: result.manifestURL?.path
-                ), in: self.defaults)
+                //
+                // "Not halted or cancelled" was the whole test, so a job that lost
+                // 40 files to a full disk, one whose manifest could not be written,
+                // and one planned from a scan that could not read the whole card
+                // all put "Ingested · N files" in the sidebar — the row a user
+                // reads at 2am before formatting.
+                if result.filesFailed == 0, result.manifestFailures.isEmpty, scanWasComplete {
+                    CardHistory.record(CardHistoryEntry(
+                        volumeID: sourceVolumeID,
+                        label: cardLabel,
+                        ingestedAt: Date(),
+                        filesLanded: result.filesCopied + result.filesSkipped,
+                        manifestPath: result.manifestURL?.path
+                    ), in: self.defaults)
+                }
                 if self.postsNotifications { Notifier.notifyCompletion(result: result) }
                 self.runPostIngestHookIfConfigured(result)
             }
@@ -283,6 +296,10 @@ final class Copier {
     // fire-and-forget so a slow hook can't delay the completion UI, and
     // best-effort so a missing/failing hook never affects the copy result.
     private func runPostIngestHookIfConfigured(_ result: CopyResult) {
+        // The same gate as the CLI — see `PostIngestHook.shouldRun`. This path
+        // used to fire after any job that was not halted or cancelled, so a
+        // "wipe the card" hook ran over a library missing files.
+        guard PostIngestHook.shouldRun(after: result) else { return }
         let script = (defaults.string(forKey: PostIngestHook.defaultsKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !script.isEmpty else { return }

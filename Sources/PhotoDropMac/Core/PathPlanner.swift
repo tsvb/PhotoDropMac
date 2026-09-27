@@ -18,7 +18,7 @@ struct DestinationFolder: Identifiable, Hashable, Sendable {
     // jpeg pair / audio note) — what actually gets copied.
     var fileCount: Int { bundles.reduce(0) { $0 + $1.fileCount } }
     // Bytes across primaries and companions.
-    var totalBytes: Int64 { bundles.reduce(0) { $0 + $1.totalSize } }
+    var totalBytes: Int64 { bundles.reduce(Int64(0)) { $0.saturatingAdding($1.totalSize) } }
 }
 
 struct YearGroup: Identifiable, Hashable, Sendable {
@@ -54,7 +54,7 @@ enum SelectionSummary {
         for bundle in yearGroups.lazy.flatMap({ $0.folders }).flatMap(\.bundles)
         where !deselected.contains(bundle.id) {
             counts.files += bundle.fileCount
-            counts.bytes += bundle.totalSize
+            counts.bytes = counts.bytes.saturatingAdding(bundle.totalSize)
             counts.bundles += 1
         }
         return counts

@@ -9,10 +9,81 @@ an older build had no way to learn what a newer one fixed — and no way to diff
 it. They live here now, in the repo, and `scripts/release.sh` cuts the GitHub
 release from this file.
 
-## [Unreleased]
+## [0.5.1] — 2026-09-24
+
+### Changed
+
+- **The update feed is signed, and the app requires it.** `appcast.xml` now
+  carries an EdDSA signature over its own contents, made with the same key as the
+  updates. The update itself was always signed, but the feed that names versions
+  and download links was not, so someone able to push to the repository could
+  have offered an older build as the newest one. From this release on, the app
+  refuses a feed whose signature does not verify.
+- **Updates are verified before the disk image is mounted.** The 0.5.0 notes
+  said each update was verified "before anything is unpacked". That was not
+  quite true: Sparkle mounted the downloaded DMG first and checked its signature
+  before installing anything from it. From this release on, it checks the
+  signature first.
+- **Release tags are signed** when the release machine has a git signing key.
+- **The DMG is code-signed**, with the same Developer ID as the app inside it.
+  It was already notarized and stapled, so it opened without a warning, but it
+  carried no signature of its own: Gatekeeper's check of the disk image
+  (`spctl --context context:primary-signature`) rejected it with "no usable
+  signature". `scripts/release.sh` now signs it before notarizing, and a DMG
+  that fails that check stops the release.
+
+## [0.5.0] — 2026-09-23
 
 ### Fixed
 
+- **A crafted card can no longer hang the app.** Two sidecars that collide only
+  after a near-maximum-length name is shortened (`S.CR2.xmp` and `S.xmp`) sent the
+  planner into an endless loop before the job could be cancelled, so Cancel,
+  Ctrl-C and Quit all hung. The collision suffix now survives shortening.
+- **`heal --script` cannot write outside the library through a symbolic link.**
+  A link inside a library (`2024 -> ../../Library`) made a restore line that read
+  as a path inside the library write somewhere else. `verify`, `heal` and `sync`
+  now refuse manifest entries reached through a link inside the library, and
+  report them; `heal` no longer counts them as healthy.
+- **The Verify sheet no longer shows "Library verified" over an incomplete
+  record.** A manifest marked partial, or entries with no checksum or that were
+  refused, now earn a caveated verdict that says why, as the CLI already did.
+- **Ingest and `sync` no longer write through a symbolic link inside the
+  destination.** A library whose folder was a link elsewhere (`2026 -> …`)
+  received the photos wherever the link pointed, while the manifest recorded
+  them as inside the library. That bundle now fails at that destination and says
+  why; the other destinations are unaffected. A linked `PhotoDrop Manifests`
+  folder is refused the same way.
+- **The post-ingest hook no longer runs after a job that lost files** or could
+  not write its manifest. The app ran it after any job that was not halted or
+  cancelled; the app and the CLI now share one rule.
+- **A card is only recorded as ingested when the job was clean** — no failed
+  files, manifests written, and a scan that could read the whole card.
+- **Hidden photos on a card are reported.** Media inside a folder flagged hidden
+  (the way USB malware hides DCIM) was skipped without a count, so the card read
+  as finished and could be ejected. It is still not copied, but it now counts as
+  left behind, which also stops the auto-eject.
+- **`photodrop ingest --eject` only ejects a card**, never the drive that holds a
+  source *folder*. **`--archive` must already exist**, like `--to`.
+- **`photodrop` under `nohup` keeps ignoring hangups**, and restores the signal
+  handling it started with once the copy ends.
+- **A post-ingest hook that leaves a background process running no longer
+  hangs PhotoDrop** waiting for its output.
+- **Scheduled verification refuses a `photodrop` tool on a removable volume**,
+  where a different disk mounted under the same name could supply it.
+- **One-click ingest is dropped if the selected card changes** before it starts,
+  instead of ingesting whichever card the selection landed on.
+- Smaller hardening: nested-destination checks ignore letter case; card-reported
+  sizes can no longer crash the app by overflowing; more invisible characters
+  are escaped in logs and refused in restore scripts; card and manifest text is
+  escaped in the app's failure list, log pane and saved verify report, and in
+  `heal --json`; `sync` no longer copies entries from a library's own
+  `PhotoDrop Manifests` folder; the copy refuses a source that became a link
+  after the scan; checksum attributes are never read or written through a link;
+  CI's token is read-only.
+- **`sync`, `verify` and `heal` no longer hang or fill a disk on special files.**
+  A FIFO or device in a library, or a FIFO named like a manifest, is refused
+  before it is read.
 - **`photodrop sync` stops the way `ingest` stops.** SIGINT, SIGTERM and SIGHUP
   now end a sync at the next file boundary, with the mirror's manifest written
   for what landed and marked partial; a second signal exits at once. It shipped

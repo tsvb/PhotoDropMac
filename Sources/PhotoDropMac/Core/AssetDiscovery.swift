@@ -201,6 +201,8 @@ enum AssetDiscovery {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [
             .isRegularFileKey,
+            .isDirectoryKey,
+            .isHiddenKey,
             .fileSizeKey,
             .contentModificationDateKey,
         ]
@@ -216,11 +218,27 @@ enum AssetDiscovery {
         // scan just comes back short — indistinguishable from a smaller card.
         let unreadable = UnreadableCounter()
         let unrecognized = UnreadableCounter()
+        //
+        // `.skipsHiddenFiles` is gone: it skipped **flagged**-hidden entries as
+        // well as dot-named ones, and counted neither. A DCIM folder hidden by
+        // Windows USB malware (the "shortcut virus" shape), or photos a camera
+        // or tool had flagged hidden, were passed over in silence — the scan read
+        // as complete, and the card could eject and be formatted with them on it.
+        // Dot-named entries are still passed over uncounted, below; flagged-hidden
+        // ones are walked so that recognized media inside them is *counted* as
+        // left behind. They are still not ingested — the flag is somebody's
+        // decision, and the user gets to make the call — and a hidden folder that
+        // cannot be opened is not counted as unreadable, as it never was.
         guard let enumerator = fm.enumerator(
             at: root,
             includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants],
-            errorHandler: { _, _ in unreadable.increment(); return true }
+            options: [.skipsPackageDescendants],
+            errorHandler: { url, _ in
+                if (try? url.resourceValues(forKeys: [.isHiddenKey]))?.isHidden != true {
+                    unreadable.increment()
+                }
+                return true
+            }
         ) else {
             return .unreadableSource
         }
@@ -230,9 +248,35 @@ enum AssetDiscovery {
         // same-directory rule is enforced: we only ever classify
         // siblings inside a single group.
         var byDirectory: [URL: [FileEntry]] = [:]
+        // Paths of flagged-hidden folders, and of every folder inside one. The
+        // walk is pre-order, so a folder's parent is always recorded first.
+        var hiddenDirectories: Set<String> = []
 
         for case let url as URL in enumerator {
             guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+            // Dot-named entries are filesystem bookkeeping (`.Spotlight-V100`,
+            // `.Trashes`, `._` AppleDouble files): never walked, never counted —
+            // what `.skipsHiddenFiles` did for them.
+            if url.lastPathComponent.hasPrefix(".") {
+                if values.isDirectory == true { enumerator.skipDescendants() }
+                continue
+            }
+            let insideHidden = values.isHidden == true
+                || hiddenDirectories.contains(url.deletingLastPathComponent().path)
+            if values.isDirectory == true {
+                if insideHidden { hiddenDirectories.insert(url.path) }
+                continue
+            }
+            if insideHidden {
+                // Left behind, and said so — but only for what this app would
+                // otherwise have taken, so Windows' own hidden bookkeeping
+                // (`System Volume Information`) does not cry wolf on every card.
+                if values.isRegularFile == true,
+                   recognisedExtensions.contains(url.pathExtension.lowercased()) {
+                    unrecognized.increment()
+                }
+                continue
+            }
             // Load-bearing security check, not just a "skip directories" filter.
             // `isRegularFile` has lstat semantics — a symlink reports false — so
             // this is what stops a card from pointing at files outside itself.
