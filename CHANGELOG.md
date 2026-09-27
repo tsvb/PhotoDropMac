@@ -9,6 +9,16 @@ an older build had no way to learn what a newer one fixed — and no way to diff
 it. They live here now, in the repo, and `scripts/release.sh` cuts the GitHub
 release from this file.
 
+## [Unreleased]
+
+### Added
+
+- **`scripts/photolab-flatten.py`, for browsing a library in DxO PhotoLab.**
+  PhotoLab shows only the top level of a folder, so a library of day folders
+  never appears in one grid. The script builds a flat folder of symlinks to
+  every image in the tree, which PhotoLab follows. It is in the repository, not
+  the app, and never writes into the library. See the README.
+
 ## [0.5.1] — 2026-09-24
 
 ### Changed

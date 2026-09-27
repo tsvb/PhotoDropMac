@@ -29,6 +29,7 @@ PhotoDrop is a native macOS app for the one moment that should never be lossy: p
 - [Naming templates](#naming-templates)
 - [Themes](#themes)
 - [Command line](#command-line)
+- [Browsing a library in DxO PhotoLab](#browsing-a-library-in-dxo-photolab)
 - [Architecture](#architecture)
 - [Project layout](#project-layout)
 - [Signing and sandbox](#signing-and-sandbox)
@@ -312,6 +313,29 @@ files that anyone who can write to the library can add to, and without that gate
 `heal` into a way to confirm the contents of any directory you can read. Roots that are skipped are
 listed in the output rather than quietly ignored.
 
+## Browsing a library in DxO PhotoLab
+
+DxO PhotoLab's folder browser shows only the images at the **top level** of the selected folder, so a
+PhotoDrop library — a folder per day, optionally under a folder per year — never appears in one grid.
+That's fixed in PhotoLab, not a setting: its Filesystem plugin lists folders with
+`NSDirectoryEnumerationSkipsSubdirectoryDescendants` (measured in PhotoLab 9.12). It does follow
+symlinks, so [scripts/photolab-flatten.py](scripts/photolab-flatten.py) builds a flat folder of links to
+every image in a tree, and PhotoLab shows all of it at once:
+
+```bash
+scripts/photolab-flatten.py ~/Pictures/Library ~/Pictures/PhotoLab-All
+```
+
+Link names carry the relative path, so they stay unique and sort by date
+(`2026/2026-05-28/IMG_0001.CR3` → `2026__2026-05-28__IMG_0001.CR3`). Re-running adds new shots and keeps
+existing links; `--prune` removes links whose original is gone, `-n` shows what would change, and
+`--ext cr3 --ext jpg` narrows the formats. It never touches a real file in the destination and never
+writes into the library.
+
+Where PhotoLab writes its `.dop` sidecar for an image opened through a link — beside the link or beside
+the original — hasn't been verified yet. Check that on a few shots before editing through the flat
+folder in earnest.
+
 ## Architecture
 
 Swift 6 strict concurrency is on, with a deliberate split:
@@ -342,7 +366,8 @@ PhotoDropMac/
 ├─ appcast.xml                 # the Sparkle update feed; every installed copy reads this file
 ├─ homebrew/Casks/             # the cask release.sh renders; mirrored into the tsvb/homebrew-tap repo
 ├─ scripts/                    # release.sh, appcast.sh, homebrew-cask.sh, sparkle-keys.sh,
-│                             #   sign-sparkle-helpers.sh, sparkle-tools.sh, make-icon.swift, check-doc-links.sh
+│                             #   sign-sparkle-helpers.sh, sparkle-tools.sh, make-icon.swift, check-doc-links.sh,
+│                             #   photolab-flatten.py
 ├─ docs/
 │  └─ internal/                # the review dossiers, and the design handoff the themes were built from
 ├─ Tests/PhotoDropMacTests/    # the XCTest target (hosted in the app)
