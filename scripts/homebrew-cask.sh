@@ -65,14 +65,14 @@ cask "photodropmac" do
   desc "Verified photo ingest from memory cards into a date-organized library"
   homepage "https://github.com/tsvb/PhotoDropMac"
 
-  # The app updates itself (Sparkle); brew upgrade must not fight it.
-  auto_updates true
   livecheck do
     url "https://raw.githubusercontent.com/tsvb/PhotoDropMac/main/appcast.xml"
     strategy :sparkle
   end
 
-  depends_on macos: ">= $MACOS_SYMBOL"
+  # The app updates itself (Sparkle); brew upgrade must not fight it.
+  auto_updates true
+  depends_on macos: $MACOS_SYMBOL
 
   app "PhotoDropMac.app"
   # The headless CLI ships inside the bundle, signed and notarized with it;
