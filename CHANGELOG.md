@@ -13,11 +13,11 @@ release from this file.
 
 ### Added
 
-- **`scripts/photolab-flatten.py`, for browsing a library in DxO PhotoLab.**
-  PhotoLab shows only the top level of a folder, so a library of day folders
-  never appears in one grid. The script builds a flat folder of symlinks to
-  every image in the tree, which PhotoLab follows. It is in the repository, not
-  the app, and never writes into the library. See the README.
+- **Browsing a library in DxO PhotoLab.** PhotoLab shows only the top level of
+  a folder, so a library of day folders never appears in one grid. The README
+  now explains why and how [flatlink](https://github.com/tsvb/flatlink), a
+  separate tool, gives PhotoLab a flat folder of links to the whole library —
+  and that PhotoLab then saves its edits beside those links, not in the library.
 
 ## [0.5.1] — 2026-09-24
 

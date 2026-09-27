@@ -319,22 +319,25 @@ DxO PhotoLab's folder browser shows only the images at the **top level** of the 
 PhotoDrop library — a folder per day, optionally under a folder per year — never appears in one grid.
 That's fixed in PhotoLab, not a setting: its Filesystem plugin lists folders with
 `NSDirectoryEnumerationSkipsSubdirectoryDescendants` (measured in PhotoLab 9.12). It does follow
-symlinks, so [scripts/photolab-flatten.py](scripts/photolab-flatten.py) builds a flat folder of links to
-every image in a tree, and PhotoLab shows all of it at once:
+symlinks, so [flatlink](https://github.com/tsvb/flatlink) — a separate, signed and notarized
+command-line tool — builds a flat folder of links to every image in a tree, and PhotoLab shows all of
+it at once:
 
 ```bash
-scripts/photolab-flatten.py ~/Pictures/Library ~/Pictures/PhotoLab-All
+brew install tsvb/tap/flatlink
+flatlink --skip-paired-jpegs ~/Pictures/Library ~/Pictures/PhotoLab-All
 ```
 
-Link names carry the relative path, so they stay unique and sort by date
-(`2026/2026-05-28/IMG_0001.CR3` → `2026__2026-05-28__IMG_0001.CR3`). Re-running adds new shots and keeps
-existing links; `--prune` removes links whose original is gone, `-n` shows what would change, and
-`--ext cr3 --ext jpg` narrows the formats. It never touches a real file in the destination and never
-writes into the library.
+Link names carry the path below the library (`2026/2026-05-28/IMG_0001.CR3` →
+`2026__2026-05-28__IMG_0001.CR3`). Re-run it after each ingest: existing links are kept and only new
+shots are linked. `--skip-paired-jpegs` shows a RAW+JPEG shot once, as its RAW. flatlink never writes
+into the library.
 
-Where PhotoLab writes its `.dop` sidecar for an image opened through a link — beside the link or beside
-the original — hasn't been verified yet. Check that on a few shots before editing through the flat
-folder in earnest.
+PhotoLab saves its `.dop` sidecar **beside the link**, named after it, not beside the original in the
+library (measured in PhotoLab 9.12). So once you edit through the link folder it holds your PhotoLab
+edits: keep it and re-run flatlink into it rather than rebuilding it. Keep it **outside** the library,
+as above, and back it up separately — `photodrop sync` mirrors the library, not the link folder, so
+it doesn't carry those edits.
 
 ## Architecture
 
@@ -367,7 +370,7 @@ PhotoDropMac/
 ├─ homebrew/Casks/             # the cask release.sh renders; mirrored into the tsvb/homebrew-tap repo
 ├─ scripts/                    # release.sh, appcast.sh, homebrew-cask.sh, sparkle-keys.sh,
 │                             #   sign-sparkle-helpers.sh, sparkle-tools.sh, make-icon.swift, check-doc-links.sh,
-│                             #   photolab-flatten.py
+│                             #   check-appcast-signature.sh
 ├─ docs/
 │  └─ internal/                # the review dossiers, and the design handoff the themes were built from
 ├─ Tests/PhotoDropMacTests/    # the XCTest target (hosted in the app)
