@@ -329,8 +329,9 @@ scripts/photolab-flatten.py ~/Pictures/Library ~/Pictures/PhotoLab-All
 Link names carry the relative path, so they stay unique and sort by date
 (`2026/2026-05-28/IMG_0001.CR3` → `2026__2026-05-28__IMG_0001.CR3`). Re-running adds new shots and keeps
 existing links; `--prune` removes links whose original is gone, `-n` shows what would change, and
-`--ext cr3 --ext jpg` narrows the formats. It never touches a real file in the destination and never
-writes into the library.
+`--ext cr3 --ext jpg` narrows the formats. If you shoot RAW+JPEG, `--skip-paired-jpegs` leaves out each
+camera JPEG that has a RAW of the same name in the same folder, so every shot appears once. It never
+touches a real file in the destination and never writes into the library.
 
 Where PhotoLab writes its `.dop` sidecar for an image opened through a link — beside the link or beside
 the original — hasn't been verified yet. Check that on a few shots before editing through the flat

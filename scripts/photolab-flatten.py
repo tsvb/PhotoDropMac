@@ -12,24 +12,31 @@ Link names encode the relative path so they stay unique and sort by folder:
 Re-running is safe: existing correct links are kept, and with --prune, links
 whose target has disappeared are removed. Real files in the destination are
 never touched.
+
+For RAW+JPEG shooting, --skip-paired-jpegs leaves out each camera JPEG that
+has a RAW of the same name in the same folder, so every shot appears once.
 """
 import argparse
 import os
 import sys
 from pathlib import Path
 
-IMAGE_EXTS = {
-    # rendered
-    "jpg", "jpeg", "jpe", "tif", "tiff", "heic", "heif", "png",
-    # raw
+JPEG_EXTS = {"jpg", "jpeg", "jpe"}
+RAW_EXTS = {
     "dng", "arw", "srf", "sr2", "cr2", "cr3", "crw", "nef", "nrw", "orf",
     "raf", "rw2", "rwl", "pef", "srw", "3fr", "fff", "iiq", "erf", "mef",
     "mos", "mrw", "x3f", "gpr",
 }
+IMAGE_EXTS = JPEG_EXTS | {"tif", "tiff", "heic", "heif", "png"} | RAW_EXTS
 SEP = "__"
 
 
-def iter_images(root: Path, exts: set[str], dest: Path):
+def split_ext(name: str) -> tuple[str, str]:
+    stem, _, ext = name.rpartition(".")
+    return stem.lower(), ext.lower()
+
+
+def iter_images(root: Path, exts: set[str], dest: Path, skip_paired: bool, stats: dict):
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
         # Match PhotoLab: skip hidden entries and package contents; never recurse into dest.
@@ -39,12 +46,19 @@ def iter_images(root: Path, exts: set[str], dest: Path):
             and not d.endswith((".app", ".photoslibrary", ".bundle"))
             and (here / d).resolve() != dest
         )
+        # A camera JPEG is "paired" when a RAW with the same stem sits in the same folder.
+        raw_stems = {split_ext(f)[0] for f in filenames if split_ext(f)[1] in RAW_EXTS} if skip_paired else set()
         for name in sorted(filenames):
             # Skip links too, so an earlier flat folder inside the tree isn't re-linked.
-            if name.startswith(".") or (here / name).is_symlink():
+            if name.startswith(".") or "." not in name or (here / name).is_symlink():
                 continue
-            if name.rsplit(".", 1)[-1].lower() in exts and "." in name:
-                yield here / name
+            stem, ext = split_ext(name)
+            if ext not in exts:
+                continue
+            if ext in JPEG_EXTS and stem in raw_stems:
+                stats["paired"] += 1
+                continue
+            yield here / name
 
 
 def link_name(src: Path, root: Path) -> str:
@@ -59,6 +73,8 @@ def main() -> int:
     ap.add_argument("--prune", action="store_true", help="remove links in dest whose target no longer exists")
     ap.add_argument("--ext", action="append", metavar="EXT",
                     help="only link these extensions (repeatable), e.g. --ext cr3 --ext jpg")
+    ap.add_argument("--skip-paired-jpegs", action="store_true",
+                    help="leave out a JPEG when a RAW of the same name is beside it (RAW+JPEG shooting)")
     args = ap.parse_args()
 
     root = args.source.expanduser().resolve()
@@ -74,8 +90,9 @@ def main() -> int:
 
     created = kept = skipped = pruned = 0
     wanted = set()
+    stats = {"paired": 0}
 
-    for src in iter_images(root, exts, dest):
+    for src in iter_images(root, exts, dest, args.skip_paired_jpegs, stats):
         name = link_name(src, root)
         wanted.add(name)
         link = dest / name
@@ -104,7 +121,8 @@ def main() -> int:
                 pruned += 1
 
     verb = "would create" if args.dry_run else "created"
-    print(f"\n{verb} {created}, kept {kept}, skipped {skipped}, pruned {pruned}  ->  {dest}")
+    paired = f", left out {stats['paired']} paired JPEGs" if args.skip_paired_jpegs else ""
+    print(f"\n{verb} {created}, kept {kept}, skipped {skipped}, pruned {pruned}{paired}  ->  {dest}")
     return 0
 
 

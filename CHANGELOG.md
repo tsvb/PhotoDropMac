@@ -16,8 +16,9 @@ release from this file.
 - **`scripts/photolab-flatten.py`, for browsing a library in DxO PhotoLab.**
   PhotoLab shows only the top level of a folder, so a library of day folders
   never appears in one grid. The script builds a flat folder of symlinks to
-  every image in the tree, which PhotoLab follows. It is in the repository, not
-  the app, and never writes into the library. See the README.
+  every image in the tree, which PhotoLab follows; `--skip-paired-jpegs` shows
+  a RAW+JPEG shot once, as its RAW. It is in the repository, not the app, and
+  never writes into the library. See the README.
 
 ## [0.5.1] — 2026-09-24
 
