@@ -80,6 +80,14 @@ enum Notifier {
         post(title: "Post-ingest hook failed", body: message)
     }
 
+    /// A configured hook was deliberately not run because the job left photos
+    /// on the card. Not gated on `enabled`, for the reason `notifyHookFailure`
+    /// is not.
+    @MainActor
+    static func notifyHookSkipped(message: String) {
+        post(title: "Post-ingest hook not run", body: message)
+    }
+
     private static func post(title: String, body: String) {
         // Fire-and-forget. Build the non-Sendable UNUserNotificationCenter /
         // content objects inside the Task so nothing non-Sendable is captured

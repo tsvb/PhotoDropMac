@@ -932,8 +932,9 @@ final class IngestEngine {
             // Roll back this bundle's written files; discard its local tallies.
             if !writtenFiles.isEmpty {
                 log(.error, "Rolling back \(writtenFiles.count) file(s) from the failed bundle.")
-                let fm = FileManager.default
-                for url in writtenFiles.reversed() { try? fm.removeItem(at: url) }
+                // Through the link-free walk that wrote them, never recursively —
+                // see `FileCopier.removeCreatedFile`.
+                for url in writtenFiles.reversed() { FileCopier.removeCreatedFile(url, under: root) }
             }
             throw error
         }

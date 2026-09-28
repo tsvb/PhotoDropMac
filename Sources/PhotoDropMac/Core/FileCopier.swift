@@ -78,9 +78,13 @@ enum FileCopier {
         onProgress: (Int64) -> Void
     ) throws -> UInt64 {
         let destDir = destination.deletingLastPathComponent()
+        let name = destination.lastPathComponent
+        // The final name reaches `openat` as a C string too — see `openDirectory`.
+        guard isSingleComponent(name) else {
+            throw FileCopierError.open(destination, NSError(domain: NSPOSIXErrorDomain, code: Int(EINVAL)))
+        }
         let dirFD = try openDirectory(destDir, under: destinationRoot ?? destDir)
         defer { close(dirFD) }
-        let name = destination.lastPathComponent
 
         // Only a regular file is read, and the open cannot block — see
         // `RegularFile`. `sync` hands this manifest-named paths from a library the
@@ -215,11 +219,25 @@ enum FileCopier {
     /// This matches the rule `VerifyEngine.build` applies on the read side
     /// (`ManifestWriter.reachesThroughSymlink`), so nothing is written where a
     /// later `verify` would refuse to look.
-    private static func openDirectory(_ directory: URL, under root: URL) throws -> Int32 {
-        guard let below = ManifestWriter.componentsBelow(root, of: directory) else {
+    ///
+    /// Every component is checked with `isSingleComponent` before it reaches a
+    /// syscall. Containment above is proven on Swift strings, but `mkdirat` and
+    /// `openat` take C strings, which end at the first NUL: `"..\0"` passes the
+    /// text check and then opens `..`. Measured — a destination of
+    /// `x\0/..\0/..\0/escaped/f` was written two levels above its root. Only a
+    /// Foundation quirk (a NUL component empties a directory-listing URL) kept a
+    /// manifest from reaching this; the rule belongs here, not in that quirk.
+    ///
+    /// `create: false` walks without making anything, for removing a file this
+    /// module wrote (`removeCreatedFile`).
+    private static func openDirectory(_ directory: URL, under root: URL, create: Bool = true) throws -> Int32 {
+        guard let below = ManifestWriter.componentsBelow(root, of: directory),
+              below.allSatisfy(isSingleComponent) else {
             throw FileCopierError.open(directory, NSError(domain: NSPOSIXErrorDomain, code: Int(EINVAL)))
         }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        if create {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        }
         var fd = open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard fd >= 0 else {
             throw FileCopierError.open(root, NSError(domain: NSPOSIXErrorDomain, code: Int(errno)))
@@ -227,7 +245,7 @@ enum FileCopier {
         var reached = root
         for component in below {
             reached = reached.appendingPathComponent(component, isDirectory: true)
-            if mkdirat(fd, component, 0o777) != 0, errno != EEXIST {
+            if create, mkdirat(fd, component, 0o777) != 0, errno != EEXIST {
                 let code = errno
                 close(fd)
                 throw FileCopierError.write(reached, NSError(domain: NSPOSIXErrorDomain, code: Int(code)))
@@ -246,6 +264,33 @@ enum FileCopier {
             fd = next
         }
         return fd
+    }
+
+    /// Whether `name` is exactly one path component as the kernel will read
+    /// it: not empty, not `.` or `..`, and free of NUL and `/`.
+    static func isSingleComponent(_ name: String) -> Bool {
+        !name.isEmpty && name != "." && name != ".."
+            && !name.contains("\0") && !name.contains("/")
+    }
+
+    /// Removes a file this module created, through the same link-free walk from
+    /// `root` that created it. Returns whether it is gone.
+    ///
+    /// Bundle rollback used `FileManager.removeItem(at:)`, which re-walks the
+    /// path — following any link a parent folder has become since the copy —
+    /// and deletes folders recursively. On a library someone else can write to
+    /// (a shared NAS), a parent swapped for a link between the copy and the
+    /// rollback turned "remove the file we just wrote" into "remove a folder
+    /// somewhere else". `unlinkat` never recurses and never follows the final
+    /// component, and the folder is reached as it was for the write.
+    @discardableResult
+    static func removeCreatedFile(_ file: URL, under root: URL) -> Bool {
+        let name = file.lastPathComponent
+        guard isSingleComponent(name),
+              let dirFD = try? openDirectory(file.deletingLastPathComponent(), under: root, create: false)
+        else { return false }
+        defer { close(dirFD) }
+        return unlinkat(dirFD, name, 0) == 0 || errno == ENOENT
     }
 
     /// Copy the source's access/modification times, and its birth time where the

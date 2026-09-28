@@ -252,10 +252,26 @@ struct IngestPreferences: View {
             } header: {
                 Text("Post-ingest hook")
             } footer: {
-                Text("Runs an executable script after each completed ingest (argv[1] is the destination; job details are in PHOTODROP_* environment variables). Best-effort — a failing hook never affects the copy.")
+                VStack(alignment: .leading, spacing: 4) {
+                    // Said here, when the path is chosen, rather than only in a
+                    // notification after an ingest has already skipped it.
+                    if let problem = hookProblem {
+                        Label(problem, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    Text("Runs an executable script after each ingest that took everything on the card (argv[1] is the destination; job details are in PHOTODROP_* environment variables). The script and its folders must be writable only by you, on your startup disk. Best-effort — a failing hook never affects the copy.")
+                }
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var hookProblem: String? {
+        let path = postIngestScript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        do { _ = try PostIngestHook.validate(scriptPath: path); return nil }
+        catch let error as PostIngestHookError { return error.message }
+        catch { return error.localizedDescription }
     }
 
     private func chooseHookScript() {

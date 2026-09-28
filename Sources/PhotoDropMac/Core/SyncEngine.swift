@@ -182,7 +182,7 @@ enum SyncEngine {
                     // The library no longer holds what its manifest says. Copying
                     // it onward would propagate the damage into the one place
                     // that might still have had a good copy.
-                    try? fm.removeItem(at: destination)
+                    FileCopier.removeCreatedFile(destination, under: mirror)
                     outcome.conflicting.append(item.relPath)
                     log(.error, "\(item.relPath) — the library's copy no longer matches its own manifest; not mirrored.")
                     continue

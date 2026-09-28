@@ -299,8 +299,18 @@ struct Ingest: AsyncParsableCommand {
             CLIOutput.error("\(unrecognizedFiles) file(s) on the card are not a format PhotoDrop ingests, "
                           + "or are hidden, and will be left behind. Not ejecting.")
         }
+        // Whether this run takes everything on the card. Printing "Not ejecting"
+        // was the whole response to an incomplete scan, and the job then exited
+        // 0 — so a wrapper that formats the card on `$?` destroyed exactly what
+        // the eject gate had just refused to release. The exit code carries it.
+        let cardFullyTaken = unreadableDirectories == 0 && unrecognizedFiles == 0
         guard !bundles.isEmpty else {
             print("No recognized photos found on \(cardURL.path).")
+            // Nothing to copy is a success only when the card really holds
+            // nothing: a DCIM that could not be opened reads as empty too, and
+            // that is "couldn't look", not "looked and found nothing".
+            if unreadableDirectories > 0 { throw ExitCode(2) }
+            if unrecognizedFiles > 0 { throw ExitCode(1) }
             return
         }
 
@@ -358,7 +368,11 @@ struct Ingest: AsyncParsableCommand {
         // run silently skipped it. Taken as an explicit option rather than read
         // from the app's defaults, because a command-line tool's UserDefaults
         // domain isn't the app's.
-        if let postIngestHook, !postIngestHook.isEmpty, PostIngestHook.shouldRun(after: result) {
+        if let postIngestHook, !postIngestHook.isEmpty, !cardFullyTaken {
+            CLIOutput.error("Post-ingest hook not run: this ingest left files on the card.")
+        }
+        if let postIngestHook, !postIngestHook.isEmpty,
+           PostIngestHook.shouldRun(after: result, cardFullyTaken: cardFullyTaken) {
             do {
                 try await PostIngestHook.run(scriptPath: postIngestHook, result: result)
             } catch let error as PostIngestHookError {
@@ -375,6 +389,8 @@ struct Ingest: AsyncParsableCommand {
         // a library with no integrity record. Exit 1 — "issues found" — rather
         // than 2, because the copy itself completed and was checked.
         if !result.manifestFailures.isEmpty { throw ExitCode(1) }
+        // Everything planned landed, but the plan was not the whole card.
+        if !cardFullyTaken { throw ExitCode(1) }
     }
 }
 

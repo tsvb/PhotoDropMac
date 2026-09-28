@@ -38,13 +38,20 @@ final class ReviewHardeningTests: XCTestCase {
     // MARK: - The hook's gate
 
     func testHookRunsOnlyWhenTheLibraryIsWholeAndHasItsReceipt() {
-        XCTAssertTrue(PostIngestHook.shouldRun(after: result()))
-        XCTAssertFalse(PostIngestHook.shouldRun(after: result(primaryFailures: 3)),
+        XCTAssertTrue(PostIngestHook.shouldRun(after: result(), cardFullyTaken: true))
+        XCTAssertFalse(PostIngestHook.shouldRun(after: result(primaryFailures: 3), cardFullyTaken: true),
                        "a job that lost files must not run the \"card is done\" hook")
-        XCTAssertFalse(PostIngestHook.shouldRun(after: result(manifestFailures: ["/lib"])),
+        XCTAssertFalse(PostIngestHook.shouldRun(after: result(manifestFailures: ["/lib"]), cardFullyTaken: true),
                        "no receipt, no hook")
-        XCTAssertFalse(PostIngestHook.shouldRun(after: result(halted: true)))
-        XCTAssertFalse(PostIngestHook.shouldRun(after: result(cancelled: true)))
+        XCTAssertFalse(PostIngestHook.shouldRun(after: result(halted: true), cardFullyTaken: true))
+        XCTAssertFalse(PostIngestHook.shouldRun(after: result(cancelled: true), cardFullyTaken: true))
+    }
+
+    /// A clean job over part of the card — an unreadable folder, files it does
+    /// not ingest, a cull — ran the hook while the eject was withheld for the
+    /// same reasons, so a "wipe the card" hook destroyed what was left behind.
+    func testHookDoesNotRunWhenTheJobLeftPhotosOnTheCard() {
+        XCTAssertFalse(PostIngestHook.shouldRun(after: result(), cardFullyTaken: false))
     }
 
     // MARK: - Hidden files on the card

@@ -114,6 +114,37 @@ final class CLIBlackBoxTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: typo.path), "the typo'd mirror was created")
     }
 
+    /// A card whose only folder cannot be opened read as *No recognized photos*
+    /// and exited 0 — "looked and found nothing" for what was "couldn't look",
+    /// and a wrapper formats the card on 0. Exits before the engine runs, so no
+    /// log is written.
+    func testIngestOfACardItCouldNotReadExitsTwo() async throws {
+        let card = tmp.appendingPathComponent("card", isDirectory: true)
+        let dcim = card.appendingPathComponent("DCIM", isDirectory: true)
+        let library = tmp.appendingPathComponent("lib", isDirectory: true)
+        try FileManager.default.createDirectory(at: dcim, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        try Data("jpeg".utf8).write(to: dcim.appendingPathComponent("IMG_0001.JPG"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: dcim.path)
+        addTeardownBlock { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dcim.path) }
+
+        let out = try await run(["ingest", "--from", card.path, "--to", library.path])
+        XCTAssertEqual(out.status, 2, out.stdoutText + out.stderrText)
+    }
+
+    /// Same shape for a card holding only files PhotoDrop does not ingest: they
+    /// are still on the card, so this is "issues found", not success.
+    func testIngestOfACardHoldingOnlyUningestedFilesExitsOne() async throws {
+        let card = tmp.appendingPathComponent("card", isDirectory: true)
+        let library = tmp.appendingPathComponent("lib", isDirectory: true)
+        try FileManager.default.createDirectory(at: card, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        try Data("clip".utf8).write(to: card.appendingPathComponent("A001.R3D"))
+
+        let out = try await run(["ingest", "--from", card.path, "--to", library.path])
+        XCTAssertEqual(out.status, 1, out.stdoutText + out.stderrText)
+    }
+
     /// ArgumentParser's `EX_USAGE`. The tool never chooses it, but anything
     /// branching on `$?` sees it, so it is part of the contract.
     func testUnknownFlagIsAUsageError() async throws {

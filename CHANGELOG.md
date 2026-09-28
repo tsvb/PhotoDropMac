@@ -11,6 +11,33 @@ release from this file.
 
 ## [Unreleased]
 
+### Security
+
+- **The post-ingest hook runs only after an ingest that took the whole card.**
+  It ran after any clean job, including one that could not open a folder, found
+  files PhotoDrop does not ingest, or had photos deselected, which are exactly
+  the cases where the card is not ejected. A hook that archives or wipes the card
+  would then act on photos that were never copied. The app now says when it skips
+  the hook for this reason.
+- **The post-ingest hook must be a script only you can change, on your startup
+  disk.** A script, or a folder above it, that another user can write is refused,
+  and so is one on a removable volume, where a card mounted under the same name
+  could supply its own. Settings shows why a configured hook would be refused,
+  and the ingest screen names the hook before every ingest. See SECURITY.md for
+  what this does and does not protect against.
+- **`photodrop ingest` no longer exits 0 when it left files on the card.** A
+  folder it could not read, or files it does not ingest, now exit `1`, and a card
+  it could not read at all exits `2` instead of reporting "No recognized photos"
+  and exiting 0. A script that formats the card when `photodrop` succeeds would
+  otherwise have destroyed them.
+- **A path containing a NUL character can no longer escape the library.** Paths
+  were checked as text and then handed to the system, which stops reading at a
+  NUL, so `..` hidden that way was followed. Such paths are now refused when
+  writing, and manifest entries holding one are ignored.
+- **Undoing a failed copy removes only the file that was written.** It deleted by
+  path, recursively, so on a shared library where a folder was swapped for a
+  link in the meantime it could delete a folder somewhere else.
+
 ### Added
 
 - **Browsing a library in DxO PhotoLab.** PhotoLab shows only the top level of
