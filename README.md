@@ -173,7 +173,7 @@ Preferences are plain `@AppStorage` keys (no central store). Defaults:
 | `photodrop.menuBar.autoOpenWindow` | Bool | `true` | Open the window when a card arrives. |
 | `photodrop.menuBar.oneClickIngest` | Bool | `false` | One-click ingest from the menu bar using saved defaults. |
 | `photodrop.extraArchiveDestinations` | String | — | Newline-separated extra mirror folders, beyond Primary + Archive (3-2-1 backups). |
-| `photodrop.postIngestScript` | String | — | Executable run after a clean ingest; argv[1] is the primary destination, job details in `PHOTODROP_*` env vars. |
+| `photodrop.postIngestScript` | String | — | Executable run after a clean ingest that took everything on the card; argv[1] is the primary destination, job details in `PHOTODROP_*` env vars. Refused if it or a folder above it is writable by another user, or if it is on a removable volume. |
 | `photodrop.scheduledVerify.enabled` | Bool | `false` | Install a launchd agent that re-verifies the library on a schedule. |
 | `photodrop.scheduledVerify.schedule` | enum | `weekly` | Cadence of the scheduled verification (daily / weekly / monthly, always 03:00). |
 | `photodrop.scheduledVerify.binaryPath` | String | bundled CLI | Path to `photodrop` for the scheduled job; defaults to the copy inside the app. |
@@ -276,6 +276,10 @@ A headless ingest: the same scan, plan, dedup, tee-hash verification and mirrori
 `--[no-]year-folder`, `--[no-]verify`, `--[no-]eject`, `--description`, `--folder-template`,
 `--file-template`, `--post-ingest-hook <path>`. Naming precedence, narrowest first: an explicit
 `--folder-template`/`--file-template`, then `--layout`, then `--preset`, then the default.
+
+An ingest that leaves anything on the card — a folder it could not read, files it does not ingest —
+exits `1` even when everything it planned landed, and `2` when it found nothing because it could not
+read the card. It never ejects in either case, and `--post-ingest-hook` does not run.
 
 **SIGINT, SIGTERM and SIGHUP are all graceful cancels** — the job stops at the next file boundary and
 still writes its manifest and log for what landed. A second signal exits immediately. `sync` stops the

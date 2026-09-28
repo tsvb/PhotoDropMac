@@ -21,6 +21,64 @@ final class FileCopierTests: XCTestCase {
     private func write(_ string: String, to url: URL) throws { try Data(string.utf8).write(to: url) }
     private func read(_ url: URL) -> String? { try? String(contentsOf: url, encoding: .utf8) }
 
+    // MARK: - Components the kernel reads differently
+
+    /// Containment was proven on Swift strings and then handed to `mkdirat` /
+    /// `openat` as C strings, which stop at NUL: `"..\0"` passed the check and
+    /// opened `..`. Measured before the fix: this wrote `escaped/evil.CR2` two
+    /// levels above the mirror.
+    func testAComponentHoldingNULCannotClimbOutOfTheRoot() throws {
+        let source = tmp.appendingPathComponent("source.bin")
+        try write("payload", to: source)
+        let root = URL(fileURLWithPath: tmp.appendingPathComponent("a/b/mirror").path, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let dest = root.appendingPathComponent("x\0/..\0/..\0/escaped/evil.CR2")
+
+        XCTAssertThrowsError(try FileCopier.copyAndHash(source: source, destination: dest,
+                                                        destinationRoot: root, onProgress: { _ in }))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tmp.appendingPathComponent("a/escaped").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: tmp.appendingPathComponent("a/b/escaped").path))
+    }
+
+    func testAManifestEntryHoldingNULDoesNotResolve() {
+        let root = URL(fileURLWithPath: "/lib", isDirectory: true)
+        XCTAssertNil(ManifestWriter.resolve(entryPath: "x\0/..\0/../Library/LaunchAgents/evil.plist", under: root))
+        XCTAssertNotNil(ManifestWriter.resolve(entryPath: "2026/IMG_0001.CR2", under: root))
+    }
+
+    // MARK: - Rollback
+
+    func testRemoveCreatedFileRemovesWhatWasWritten() throws {
+        let source = tmp.appendingPathComponent("source.bin")
+        try write("payload", to: source)
+        let root = tmp.appendingPathComponent("lib", isDirectory: true)
+        let dest = root.appendingPathComponent("2026/IMG_0001.CR2")
+        _ = try FileCopier.copyAndHash(source: source, destination: dest, destinationRoot: root, onProgress: { _ in })
+
+        XCTAssertTrue(FileCopier.removeCreatedFile(dest, under: root))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path))
+    }
+
+    /// Rollback re-walked the path with `removeItem`, so a parent folder swapped
+    /// for a link after the copy sent the delete somewhere else.
+    func testRemoveCreatedFileDoesNotFollowAParentSwappedForALink() throws {
+        let source = tmp.appendingPathComponent("source.bin")
+        try write("payload", to: source)
+        let root = tmp.appendingPathComponent("lib", isDirectory: true)
+        let dest = root.appendingPathComponent("2026/IMG_0001.CR2")
+        _ = try FileCopier.copyAndHash(source: source, destination: dest, destinationRoot: root, onProgress: { _ in })
+
+        let elsewhere = tmp.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try write("someone else's file", to: elsewhere.appendingPathComponent("IMG_0001.CR2"))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("2026"))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("2026"),
+                                                   withDestinationURL: elsewhere)
+
+        XCTAssertFalse(FileCopier.removeCreatedFile(dest, under: root))
+        XCTAssertEqual(read(elsewhere.appendingPathComponent("IMG_0001.CR2")), "someone else's file")
+    }
+
     // MARK: - Overwrite protection (regression for the O_EXCL exclusive create)
 
     func testRefusesToOverwriteExistingFile() throws {

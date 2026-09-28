@@ -121,6 +121,70 @@ final class PostIngestHookTests: XCTestCase {
         """
     }
 
+    // MARK: - What may run
+
+    private func assertRefused(_ path: String, containing fragment: String,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertThrowsError(try PostIngestHook.validate(scriptPath: path), file: file, line: line) { error in
+            let message = (error as? PostIngestHookError)?.message ?? ""
+            XCTAssertTrue(message.contains(fragment), message, file: file, line: line)
+        }
+    }
+
+    func testAScriptOnlyTheUserCanWriteIsAccepted() throws {
+        let dir = try freshTempDir()
+        let script = try writeScript("exit 0\n", in: dir)
+        let resolved = try PostIngestHook.validate(scriptPath: script.path)
+        XCTAssertEqual(resolved.lastPathComponent, "hook.sh")
+    }
+
+    /// A script another account can rewrite is a script another account chooses.
+    func testAScriptOthersCanWriteIsRefused() throws {
+        let dir = try freshTempDir()
+        let script = try writeScript("exit 0\n", in: dir)
+        try FileManager.default.setAttributes([.posixPermissions: 0o757], ofItemAtPath: script.path)
+        assertRefused(script.path, containing: "other users can change it")
+    }
+
+    /// Same for the folder: whoever can write it can replace the script.
+    func testAScriptInAFolderOthersCanWriteIsRefused() throws {
+        let dir = try freshTempDir()
+        let shared = dir.appendingPathComponent("shared", isDirectory: true)
+        try FileManager.default.createDirectory(at: shared, withIntermediateDirectories: true)
+        let script = try writeScript("exit 0\n", in: shared)
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: shared.path)
+        assertRefused(script.path, containing: "the folder")
+    }
+
+    /// A link is followed to the file it names, and *that* file is what is
+    /// checked and run — not the link, which could be repointed in between.
+    func testALinkIsResolvedAndTheTargetIsChecked() async throws {
+        let dir = try freshTempDir()
+        let out = dir.appendingPathComponent("ran.txt")
+        let script = try writeScript("echo ran > \"\(out.path)\"\n", in: dir)
+        let link = dir.appendingPathComponent("link.sh")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: script)
+
+        XCTAssertEqual(try PostIngestHook.validate(scriptPath: link.path).lastPathComponent, "hook.sh")
+        try await PostIngestHook.run(scriptPath: link.path, result: result(primary: dir))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: out.path))
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: script.path)
+        assertRefused(link.path, containing: "other users can change it")
+    }
+
+    func testARefusedScriptIsNotRun() async throws {
+        let dir = try freshTempDir()
+        let out = dir.appendingPathComponent("ran.txt")
+        let script = try writeScript("echo ran > \"\(out.path)\"\n", in: dir)
+        try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: script.path)
+        do {
+            try await PostIngestHook.run(scriptPath: script.path, result: result(primary: dir))
+            XCTFail("a world-writable hook must not run")
+        } catch is PostIngestHookError { /* expected */ }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: out.path))
+    }
+
     private enum HookOutcome: Sendable, Equatable { case succeeded, failed, timedOut }
 
     /// Runs the hook against a wall-clock deadline. Static and taking only

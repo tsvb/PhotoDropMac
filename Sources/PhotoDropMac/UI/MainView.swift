@@ -406,7 +406,8 @@ struct MainView: View {
             sourceVolumeID: source.id,
             template: template,
             cardLabel: source.label,
-            scanWasComplete: planner.scanWasComplete
+            scanWasComplete: planner.scanWasComplete,
+            cardFullyTaken: planner.scanWasComplete && deselectedIDs.isEmpty
         )
     }
 
@@ -670,6 +671,7 @@ struct DetailPane: View {
     let previewMode: PreviewMode
     @Binding var deselectedIDs: Set<AssetBundle.ID>
     let loader: ThumbnailLoader
+    @AppStorage(PostIngestHook.defaultsKey) private var postIngestScript: String = ""
 
     var body: some View {
         switch copier.state {
@@ -777,6 +779,10 @@ struct DetailPane: View {
                 if planner.unreadableDirectories > 0 {
                     IncompleteScanBanner(count: planner.unreadableDirectories)
                 }
+                let hook = postIngestScript.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !hook.isEmpty {
+                    PostIngestHookBanner(path: hook)
+                }
                 switch previewMode {
                 case .tree:
                     PreviewTree(yearGroups: planner.yearGroups, deselected: deselectedIDs)
@@ -810,6 +816,36 @@ private struct IncompleteScanBanner: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.yellow.opacity(0.15))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// Names the program that will run after this ingest, before it starts.
+///
+/// The hook is a preference, and anything running as this user can rewrite a
+/// preference — pointing it at a program of its choosing, which PhotoDrop would
+/// then launch with whatever Files & Folders access the user granted PhotoDrop
+/// (see SECURITY.md). Nothing in the ingest flow said a hook was configured at
+/// all; it was visible only in Settings. This is where the user looks before
+/// pressing Ingest, so it is where an unexpected path can be noticed.
+private struct PostIngestHookBanner: View {
+    let path: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "terminal")
+                .foregroundStyle(.secondary)
+            Text("After a complete ingest, runs \(Text(SafeText.display(path)).font(.callout.monospaced()).foregroundStyle(.primary))")
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.5))
+        .help("Post-ingest hook — change it in Settings.")
         .accessibilityElement(children: .combine)
     }
 }

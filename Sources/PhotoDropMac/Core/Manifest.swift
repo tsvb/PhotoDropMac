@@ -164,7 +164,10 @@ enum ManifestWriter {
     /// gets silently dropped — precisely the files `heal` exists to find.
     /// Avoiding the filesystem also sidesteps a TOCTOU race on the check.
     static func resolve(entryPath: String, under root: URL) -> URL? {
-        guard !entryPath.isEmpty else { return nil }
+        // A NUL is legal in a JSON string and in a Swift component, and ends the
+        // path the kernel sees: `x\0/..\0/..` is contained as text and climbs
+        // out of the library as a syscall argument. No file name holds one.
+        guard !entryPath.isEmpty, !entryPath.contains("\0") else { return nil }
         guard let rootComponents = lexicallyNormalized(root),
               let resolved = lexicallyNormalized(root.appendingPathComponent(entryPath)),
               rootComponents.first == "/",

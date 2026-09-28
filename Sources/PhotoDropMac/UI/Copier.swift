@@ -156,7 +156,12 @@ final class Copier {
         /// folders could not be read or files were left behind — the card then
         /// still holds something this job did not take, and `CardHistory` must
         /// not call it done.
-        scanWasComplete: Bool = true
+        scanWasComplete: Bool = true,
+        /// Whether this job takes everything on the card: a complete scan *and*
+        /// nothing deselected. The post-ingest hook runs only when it does — see
+        /// `PostIngestHook.shouldRun`. Separate from `scanWasComplete`, which
+        /// governs `CardHistory` and has its own meaning for a cull.
+        cardFullyTaken: Bool = true
     ) {
         cancel()                          // abort any in-flight run (trips its flag)
         isVerifyingCurrentJob = verify
@@ -240,7 +245,7 @@ final class Copier {
                     ), in: self.defaults)
                 }
                 if self.postsNotifications { Notifier.notifyCompletion(result: result) }
-                self.runPostIngestHookIfConfigured(result)
+                self.runPostIngestHookIfConfigured(result, cardFullyTaken: cardFullyTaken)
             }
         }
     }
@@ -295,15 +300,25 @@ final class Copier {
     // Runs the user's post-ingest hook (if configured) on a clean completion —
     // fire-and-forget so a slow hook can't delay the completion UI, and
     // best-effort so a missing/failing hook never affects the copy result.
-    private func runPostIngestHookIfConfigured(_ result: CopyResult) {
-        // The same gate as the CLI — see `PostIngestHook.shouldRun`. This path
-        // used to fire after any job that was not halted or cancelled, so a
-        // "wipe the card" hook ran over a library missing files.
-        guard PostIngestHook.shouldRun(after: result) else { return }
+    private func runPostIngestHookIfConfigured(_ result: CopyResult, cardFullyTaken: Bool) {
         let script = (defaults.string(forKey: PostIngestHook.defaultsKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !script.isEmpty else { return }
         let postsNotifications = self.postsNotifications
+        // The same gate as the CLI — see `PostIngestHook.shouldRun`. This path
+        // used to fire after any job that was not halted or cancelled, so a
+        // "wipe the card" hook ran over a library missing files.
+        guard PostIngestHook.shouldRun(after: result, cardFullyTaken: cardFullyTaken) else {
+            // A clean job that left photos on the card is the one skip the user
+            // would not expect — say so, or a hook that archives the card just
+            // silently stops happening.
+            if !cardFullyTaken, !result.halted, !result.cancelled, postsNotifications {
+                Notifier.notifyHookSkipped(message:
+                    "This ingest left photos on the card (unreadable folders, files PhotoDrop doesn’t ingest, "
+                    + "or photos you deselected), so the post-ingest hook was not run.")
+            }
+            return
+        }
         Task.detached(priority: .utility) {
             do {
                 try await PostIngestHook.run(scriptPath: script, result: result)

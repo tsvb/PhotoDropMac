@@ -79,6 +79,32 @@ would require rethinking eject and folder access, and would rule out this
 distribution model. It is recorded, not fixed. If the sandbox decision is ever
 revisited, reconsider this first.
 
+## Known, accepted risk: the post-ingest hook is a preference
+
+The post-ingest hook is a path stored in PhotoDrop's preferences, and PhotoDrop
+runs it. macOS treats a program PhotoDrop starts as PhotoDrop for privacy
+purposes, so the hook inherits whatever Files & Folders, removable-volume or Full
+Disk Access you have granted PhotoDrop. Any process running as your account can
+rewrite that preference (`defaults write com.tsvb.PhotoDropMac
+photodrop.postIngestScript …`) — including one you have *not* granted that access
+— and so borrow PhotoDrop's.
+
+What PhotoDrop does about it:
+
+- The ingest screen names the hook before every ingest, so a path you did not set
+  is visible before you press Ingest.
+- The hook is refused if the script, or any folder above it, can be written by
+  another user, and if it is on a removable volume (a card mounted under the same
+  name as the drive your script lives on would otherwise supply its own).
+  Settings shows why a configured hook would be refused.
+- It runs only after an ingest that took everything on the card.
+
+What it does not do is stop a process already running as you from changing the
+preference. Closing that needs the hook configuration kept somewhere only
+PhotoDrop can write, or the hook run without PhotoDrop's privacy grants (which
+would make hooks that touch an external library prompt for access themselves).
+If you do not use a hook, leave the setting empty; nothing runs.
+
 **Practical advice:** treat a memory card the way you would treat any removable
 media from someone else. Ingesting your own cards from your own cameras is the
 designed use.
