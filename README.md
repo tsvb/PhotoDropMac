@@ -434,3 +434,5 @@ Built with SwiftUI and ImageIO; project files are generated with [XcodeGen](http
 ## License
 
 PhotoDrop is released under the [MIT License](LICENSE) — © 2026 tsvb. You're free to use, modify, and distribute it, including commercially, as long as the copyright notice and license text are included.
+
+Made by [Tim VanBenschoten](https://timvanbenschoten.com).
