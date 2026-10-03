@@ -120,6 +120,7 @@ struct PhotoDropCommands: Commands {
         // command-line tool ships inside the bundle.
         CommandGroup(replacing: .help) {
             Button("PhotoDrop Help") { AppLinks.open(.readme) }
+            Button("PhotoDrop Website") { AppLinks.open(.website) }
             Divider()
             Button("Report an Issue…") { AppLinks.open(.issues) }
             // A real check when this build can make one, and the old behaviour —
@@ -149,11 +150,12 @@ struct PhotoDropCommands: Commands {
 /// themselves, which is every build made from source.
 enum AppLinks {
     enum Destination {
-        case readme, issues, releases
+        case readme, website, issues, releases
 
         var url: URL {
             switch self {
             case .readme:   URL(string: "https://github.com/tsvb/PhotoDropMac#readme")!
+            case .website:  URL(string: "https://timvanbenschoten.com/code/photodrop")!
             case .issues:   URL(string: "https://github.com/tsvb/PhotoDropMac/issues/new")!
             case .releases: URL(string: "https://github.com/tsvb/PhotoDropMac/releases")!
             }
