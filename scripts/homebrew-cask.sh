@@ -63,7 +63,7 @@ cask "photodropmac" do
   url "https://github.com/tsvb/PhotoDropMac/releases/download/v#{version}/PhotoDropMac-#{version}.dmg"
   name "PhotoDrop"
   desc "Verified photo ingest from memory cards into a date-organized library"
-  homepage "https://github.com/tsvb/PhotoDropMac"
+  homepage "https://timvanbenschoten.com/code/photodrop"
 
   livecheck do
     url "https://raw.githubusercontent.com/tsvb/PhotoDropMac/main/appcast.xml"

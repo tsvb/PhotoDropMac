@@ -387,7 +387,9 @@ if [[ "${PUBLISH:-0}" == "1" ]]; then
           index($0, v) == 1 { grabbing = 1; next }
           grabbing && /^## \[/ { exit }
           grabbing { print }' CHANGELOG.md)" && [[ -n "${NOTES// /}" ]]; then
-      NOTES_ARG=(--notes "$NOTES")
+      NOTES_ARG=(--notes "$NOTES
+
+Project page: https://timvanbenschoten.com/code/photodrop")
     fi
   fi
   gh release create "$TAG" "$DMG" --title "$APP_NAME $VERSION" "${NOTES_ARG[@]}"

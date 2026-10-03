@@ -221,6 +221,10 @@ if [[ -z "${NOTES_HTML// /}" ]]; then
   echo "⚠ No $CHANGELOG section found for $VERSION — the item will carry no release notes." >&2
   NOTES_HTML="<p>See the release page for details.</p>"
 fi
+# Every item ends by pointing at the project page, the one place that describes
+# the app as a whole rather than this release.
+NOTES_HTML="$NOTES_HTML
+<p>Project page: <a href=\"https://timvanbenschoten.com/code/photodrop\">timvanbenschoten.com/code/photodrop</a></p>"
 # CDATA is the wrapper, so the only sequence that can break out is "]]>".
 NOTES_HTML="${NOTES_HTML//]]>/]]&gt;}"
 

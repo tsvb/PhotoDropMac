@@ -11,6 +11,13 @@ release from this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Help ▸ PhotoDrop Website** opens the project page,
+  [timvanbenschoten.com/code/photodrop](https://timvanbenschoten.com/code/photodrop),
+  and the About window links to it too. The Homebrew cask's `homepage` now points
+  there as well.
+
 ### Security
 
 - **The post-ingest hook runs only after an ingest that took the whole card.**
